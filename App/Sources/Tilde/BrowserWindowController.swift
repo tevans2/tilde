@@ -44,6 +44,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         events.delegate = self
         buildLayout(in: window)
+        applyTheme(Theme.shared)
         window.setContentSize(NSSize(width: 1100, height: 680))
         window.center()
         window.setFrameAutosaveName("TildeBrowser")
@@ -124,6 +125,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: 28),
         ])
+    }
+
+    /// Applies fonts from the config. Called at startup and on Reload Config.
+    func applyTheme(_ theme: Theme) {
+        pathBar.applyTheme(theme)
+        statusBar.applyTheme(theme)
+        tableView.rowHeight = theme.rowHeight
+        tableView.reloadData()
+        if tableView.selectedRow < 0, results.count > 0 { select(row: 0) }
+        updateChrome()
+        if !theme.warnings.isEmpty { statusBar.flash(theme.warnings.joined(separator: " ")) }
     }
 
     // MARK: Modes

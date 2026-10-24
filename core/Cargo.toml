@@ -12,10 +12,12 @@ publish = false
 tilde-types = { path = "crates/tilde-types" }
 tilde-fs = { path = "crates/tilde-fs" }
 tilde-query = { path = "crates/tilde-query" }
+tilde-config = { path = "crates/tilde-config" }
 libc = "0.2"
 nucleo-matcher = "0.3"
 uniffi = "0.32"
 tempfile = "3"
+thiserror = "2"
 
 [profile.release]
 lto = "thin"

@@ -18,7 +18,6 @@ final class PathBar: NSView {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 15)
         field.cell?.isScrollable = true
         field.cell?.wraps = false
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -49,7 +48,7 @@ final class PathBar: NSView {
         }
         let parts = display.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         let s = NSMutableAttributedString()
-        let font = NSFont.systemFont(ofSize: 15)
+        let font = Theme.shared.bar
         let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
         let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
         if display.hasPrefix("/") { s.append(NSAttributedString(string: "/", attributes: sep)) }
@@ -58,6 +57,10 @@ final class PathBar: NSView {
             s.append(NSAttributedString(string: " / ", attributes: sep))
         }
         crumbs.attributedStringValue = s
+    }
+
+    func applyTheme(_ theme: Theme) {
+        field.font = theme.bar
     }
 
     func setMode(_ mode: Mode) {
@@ -90,7 +93,6 @@ final class ResultsTableView: NSTableView {
         column.resizingMask = .autoresizingMask
         addTableColumn(column)
         headerView = nil
-        rowHeight = 26
         intercellSpacing = NSSize(width: 0, height: 0)
         style = .inset
         backgroundColor = .clear
@@ -136,7 +138,6 @@ final class RowCellView: NSTableCellView {
         name.lineBreakMode = .byTruncatingMiddle
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for f in [meta, age] {
-            f.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
             f.textColor = .secondaryLabelColor
             f.alignment = .right
             f.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -148,8 +149,8 @@ final class RowCellView: NSTableCellView {
         NSLayoutConstraint.activate([
             badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             badge.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badge.widthAnchor.constraint(equalToConstant: 36),
-            badge.heightAnchor.constraint(equalToConstant: 16),
+            badge.widthAnchor.constraint(equalToConstant: 40),
+            badge.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.62),
             name.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
             meta.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 12),
@@ -157,7 +158,7 @@ final class RowCellView: NSTableCellView {
             age.leadingAnchor.constraint(equalTo: meta.trailingAnchor, constant: 12),
             age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             age.centerYAnchor.constraint(equalTo: centerYAnchor),
-            age.widthAnchor.constraint(equalToConstant: 34),
+            age.widthAnchor.constraint(greaterThanOrEqualToConstant: 34),
         ])
     }
 
@@ -166,7 +167,10 @@ final class RowCellView: NSTableCellView {
 
     func configure(with row: RowView) {
         self.row = row
-        badge.set(text: Format.badgeText(row), color: Format.badgeColor(row.category))
+        let theme = Theme.shared
+        meta.font = theme.small
+        age.font = theme.small
+        badge.set(text: Format.badgeText(row), color: Format.badgeColor(row.category), font: theme.badge)
         meta.stringValue = Format.meta(row)
         age.stringValue = Format.age(row.modified)
         renderName()
@@ -180,12 +184,12 @@ final class RowCellView: NSTableCellView {
         guard let row else { return }
         let selected = backgroundStyle == .emphasized
         let base: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13),
+            .font: Theme.shared.list,
             .foregroundColor: selected ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor,
         ]
         let s = NSMutableAttributedString(string: row.name + (row.kind == .folder ? "/" : ""), attributes: base)
         let hit: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .bold),
+            .font: Theme.shared.listBold,
             .foregroundColor: selected ? NSColor.systemYellow : NSColor.systemOrange,
         ]
         let length = (row.name as NSString).length
@@ -206,7 +210,6 @@ final class Badge: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 4
-        label.font = .systemFont(ofSize: 9, weight: .semibold)
         label.textColor = .white
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -223,7 +226,8 @@ final class Badge: NSView {
 
     private var color: NSColor = .systemGray
 
-    func set(text: String, color: NSColor) {
+    func set(text: String, color: NSColor, font: NSFont) {
+        label.font = font
         label.stringValue = text
         self.color = color
         needsDisplay = true
@@ -255,10 +259,8 @@ final class StatusBar: NSView {
         wantsLayer = true
         pillBackground.wantsLayer = true
         pillBackground.layer?.cornerRadius = 4
-        modePill.font = .systemFont(ofSize: 10, weight: .bold)
         modePill.textColor = .white
         for f in [hints, right] {
-            f.font = .systemFont(ofSize: 11.5)
             f.textColor = .secondaryLabelColor
             f.lineBreakMode = .byTruncatingTail
         }
@@ -286,6 +288,12 @@ final class StatusBar: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private var modeColor: NSColor = .systemBlue
+
+    func applyTheme(_ theme: Theme) {
+        modePill.font = theme.badge
+        hints.font = theme.small
+        right.font = theme.small
+    }
 
     func update(mode: Mode, count: Int, filter: String) {
         switch mode {

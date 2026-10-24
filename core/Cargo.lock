@@ -544,10 +544,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "tilde-ffi"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "thiserror",
+ "tilde-config",
  "tilde-fs",
  "tilde-query",
  "tilde-types",

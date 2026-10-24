@@ -21,7 +21,9 @@ bindgen = ["uniffi/cli"]
 tilde-types.workspace = true
 tilde-fs.workspace = true
 tilde-query.workspace = true
+tilde-config.workspace = true
 uniffi.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

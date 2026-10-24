@@ -1,4 +1,5 @@
 import AppKit
+import TildeFFI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -20,6 +21,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windows.append(controller)
         controller.showWindow(nil)
     }
+
+    /// Creates the config file from a commented template if needed and opens it.
+    @objc func openConfig(_ sender: Any?) {
+        let url: URL
+        do {
+            url = URL(fileURLWithPath: try ensureConfigFile())
+        } catch {
+            NSSound.beep()
+            return
+        }
+        if NSWorkspace.shared.urlForApplication(toOpen: url) != nil {
+            NSWorkspace.shared.open(url)
+        } else {
+            // No app claims .toml files; fall back to TextEdit.
+            let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+            NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: NSWorkspace.OpenConfiguration())
+        }
+    }
+
+    @objc func reloadConfig(_ sender: Any?) {
+        let theme = Theme.reload()
+        windows.removeAll { $0.window?.isVisible != true }
+        for w in windows { w.applyTheme(theme) }
+    }
 }
 
 enum MainMenu {
@@ -30,6 +55,9 @@ enum MainMenu {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Tilde", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Open Config File…", action: #selector(AppDelegate.openConfig(_:)), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Reload Config", action: #selector(AppDelegate.reloadConfig(_:)), keyEquivalent: "r")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Tilde", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit Tilde", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

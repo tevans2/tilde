@@ -48,6 +48,17 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 |---|---|
 | GO (typing searches) | type to filter · `↑` `↓` move · `⏎` open · `tab` or `/` go into folder · `⌫` on empty bar goes up · `~` home · `esc` → SELECT |
 | SELECT | `j` `k` move · `h` `l` out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter |
-| Anywhere | `⌘⇧.` show hidden files · `⌘N` new window |
+| Anywhere | `⌘⇧.` show hidden files · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`.
+
+## Config
+
+`~/.config/tilde/config.toml` (or `$XDG_CONFIG_HOME/tilde/config.toml`). `⌘,` creates it from a
+commented template and opens it; `⌘R` applies changes.
+
+```toml
+[font]
+family = "JetBrains Mono"   # closest installed match is used, e.g. "JetBrainsMono Nerd Font"
+size = 13                   # 8–32; other text scales from this
+```
