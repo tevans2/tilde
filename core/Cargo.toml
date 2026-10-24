@@ -1,0 +1,23 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+tilde-types = { path = "crates/tilde-types" }
+tilde-fs = { path = "crates/tilde-fs" }
+tilde-query = { path = "crates/tilde-query" }
+libc = "0.2"
+nucleo-matcher = "0.3"
+uniffi = "0.32"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"

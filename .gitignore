@@ -1,0 +1,12 @@
+# Rust
+core/target/
+
+# Swift
+App/.build/
+App/.swiftpm/
+App/Vendor/
+
+# Bundled app output
+build/
+
+.DS_Store

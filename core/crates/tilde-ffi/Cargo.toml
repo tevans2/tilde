@@ -1,0 +1,27 @@
+[package]
+name = "tilde-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "tilde_ffi"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+tilde-types.workspace = true
+tilde-fs.workspace = true
+tilde-query.workspace = true
+uniffi.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
