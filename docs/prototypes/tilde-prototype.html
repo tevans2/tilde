@@ -1,0 +1,845 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tilde Prototype</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one live app window with a mode-aware keymap beside it; design decisions and open questions below. */
+:root {
+  --bg: #F1F2EF; --fg: #16181B; --muted: #686E76; --line: #D8DBD6;
+  --panel: #FFFFFF; --win: #FBFBFA; --win-bar: #ECEDEA; --kbd-bg: #F6F6F4;
+  --sel: #DCE5FB; --sel-fg: #10285F; --accent: #2D56D6; --hit: #B25A12;
+  --m-go: #2D56D6; --m-select: #2F7D57; --m-edit: #A0621A;
+  --k-pdf: #B8433A; --k-img: #2F7D57; --k-code: #6A4FC2; --k-arc: #8C6D12; --k-doc: #2F6E9E; --k-txt: #5B6470; --k-dir: #3B5BD0;
+  --ok: #2F7D57; --warn: #A0621A; --bad: #B8433A; --wall: #C9D3E6;
+  --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111316; --fg: #E5E7EA; --muted: #8C939C; --line: #2A2F36;
+  --panel: #1A1D21; --win: #15181B; --win-bar: #1D2126; --kbd-bg: #22262C;
+  --sel: #223462; --sel-fg: #DDE6FF; --accent: #85A3FF; --hit: #F2A65E;
+  --m-go: #85A3FF; --m-select: #6CC79A; --m-edit: #E3A35C;
+  --ok: #6CC79A; --warn: #E3A35C; --bad: #EE8379; --wall: #1E2638;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #111316; --fg: #E5E7EA; --muted: #8C939C; --line: #2A2F36;
+  --panel: #1A1D21; --win: #15181B; --win-bar: #1D2126; --kbd-bg: #22262C;
+  --sel: #223462; --sel-fg: #DDE6FF; --accent: #85A3FF; --hit: #F2A65E;
+  --m-go: #85A3FF; --m-select: #6CC79A; --m-edit: #E3A35C;
+  --ok: #6CC79A; --warn: #E3A35C; --bad: #EE8379; --wall: #1E2638;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 64px; }
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 24px; }
+header h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; margin: 0; display: flex; align-items: baseline; gap: 10px; text-wrap: balance; }
+header h1 .tl { font-family: var(--mono); color: var(--accent); font-weight: 500; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 72ch; }
+code { font-family: var(--mono); font-size: .9em; }
+kbd { font-family: var(--mono); font-size: 11px; line-height: 1; padding: 2px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--kbd-bg); color: var(--fg); white-space: nowrap; }
+ul { list-style: none; margin: 0; padding: 0; }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 24px; align-items: start; }
+@media (max-width: 1000px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.win-scroll { overflow-x: auto; min-width: 0; padding: 4px; margin: -4px; }
+.win { position: relative; min-width: 760px; height: 600px; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--win); border: 1px solid var(--line); border-radius: 11px; font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+  box-shadow: 0 22px 44px -30px rgba(0,0,0,.45); outline: none; }
+.win:focus-within { border-color: var(--mc); }
+.win[data-mode="go"] { --mc: var(--m-go); } .win[data-mode="select"] { --mc: var(--m-select); } .win[data-mode="edit"] { --mc: var(--m-edit); }
+.bar { flex: none; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--win-bar); border-bottom: 1px solid var(--line); }
+.dots { display: flex; gap: 6px; } .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.wtitle { flex: 1; text-align: center; color: var(--muted); font-size: 11.5px; margin-right: 46px; }
+
+.pathbar { flex: none; display: flex; align-items: center; gap: 2px; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 15px; flex-wrap: wrap; }
+.crumb { padding: 1px 6px; border-radius: 5px; background: var(--win-bar); }
+.crumb.view { background: var(--m-go); color: var(--bg); }
+.sep { color: var(--muted); padding: 0 2px; }
+.pathbar input { flex: 1; min-width: 160px; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; padding-left: 6px; }
+.pathbar input::placeholder { color: var(--muted); }
+.win:not([data-mode="go"]) .pathbar input { color: var(--muted); }
+.chips { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 7px 14px; border-bottom: 1px solid var(--line); font-size: 11px; }
+.chip { padding: 2px 8px; border-radius: 99px; background: var(--win-bar); border: 1px solid var(--line); color: var(--muted); }
+.chip b { color: var(--fg); font-weight: 500; }
+.chip.on { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+
+.body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; }
+.main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.list { flex: 1; overflow: auto; min-height: 0; padding: 6px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; cursor: default; min-width: 0; }
+.row.sel { background: var(--sel); color: var(--sel-fg); }
+.win[data-mode="select"] .row.sel { box-shadow: inset 2px 0 0 var(--m-select); }
+.row .nm { flex: none; max-width: 52%; overflow: hidden; text-overflow: ellipsis; }
+.dim { color: var(--muted); }
+.row .pth { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.row .meta { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row .age { width: 34px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+.row.sel .pth, .row.sel .meta, .row.sel .age, .row.sel .time { color: inherit; opacity: .7; }
+.chk { width: 10px; flex: none; color: var(--m-select); font-size: 10px; text-align: center; }
+.sec { padding: 9px 8px 3px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; }
+.empty { padding: 14px 10px; color: var(--muted); white-space: normal; }
+mark { background: none; color: var(--hit); font-weight: 600; }
+.g { flex: none; display: inline-flex; justify-content: center; width: 36px; padding: 2px 0; border-radius: 4px; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; color: #fff; background: var(--k-txt); }
+.g-pdf { background: var(--k-pdf); } .g-img { background: var(--k-img); } .g-code { background: var(--k-code); }
+.g-arc { background: var(--k-arc); } .g-doc { background: var(--k-doc); } .g-txt { background: var(--k-txt); } .g-dir { background: var(--k-dir); }
+.tag { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--accent); color: var(--accent); }
+.row.sel .tag { border-color: currentColor; color: inherit; }
+.time { width: 44px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.org { flex: none; width: 84px; font-size: 10.5px; color: var(--muted); }
+.org::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; background: currentColor; vertical-align: 1px; }
+.org-download { color: var(--accent); } .org-screenshot { color: var(--k-img); } .org-airdrop { color: var(--warn); } .org-edited { color: var(--k-code); } .org-created { color: var(--muted); }
+.row.sel .org { color: inherit; }
+.filed { font-size: 10.5px; color: var(--ok); }
+
+#buf { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 13px; line-height: 1.8; padding: 8px 16px; white-space: pre; overflow: auto; }
+.edit-banner { flex: none; padding: 7px 14px; border-bottom: 1px solid var(--line); color: var(--m-edit); font-size: 11.5px; display: flex; justify-content: space-between; gap: 10px; }
+
+.side { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+.side-scroll { flex: 1; overflow: auto; min-height: 0; }
+.side-h { padding: 9px 12px; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-size: 11.5px; }
+.side-h:first-child { border-top: 0; }
+.pv { padding: 14px; display: grid; gap: 8px; }
+.pv-glyph { height: 86px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 600; font-size: 18px; letter-spacing: .06em; background: var(--k-txt); }
+.pv-glyph.g-pdf { background: var(--k-pdf); } .pv-glyph.g-img { background: var(--k-img); } .pv-glyph.g-code { background: var(--k-code); }
+.pv-glyph.g-arc { background: var(--k-arc); } .pv-glyph.g-doc { background: var(--k-doc); } .pv-glyph.g-dir { background: var(--k-dir); }
+.pv-img { height: 100px; border-radius: 8px; background: linear-gradient(160deg, var(--wall), var(--k-img) 140%); }
+.pv-snip { margin: 0; padding: 10px; border-radius: 8px; background: var(--win-bar); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 140px; overflow: hidden; }
+.pv-name { font-weight: 600; word-break: break-all; }
+.pv-path { color: var(--muted); word-break: break-all; margin-top: -6px; }
+.pv dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 11.5px; }
+.pv dt { color: var(--muted); } .pv dd { margin: 0; min-width: 0; word-break: break-word; }
+.pv-list li { padding: 1px 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shelf-list { padding: 6px 12px; display: grid; gap: 4px; }
+.shelf-list li { display: grid; font-size: 11.5px; }
+.shelf-list li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.verbs { flex: none; border-top: 1px solid var(--line); padding: 9px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 11.5px; }
+.verbs .h { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.verbs div { display: flex; gap: 8px; align-items: center; }
+.op { display: grid; grid-template-columns: 54px 1fr; gap: 8px; padding: 4px 12px; font-size: 11.5px; align-items: baseline; }
+.op .t { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.op .t.rename { color: var(--accent); } .op .t.move { color: var(--k-code); } .op .t.trash { color: var(--bad); } .op .t.create, .op .t.folder { color: var(--ok); }
+.op .d { word-break: break-all; }
+.e-actions { flex: none; display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.btn { font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--win); color: var(--fg); cursor: pointer; display: inline-flex; gap: 8px; align-items: center; }
+.btn.primary { background: var(--m-edit); border-color: var(--m-edit); color: var(--bg); }
+.btn.primary kbd { background: transparent; color: inherit; border-color: currentColor; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.status { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 12px 6px 6px; border-top: 1px solid var(--line); background: var(--win-bar); color: var(--muted); font-size: 11.5px; }
+.mode { font-weight: 600; font-size: 11px; letter-spacing: .08em; padding: 2px 9px; border-radius: 5px; background: var(--mc); color: var(--bg); }
+.status .ctx { margin-left: auto; }
+
+.marks { position: absolute; right: 14px; top: 84px; z-index: 5; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 8px; display: grid; gap: 2px; box-shadow: 0 20px 40px -24px rgba(0,0,0,.5); }
+.marks div { display: flex; gap: 10px; align-items: center; padding: 3px 6px; }
+.picker { position: absolute; inset: 30px 0 0; z-index: 10; display: flex; justify-content: center; align-items: flex-start; padding-top: 70px; background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.picker-box { width: min(480px, 90%); background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; box-shadow: 0 24px 50px -24px rgba(0,0,0,.5); }
+.picker-title { padding: 9px 14px 0; color: var(--muted); font-size: 11.5px; }
+.picker .omni { display: flex; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.picker .omni span { color: var(--accent); font-weight: 600; }
+.picker .omni input { flex: 1; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 14px; }
+.picker .list { max-height: 260px; }
+.picker-foot { display: flex; gap: 14px; padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.toast { position: absolute; left: 50%; bottom: 44px; transform: translate(-50%, 8px); opacity: 0; transition: opacity .18s, transform .18s;
+  background: var(--fg); color: var(--bg); padding: 8px 13px; border-radius: 8px; pointer-events: none; white-space: nowrap; z-index: 20; font-size: 12px; }
+.toast kbd { background: transparent; color: inherit; border-color: currentColor; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+
+/* keymap */
+.keymap { display: grid; gap: 12px; font-size: 13.5px; }
+.km { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 14px; display: grid; gap: 8px; opacity: .55; transition: opacity .15s; }
+.km.on { opacity: 1; border-color: var(--kc); box-shadow: inset 3px 0 0 var(--kc); }
+.km h3 { margin: 0; font-size: 13px; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.km h3 .mode { --mc: var(--kc); }
+.km h3 span.d { color: var(--muted); font-weight: 400; }
+.km ul { display: grid; gap: 5px; }
+.km li { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: baseline; }
+.km li > span:first-child { display: flex; gap: 3px; flex-wrap: wrap; }
+.km-go { --kc: var(--m-go); } .km-select { --kc: var(--m-select); } .km-edit { --kc: var(--m-edit); }
+
+.below { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+@media (max-width: 1000px) { .below { grid-template-columns: minmax(0, 1fr); } }
+.below h2 { font-size: 17px; margin: 0 0 10px; font-weight: 600; }
+.below ol, .below ul.b { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; }
+.below ul.b { list-style: disc; }
+.below li::marker { color: var(--muted); }
+.flow { display: grid; gap: 10px; font-size: 14px; }
+.flow div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.flow b { display: block; font-weight: 600; margin-bottom: 3px; }
+.flow kbd { margin: 1px 0; display: inline-block; }
+footer { color: var(--muted); font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1><span class="tl">~</span> Tilde prototype</h1>
+    <p>The query bar, typed path, select mode, text mode and activity feed combined into one window. Click into the window to start. It opens in GO mode, where typing searches. The files are made up.</p>
+  </header>
+
+  <section class="stage">
+    <div class="win-scroll"><div class="win" id="app" tabindex="0" data-mode="go">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde</div></div>
+      <div class="pathbar"><span id="crumbs"></span><input id="q" spellcheck="false" autocomplete="off" aria-label="Path and search" placeholder="type to search"></div>
+      <div class="chips" id="chips" hidden></div>
+      <div class="body">
+        <div class="main">
+          <div class="edit-banner" id="banner" hidden></div>
+          <ul class="list" id="list"></ul>
+          <textarea id="buf" spellcheck="false" aria-label="Folder as text" hidden></textarea>
+        </div>
+        <aside class="side" id="side"></aside>
+      </div>
+      <div class="status"><span class="mode" id="mode">GO</span><span id="hints"></span><span class="ctx" id="ctx"></span></div>
+      <div class="marks" id="marks" hidden></div>
+      <div class="toast"></div>
+    </div></div>
+
+    <div class="keymap">
+      <div class="km km-go" data-km="go">
+        <h3><span class="mode">GO</span><span class="d">typing searches</span></h3>
+        <ul>
+          <li><span><kbd>abc</kbd></span><span>Fuzzy match here, then everywhere</span></li>
+          <li><span><kbd>space</kbd></span><span>Separate search terms</span></li>
+          <li><span><kbd>tab</kbd><kbd>/</kbd></span><span>Go into folder, or reveal a file</span></li>
+          <li><span><kbd>⏎</kbd></span><span>Open file or folder</span></li>
+          <li><span><kbd>⌫</kbd></span><span>Up a level (when the bar is empty)</span></li>
+          <li><span><kbd>'</kbd><kbd>@</kbd><kbd>~</kbd></span><span>Marks, Activity, home</span></li>
+          <li><span><kbd>esc</kbd></span><span>Switch to SELECT, keeping the filter</span></li>
+        </ul>
+        <div class="dim" style="font-size:12px">Filters: <code>in:</code> <code>ext:</code> <code>kind:</code> <code>mod:&lt;7d</code> <code>size:&gt;100M</code>. <code>in:.</code> means this folder and below.</div>
+      </div>
+      <div class="km km-select" data-km="select">
+        <h3><span class="mode">SELECT</span><span class="d">letters are actions</span></h3>
+        <ul>
+          <li><span><kbd>j</kbd><kbd>k</kbd></span><span>Move</span></li>
+          <li><span><kbd>h</kbd><kbd>l</kbd></span><span>Out of / into folder</span></li>
+          <li><span><kbd>x</kbd><kbd>a</kbd></span><span>Collect one / all shown onto the shelf</span></li>
+          <li><span><kbd>m</kbd><kbd>c</kbd><kbd>d</kbd></span><span>Move, copy, trash</span></li>
+          <li><span><kbd>y</kbd><kbd>t</kbd><kbd>z</kbd></span><span>Copy paths, tag, compress</span></li>
+          <li><span><kbd>r</kbd><kbd>o</kbd></span><span>Rename, new item (opens EDIT)</span></li>
+          <li><span><kbd>e</kbd></span><span>Edit the whole folder as text</span></li>
+          <li><span><kbd>u</kbd></span><span>Undo anything</span></li>
+          <li><span><kbd>/</kbd></span><span>Back to GO</span></li>
+          <li><span><kbd>esc</kbd></span><span>Clear filter, then the shelf</span></li>
+          <li><span><kbd>1</kbd>–<kbd>5</kbd><kbd>i</kbd></span><span>In Activity: filter, inbox</span></li>
+        </ul>
+      </div>
+      <div class="km km-edit" data-km="edit">
+        <h3><span class="mode">EDIT</span><span class="d">the folder is text</span></h3>
+        <ul>
+          <li><span>edit</span><span>Change a name to rename</span></li>
+          <li><span>delete</span><span>Delete a line to trash it</span></li>
+          <li><span>path</span><span>Type <code>~/Archive/x.pdf</code> to move</span></li>
+          <li><span>name/</span><span>End with / for a new folder</span></li>
+          <li><span><kbd>⌃S</kbd></span><span>Apply all changes</span></li>
+          <li><span><kbd>⏎</kbd></span><span>Apply, after <kbd>r</kbd> or <kbd>o</kbd></span></li>
+          <li><span><kbd>esc</kbd></span><span>Discard (twice if changed)</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="below">
+    <div>
+      <h2>Things to try</h2>
+      <div class="flow">
+        <div><b>Tidy Downloads</b>Type <kbd>pdf</kbd> <kbd>esc</kbd> <kbd>a</kbd> <kbd>m</kbd>, then <kbd>fin 26</kbd> <kbd>⏎</kbd>. Undo with <kbd>u</kbd>.</div>
+        <div><b>Walk into the code</b><kbd>~</kbd> <kbd>dev</kbd> <kbd>tab</kbd> <kbd>pro</kbd> <kbd>tab</kbd> <kbd>til</kbd> <kbd>tab</kbd></div>
+        <div><b>Jump from anywhere</b>Type <kbd>tilde swift</kbd> and look at the Everywhere section</div>
+        <div><b>Quick rename</b><kbd>esc</kbd>, then <kbd>j</kbd> to a file, <kbd>r</kbd>, type a name, <kbd>⏎</kbd></div>
+        <div><b>Bulk edit</b>In SELECT, press <kbd>e</kbd>. Rename lines, delete one, <kbd>⌃S</kbd></div>
+        <div><b>Work through the feed</b><kbd>@</kbd> <kbd>esc</kbd> <kbd>i</kbd>, then <kbd>m</kbd> on each item</div>
+      </div>
+    </div>
+    <div>
+      <h2>Decisions this prototype makes</h2>
+      <ol>
+        <li>One bar for both the path and search. Results split into <b>Here</b> and <b>Everywhere</b>.</li>
+        <li>Space separates search terms. <kbd>tab</kbd> or <kbd>/</kbd> goes into a folder. In the earlier mockup space went into a folder, but that clashes with multi-word search.</li>
+        <li>Three modes: GO (typing), SELECT (single keys), EDIT (text). <kbd>esc</kbd> steps down, <kbd>/</kbd> goes back up.</li>
+        <li>Rename and new item switch to EDIT on that line automatically, and <kbd>⏎</kbd> applies. Text mode is how you change names.</li>
+        <li>Actions apply to the shelf when it has items, otherwise to the highlighted row.</li>
+        <li>The search filter carries into SELECT, so typing, then <kbd>esc</kbd> <kbd>a</kbd> <kbd>m</kbd>, moves every match.</li>
+        <li>Activity is a place: <kbd>@</kbd> goes there, it shows in the path bar, and <kbd>⌫</kbd> comes back.</li>
+        <li>One undo history covers everything, including batches applied from text mode.</li>
+      </ol>
+    </div>
+    <div>
+      <h2>Still open</h2>
+      <ul class="b">
+        <li>Should <kbd>esc</kbd> in GO switch to SELECT, or should SELECT be the default when you enter a folder?</li>
+        <li>Should Everywhere results always show, or only when nothing matches Here?</li>
+        <li>Vim keys (<kbd>hjkl</kbd>) on by default, or arrows only with vim as an option?</li>
+        <li>Should the shelf survive a restart?</li>
+        <li>Does EDIT need a confirm step for trash and move, or is undo enough?</li>
+        <li>Is a preview pane always visible, or toggled?</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>Prototype for brainstorming. File names, sizes and dates are invented.</footer>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NOW = new Date(2026, 9, 25, 14, 5);
+const MIN_TODAY = 14 * 60 + 5;
+
+/* ---------- fake filesystem ---------- */
+const RAW = [
+  ['Desktop/Screenshot 2026-10-25 at 13.40.12.png', 1.2e6, 25, 'screenshot', 1],
+  ['Desktop/Screenshot 2026-10-24 at 09.12.55.png', 0.9e6, 1733, 'screenshot', 0],
+  ['Desktop/todo.txt', 2e3, 300, 'edited', 6],
+  ['Downloads/contract-v3.pdf', 340e3, 40, 'download', 3, 'mail.google.com'],
+  ['Downloads/dataset-2026-10.zip', 2.1e9, 1200, 'download', 1, 'kaggle.com'],
+  ['Downloads/IMG_2231.HEIC', 3.4e6, 1560, 'airdrop', 0, 'AirDrop · iPhone'],
+  ['Downloads/invoice-oct-2026.pdf', 88e3, 1800, 'download', 2, 'billing.stripe.com'],
+  ['Downloads/Figma-Installer.dmg', 210e6, 5760, 'download', 0, 'figma.com'],
+  ['Downloads/slides-final-FINAL.key', 48e6, 4320, 'airdrop', 1, 'AirDrop · MacBook Air'],
+  ['Downloads/receipt_8841.pdf', 41e3, 8640, 'download', 0, 'takealot.com'],
+  ['Documents/Finance/2026/invoice-sep-2026.pdf', 86e3, 50400, 'created', 2],
+  ['Documents/Finance/2026/budget.numbers', 420e3, 2880, 'edited', 8],
+  ['Documents/Finance/2025/tax-return-2025.pdf', 1.1e6, 288000, 'created', 1],
+  ['Documents/Notes/ideas.md', 6e3, 180, 'edited', 9],
+  ['Documents/Notes/meeting-2026-10-20.md', 4e3, 7200, 'edited', 3],
+  ['Documents/Clients/Acme/proposal.pdf', 2.3e6, 17280, 'created', 4],
+  ['Documents/Clients/Acme/brief.docx', 90e3, 20160, 'download', 2, 'drive.google.com'],
+  ['Developer/projects/tilde/README.md', 3e3, 50, 'edited', 12],
+  ['Developer/projects/tilde/Package.swift', 1e3, 1440, 'edited', 5],
+  ['Developer/projects/tilde/Sources/Tilde/main.swift', 4e3, 15, 'edited', 14],
+  ['Developer/projects/tilde/Sources/Tilde/FileIndex.swift', 18e3, 90, 'edited', 10],
+  ['Developer/projects/tilde/Sources/Tilde/QueryParser.swift', 9e3, 120, 'edited', 8],
+  ['Developer/projects/blog/index.html', 12e3, 28800, 'edited', 2],
+  ['Developer/projects/blog/posts/hello-world.md', 5e3, 57600, 'edited', 1],
+  ['Pictures/Trips/Cape Town 2026/IMG_0412.jpg', 4.1e6, 86400, 'airdrop', 1, 'AirDrop · iPhone'],
+  ['Pictures/Trips/Cape Town 2026/IMG_0413.jpg', 3.9e6, 86400, 'airdrop', 0, 'AirDrop · iPhone'],
+  ['Pictures/Trips/Cape Town 2026/IMG_0419.jpg', 4.4e6, 86400, 'airdrop', 0, 'AirDrop · iPhone'],
+];
+const SNIPPETS = {
+  'README.md': '# tilde\n\nA keyboard-first file navigator for macOS.\n\n## Principles\n- Every action has a key\n- Nothing blocks the main thread\n- Undo everything',
+  'main.swift': 'import AppKit\n\nlet app = NSApplication.shared\nlet delegate = AppDelegate()\napp.delegate = delegate\napp.run()',
+  'FileIndex.swift': 'final class FileIndex {\n  private var paths: [String] = []\n  private var stream: FSEventStreamRef?\n\n  func search(_ q: String) -> [Hit] {',
+  'QueryParser.swift': 'enum Filter {\n  case inPath(String)\n  case ext(String)\n  case modified(within: TimeInterval)\n}',
+  'Package.swift': '// swift-tools-version:6.0\nimport PackageDescription\n\nlet package = Package(\n  name: "Tilde",\n  platforms: [.macOS(.v15)]',
+  'ideas.md': '- jump list per project\n- shelf survives restart?\n- edit folder as text\n- feed of downloads',
+  'todo.txt': '[ ] file October invoices\n[ ] send signed contract\n[x] book flights',
+  'meeting-2026-10-20.md': '# Planning, 20 Oct\n\n- agree MVP scope\n- pick nav model',
+};
+let NEXT = 1;
+let FILES = RAW.map(([p, size, age, origin, freq, from]) => {
+  const i = p.lastIndexOf('/');
+  return { id: NEXT++, dir: p.slice(0, i), name: p.slice(i + 1), size, age, origin, freq, from, tags: [], filed: false };
+});
+let DIRS = new Set(['', 'Archive', 'Music']);
+function addDirChain(d) { if (d === '') return; const parts = d.split('/'); for (let i = 1; i <= parts.length; i++) DIRS.add(parts.slice(0, i).join('/')); }
+FILES.forEach(f => addDirChain(f.dir));
+
+const disp = d => d ? '~/' + d : '~';
+const fpath = f => disp(f.dir) + '/' + f.name;
+const parent = d => d === '' ? null : (d.includes('/') ? d.slice(0, d.lastIndexOf('/')) : '');
+const base = d => d === '' ? '~' : d.slice(d.lastIndexOf('/') + 1);
+const join = (d, n) => d ? d + '/' + n : n;
+const under = (x, d) => d === '' || x === d || x.startsWith(d + '/');
+function dirFreq(d) { return FILES.filter(f => under(f.dir, d)).reduce((a, f) => a + f.freq, 0); }
+function dirAge(d) { let m = 43200; FILES.forEach(f => { if (under(f.dir, d)) m = Math.min(m, f.age); }); return m; }
+function children(d) {
+  const dirs = [...DIRS].filter(x => x !== '' && parent(x) === d).sort((a, b) => a.localeCompare(b));
+  const files = FILES.filter(f => f.dir === d).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return { dirs, files };
+}
+const fileEntry = f => ({ type: 'file', f, name: f.name, display: fpath(f) });
+const dirEntry = d => ({ type: 'dir', d, name: base(d), display: disp(d) });
+const items = d => { const c = children(d); return [...c.dirs.map(dirEntry), ...c.files.map(fileEntry)]; };
+function entries() { return [...FILES.map(fileEntry), ...[...DIRS].filter(d => d).map(dirEntry)]; }
+const entryAge = e => e.type === 'file' ? e.f.age : dirAge(e.d);
+const entryFreq = e => e.type === 'file' ? e.f.freq : dirFreq(e.d) * 0.4;
+const keyOf = e => e.type === 'dir' ? 'd:' + e.d : 'f:' + e.f.id;
+function fromKey(k) { if (k.startsWith('d:')) { const d = k.slice(2); return DIRS.has(d) ? dirEntry(d) : null; } const f = FILES.find(x => x.id === +k.slice(2)); return f ? fileEntry(f) : null; }
+function moveFile(f, dir) { f.dir = dir; f.filed = true; addDirChain(dir); }
+function trashFile(f) { FILES = FILES.filter(x => x !== f); }
+function renameDir(from, to) {
+  [...DIRS].forEach(d => { if (under(d, from)) { DIRS.delete(d); DIRS.add(to + d.slice(from.length)); } });
+  FILES.forEach(f => { if (under(f.dir, from)) f.dir = to + f.dir.slice(from.length); });
+  addDirChain(parent(to) ?? '');
+}
+function trashDir(d) { [...DIRS].forEach(x => { if (under(x, d)) DIRS.delete(x); }); FILES = FILES.filter(f => !under(f.dir, d)); }
+
+const EXT = { pdf: ['pdf', 'PDF'], png: ['img', 'PNG'], jpg: ['img', 'JPG'], jpeg: ['img', 'JPG'], heic: ['img', 'HEIC'], swift: ['code', 'SWFT'], html: ['code', 'HTML'], js: ['code', 'JS'], md: ['txt', 'MD'], txt: ['txt', 'TXT'], zip: ['arc', 'ZIP'], dmg: ['arc', 'DMG'], docx: ['doc', 'DOCX'], key: ['doc', 'KEY'], numbers: ['doc', 'NUM'] };
+function extInfo(name) { const m = name.match(/\.([^.]+)$/); const x = m ? m[1].toLowerCase() : ''; return EXT[x] || ['txt', (x || 'FILE').toUpperCase().slice(0, 4)]; }
+const kindOf = e => e.type === 'dir' ? 'dir' : extInfo(e.name)[0];
+const glyphDir = () => '<span class="g g-dir">DIR</span>';
+function glyph(e) { if (e.type === 'dir') return glyphDir(); const [k, l] = extInfo(e.name); return `<span class="g g-${k}">${l}</span>`; }
+function fmtAge(m) { if (m < 1) return 'now'; if (m < 60) return Math.floor(m) + 'm'; if (m < 1440) return Math.floor(m / 60) + 'h'; if (m < 10080) return Math.floor(m / 1440) + 'd'; if (m < 86400) return Math.floor(m / 10080) + 'w'; return Math.floor(m / 43200) + 'mo'; }
+function fmtSize(b) { if (b < 1e3) return b + ' B'; if (b < 1e6) return Math.round(b / 1e3) + ' KB'; if (b < 1e9) return (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB'; return (b / 1e9).toFixed(1) + ' GB'; }
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function clock(age) {
+  const d = new Date(NOW.getTime() - age * 60000);
+  if (age < MIN_TODAY + 1440) return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  if (age < MIN_TODAY + 6 * 1440) return DAYS[d.getDay()];
+  return d.getDate() + ' ' + MONTHS[d.getMonth()];
+}
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+/* ---------- fuzzy matching and queries ---------- */
+function fuzzyFrom(q, s, t, start) {
+  let qi = 0, idx = [], score = 0, last = -2;
+  for (let i = start; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) {
+      let b = 1; if (i === last + 1) b += 4;
+      const p = s[i - 1]; if (i === 0 || ' /-_.'.includes(p)) b += 3;
+      score += b; idx.push(i); last = i; qi++;
+    }
+  }
+  return qi < q.length ? null : { score: score - (idx[idx.length - 1] - idx[0]) * 0.15, idx };
+}
+function fuzzy(q, s) {
+  q = q.toLowerCase(); if (!q) return { score: 0, idx: [] };
+  const t = s.toLowerCase(); let best = null;
+  for (let i = t.indexOf(q[0]); i >= 0; i = t.indexOf(q[0], i + 1)) { const m = fuzzyFrom(q, s, t, i); if (!m) break; if (!best || m.score > best.score) best = m; }
+  return best;
+}
+function hl(s, idx) { const set = new Set(idx); let out = ''; for (let i = 0; i < s.length; i++) out += set.has(i) ? `<mark>${esc(s[i])}</mark>` : esc(s[i]); return out; }
+const shift = (idx, off) => idx.filter(i => i >= off).map(i => i - off);
+function parseQuery(q) {
+  const filters = [], terms = [];
+  q.trim().split(/\s+/).filter(Boolean).forEach(t => { const m = t.match(/^(in|ext|kind|mod|size):(.+)$/i); if (m) filters.push({ k: m[1].toLowerCase(), v: m[2].toLowerCase() }); else terms.push(t); });
+  return { filters, text: terms.join('') };
+}
+const KIND_ALIAS = { image: 'img', images: 'img', img: 'img', folder: 'dir', dir: 'dir', code: 'code', archive: 'arc', zip: 'arc', pdf: 'pdf', doc: 'doc', docs: 'doc', text: 'txt', txt: 'txt' };
+let CTX_DIR = '';
+function passes(e, filters) {
+  for (const { k, v } of filters) {
+    const where = e.type === 'file' ? e.f.dir : parent(e.d);
+    if (k === 'in') { if (v === '.') { if (!under(where, CTX_DIR)) return false; } else if (!fuzzy(v.replace(/^~\/?/, ''), disp(where).toLowerCase())) return false; }
+    else if (k === 'ext') { if (e.type !== 'file' || !e.name.toLowerCase().endsWith('.' + v.replace(/^\./, ''))) return false; }
+    else if (k === 'kind') { if (kindOf(e) !== (KIND_ALIAS[v] || v)) return false; }
+    else if (k === 'mod') { const m = v.match(/^<?(\d+)([mhdw])$/); if (m && entryAge(e) > +m[1] * { m: 1, h: 60, d: 1440, w: 10080 }[m[2]]) return false; }
+    else if (k === 'size') { const m = v.match(/^>?(\d+(?:\.\d+)?)([kmg]?)b?$/); if (m) { if (e.type !== 'file') return false; if (e.f.size <= +m[1] * { '': 1, k: 1e3, m: 1e6, g: 1e9 }[m[2]]) return false; } }
+  }
+  return true;
+}
+function search(q, limit) {
+  const { filters, text } = parseQuery(q); const out = [];
+  for (const e of entries()) {
+    if (!passes(e, filters)) continue;
+    if (!text) { out.push({ e, idx: [], score: entryFreq(e) * 3 + 40 / (1 + entryAge(e) / 60) }); continue; }
+    const ns = e.display.length - e.name.length;
+    const inName = fuzzy(text, e.name), inPath = fuzzy(text, e.display);
+    let m = null, s = 0;
+    if (inName) { m = { idx: inName.idx.map(i => i + ns) }; s = inName.score + 8; }
+    if (inPath && (!m || inPath.score > s)) { m = inPath; s = inPath.score; }
+    if (!m) continue;
+    out.push({ e, idx: m.idx, score: s + entryFreq(e) * 0.6 - e.display.length * 0.03 });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+/* ---------- app ---------- */
+const app = $('#app'), inp = $('#q'), crumbs = $('#crumbs'), chips = $('#chips'), listEl = $('#list'), side = $('#side'),
+  buf = $('#buf'), banner = $('#banner'), modeEl = $('#mode'), hints = $('#hints'), ctx = $('#ctx'), marksEl = $('#marks');
+const MARKS = { d: 'Downloads', t: 'Developer/projects/tilde', f: 'Documents/Finance/2026', n: 'Documents/Notes', p: 'Pictures', h: '' };
+const FEED_FILTERS = [['all', 'All'], ['download', 'Downloaded'], ['screenshot', 'Screenshots'], ['edited', 'Edited'], ['airdrop', 'AirDrop']];
+const ORG = { download: 'Download', screenshot: 'Screenshot', edited: 'Edited', airdrop: 'AirDrop', created: 'Created' };
+const APP_FOR = { pdf: 'Preview', img: 'Preview', code: 'Xcode', txt: 'your editor', arc: 'Archive Utility', doc: 'its app' };
+
+let loc = { kind: 'dir', d: 'Downloads' }, prevDir = 'Downloads';
+let mode = 'go', rows = [], sel = 0, shelf = [], undoStack = [], picking = false, markMode = false;
+let feedFilter = 'all', inbox = false;
+let edit = { orig: [], pending: [], quick: false, escArmed: false };
+
+function toast(html) { const t = app.querySelector(':scope > .toast'); t.innerHTML = html; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2800); }
+function copyText(s) { try { navigator.clipboard.writeText(s).catch(() => {}); } catch (_) {} }
+function snapshot(label) {
+  undoStack.push({ label, files: FILES.map(f => ({ ...f, tags: [...f.tags] })), dirs: [...DIRS] });
+  if (undoStack.length > 40) undoStack.shift();
+}
+function undo() {
+  const s = undoStack.pop(); if (!s) { toast('Nothing to undo'); return; }
+  FILES = s.files; DIRS = new Set(s.dirs);
+  if (loc.kind === 'dir' && !DIRS.has(loc.d)) loc = { kind: 'dir', d: '' };
+  toast(`Undid ${esc(s.label)}`); render();
+}
+const inInbox = f => !f.filed && (f.dir === 'Downloads' || f.dir === 'Desktop');
+const group = a => a < MIN_TODAY ? 'Today' : a < MIN_TODAY + 1440 ? 'Yesterday' : a < MIN_TODAY + 6 * 1440 ? 'Earlier this week' : 'Older';
+
+function computeRows() {
+  CTX_DIR = loc.kind === 'dir' ? loc.d : '';
+  const q = inp.value, { filters, text } = parseQuery(q);
+  const baseList = loc.kind === 'dir' ? items(loc.d)
+    : FILES.filter(f => (feedFilter === 'all' || f.origin === feedFilter) && (!inbox || inInbox(f))).sort((a, b) => a.age - b.age).map(fileEntry);
+  const hereFilters = filters.filter(f => !(f.k === 'in' && f.v === '.'));
+  let here = baseList.filter(e => passes(e, hereFilters)).map(e => {
+    if (!text) return { e, idx: [], score: 0 };
+    const m = fuzzy(text, e.name); return m && { e, idx: m.idx, score: m.score + entryFreq(e) * 0.3 + (e.type === 'dir' ? 1 : 0) };
+  }).filter(Boolean);
+  if (text) here.sort((a, b) => b.score - a.score);
+  const hereKeys = new Set(here.map(r => keyOf(r.e)));
+  const curKey = loc.kind === 'dir' ? 'd:' + loc.d : '';
+  const all = (text || filters.length) ? search(q, 14).filter(r => !hereKeys.has(keyOf(r.e)) && keyOf(r.e) !== curKey) : [];
+  rows = [...here.map(r => ({ ...r, sec: 'here' })), ...all.map(r => ({ ...r, sec: 'all' }))];
+  sel = Math.min(sel, Math.max(0, rows.length - 1));
+}
+
+function rowHTML(r, i) {
+  const e = r.e, on = shelf.includes(keyOf(e)), cls = `row${i === sel ? ' sel' : ''}`;
+  const chk = `<span class="chk">${on ? '●' : ''}</span>`;
+  const tags = e.type === 'file' ? e.f.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('') : '';
+  const slash = e.type === 'dir' ? '/' : '';
+  if (r.sec === 'all') {
+    const ns = e.display.length - e.name.length;
+    return `<li class="${cls}" data-i="${i}">${chk}${glyph(e)}<span class="nm">${hl(e.display.slice(ns), shift(r.idx, ns))}${slash}</span>${tags}<span class="pth">${hl(e.display.slice(0, ns), r.idx.filter(x => x < ns))}</span><span class="age">${fmtAge(entryAge(e))}</span></li>`;
+  }
+  if (loc.kind === 'activity') {
+    const f = e.f;
+    return `<li class="${cls}" data-i="${i}">${chk}<span class="time">${clock(f.age)}</span><span class="org org-${f.origin}">${ORG[f.origin]}</span>${glyph(e)}<span class="nm">${hl(f.name, r.idx)}</span>${tags}<span class="pth">${esc(disp(f.dir))}</span>${f.filed ? '<span class="filed">filed</span>' : ''}</li>`;
+  }
+  const meta = e.type === 'dir' ? plural(items(e.d).length, 'item') : fmtSize(e.f.size);
+  return `<li class="${cls}" data-i="${i}">${chk}${glyph(e)}<span class="nm">${hl(e.name, r.idx)}${slash}</span>${tags}<span class="meta">${meta}</span><span class="age">${fmtAge(entryAge(e))}</span></li>`;
+}
+
+function previewHTML(e) {
+  if (!e) return '<div class="pv"><span class="dim">Nothing selected</span></div>';
+  if (e.type === 'dir') {
+    const its = items(e.d).map(x => x.name + (x.type === 'dir' ? '/' : ''));
+    return `<div class="pv"><div class="pv-glyph g-dir">DIR</div><div class="pv-name">${esc(e.name)}/</div><div class="pv-path">${esc(disp(parent(e.d)))}</div><dl><dt>Contains</dt><dd>${plural(its.length, 'item')}</dd><dt>Modified</dt><dd>${fmtAge(dirAge(e.d))} ago</dd></dl><ul class="pv-list">${its.slice(0, 7).map(n => `<li>${esc(n)}</li>`).join('')}${its.length > 7 ? `<li>+${its.length - 7} more</li>` : ''}</ul></div>`;
+  }
+  const f = e.f, k = kindOf(e);
+  const top = SNIPPETS[f.name] ? `<pre class="pv-snip">${esc(SNIPPETS[f.name])}</pre>` : k === 'img' ? '<div class="pv-img"></div>' : `<div class="pv-glyph g-${k}">${extInfo(f.name)[1]}</div>`;
+  return `<div class="pv">${top}<div class="pv-name">${esc(f.name)}</div><div class="pv-path">${esc(disp(f.dir))}</div><dl><dt>Size</dt><dd>${fmtSize(f.size)}</dd><dt>Modified</dt><dd>${fmtAge(f.age)} ago</dd>${f.from ? `<dt>From</dt><dd>${esc(f.from)}</dd>` : ''}${f.tags.length ? `<dt>Tags</dt><dd>${f.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(' ')}</dd>` : ''}</dl></div>`;
+}
+
+function shelfEntries() { shelf = shelf.filter(k => fromKey(k)); return shelf.map(fromKey); }
+function targets() { const s = shelfEntries(); if (s.length) return s; const r = rows[sel]; return r ? [r.e] : []; }
+
+function render() {
+  app.dataset.mode = mode;
+  modeEl.textContent = mode.toUpperCase();
+  document.querySelectorAll('[data-km]').forEach(k => k.classList.toggle('on', k.dataset.km === mode));
+
+  // path bar
+  if (loc.kind === 'activity') crumbs.innerHTML = '<span class="crumb view">@ Activity</span>';
+  else { const segs = loc.d ? loc.d.split('/') : []; crumbs.innerHTML = '<span class="crumb">~</span>' + segs.map(s => `<span class="sep">/</span><span class="crumb">${esc(s)}</span>`).join('') + '<span class="sep">/</span>'; }
+  inp.placeholder = mode === 'go' ? 'type to search' : 'press / to search';
+
+  if (mode === 'edit') { renderEdit(); return; }
+  buf.hidden = true; banner.hidden = true; listEl.hidden = false;
+  computeRows();
+
+  // chips
+  const { filters, text } = parseQuery(inp.value);
+  let chipHTML = filters.map(f => `<span class="chip">${f.k}:<b>${esc(f.v)}</b></span>`).join('');
+  if (mode === 'select' && inp.value.trim()) chipHTML += `<span class="chip on">filtered by “${esc(inp.value.trim())}” · esc clears</span>`;
+  if (loc.kind === 'activity') {
+    const n = FILES.filter(inInbox).length;
+    chipHTML += FEED_FILTERS.map(([k, l], i) => `<span class="chip${feedFilter === k ? ' on' : ''}">${i + 1} ${l}</span>`).join('') + `<span class="chip${inbox ? ' on' : ''}">i Inbox · ${n} to file</span>`;
+  }
+  chips.innerHTML = chipHTML; chips.hidden = !chipHTML;
+
+  // list
+  let html = '', lastGroup = '', lastSec = '';
+  const hereCount = rows.filter(r => r.sec === 'here').length, allCount = rows.length - hereCount;
+  const hereName = loc.kind === 'activity' ? 'Activity' : base(loc.d) + '/';
+  const searching = !!(text || filters.length);
+  if (searching && hereCount === 0) html += `<li class="sec"><span>In ${esc(hereName)}</span><span>none</span></li>`;
+  rows.forEach((r, i) => {
+    if (searching && r.sec !== lastSec) { lastSec = r.sec; html += `<li class="sec"><span>${r.sec === 'here' ? 'In ' + esc(hereName) : 'Everywhere'}</span><span>${r.sec === 'here' ? hereCount : allCount}</span></li>`; }
+    if (!searching && loc.kind === 'activity') { const g = group(r.e.f.age); if (g !== lastGroup) { lastGroup = g; html += `<li class="sec"><span>${g}</span></li>`; } }
+    html += rowHTML(r, i);
+  });
+  if (!rows.length) html += `<li class="empty">${searching ? 'Nothing matches anywhere. Try fewer letters or remove a filter.' : loc.kind === 'activity' ? (inbox ? 'Inbox zero. Everything in Downloads and on the Desktop has been filed.' : 'No activity for this filter.') : 'Empty folder. In SELECT, press o to add something.'}</li>`;
+  listEl.innerHTML = html;
+  listEl.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+
+  // side
+  const cur = rows[sel]?.e, sh = shelfEntries();
+  let sideHTML = `<div class="side-scroll">${previewHTML(cur)}`;
+  if (sh.length) sideHTML += `<div class="side-h"><span>Shelf</span><span class="dim">${plural(sh.length, 'item')}</span></div><ul class="shelf-list">${sh.map(e => `<li><span>${esc(e.name)}${e.type === 'dir' ? '/' : ''}</span><span class="dim">${esc(e.type === 'file' ? disp(e.f.dir) : disp(parent(e.d)))}</span></li>`).join('')}</ul>`;
+  sideHTML += '</div>';
+  if (mode === 'select') {
+    const on = sh.length ? `the shelf (${sh.length})` : cur ? esc(cur.name) : 'nothing';
+    sideHTML += `<div class="verbs"><div class="h">Actions apply to ${on}</div>${[['m', 'Move…'], ['c', 'Copy…'], ['y', 'Copy paths'], ['t', 'Tag “client”'], ['z', 'Compress'], ['d', 'Trash'], ['r', 'Rename'], ['e', 'Edit as text']].map(([k, l]) => `<div><kbd>${k}</kbd>${l}</div>`).join('')}</div>`;
+  }
+  side.innerHTML = sideHTML;
+
+  // status
+  hints.innerHTML = mode === 'go'
+    ? '<span><kbd>↑↓</kbd> move</span> <span><kbd>tab</kbd> go in</span> <span><kbd>⌫</kbd> up</span> <span><kbd>esc</kbd> select</span>'
+    : '<span><kbd>x</kbd> collect</span> <span><kbd>m</kbd> move</span> <span><kbd>r</kbd> rename</span> <span><kbd>e</kbd> edit</span> <span><kbd>u</kbd> undo</span> <span><kbd>/</kbd> search</span>';
+  ctx.textContent = loc.kind === 'activity' ? 'Activity' : plural(items(loc.d).length, 'item');
+  marksEl.hidden = !markMode;
+  marksEl.innerHTML = '<div class="dim" style="font-size:11px">Jump to mark</div>' + Object.entries(MARKS).map(([k, d]) => `<div><kbd>${k}</kbd>${esc(disp(d))}</div>`).join('') + '<div><kbd>@</kbd>Activity</div>';
+}
+
+function setMode(m) {
+  mode = m; markMode = false; render();
+  if (m === 'go') { inp.focus({ preventScroll: true }); const n = inp.value.length; inp.setSelectionRange(n, n); }
+  else if (m === 'select') app.focus({ preventScroll: true });
+  else buf.focus({ preventScroll: true });
+}
+function go(d, selectKey) {
+  if (loc.kind === 'activity') prevDir = d;
+  loc = { kind: 'dir', d }; inp.value = ''; sel = 0; computeRows();
+  if (selectKey) sel = Math.max(0, rows.findIndex(r => keyOf(r.e) === selectKey));
+  render();
+}
+function goActivity() { if (loc.kind === 'activity') { go(prevDir); return; } prevDir = loc.d; loc = { kind: 'activity' }; inp.value = ''; sel = 0; render(); }
+function up() {
+  if (loc.kind === 'activity') { go(prevDir); return; }
+  if (loc.d === '') return;
+  const from = loc.d; go(parent(from), 'd:' + from);
+}
+function openEntry(e) {
+  if (e.type === 'dir') { go(e.d); return; }
+  e.f.freq++; toast(`Opened ${esc(e.name)} in ${APP_FOR[kindOf(e)]}`);
+}
+function goInto(r) {
+  if (!r) return;
+  if (r.e.type === 'dir') go(r.e.d);
+  else if (r.sec === 'all' || loc.kind === 'activity') { go(r.e.f.dir, keyOf(r.e)); toast(`Revealed ${esc(r.e.name)}`); }
+}
+function jumpMark(k) {
+  markMode = false;
+  if (k === '@') { goActivity(); return; }
+  if (k in MARKS) go(MARKS[k]); else render();
+}
+
+/* picker for destinations */
+function openPicker(title, onPick) {
+  picking = true;
+  const ov = document.createElement('div'); ov.className = 'picker';
+  ov.innerHTML = `<div class="picker-box"><div class="picker-title">${esc(title)}</div><div class="omni"><span>→</span><input spellcheck="false" autocomplete="off" placeholder="Type a destination, e.g. fin 26"></div><ul class="list"></ul><div class="picker-foot"><span><kbd>↑↓</kbd> choose</span><span><kbd>⏎</kbd> confirm</span><span><kbd>esc</kbd> cancel</span></div></div>`;
+  app.appendChild(ov);
+  const pin = ov.querySelector('input'), ul = ov.querySelector('ul'); let ps = 0, list = [];
+  function draw() {
+    const q = pin.value.replace(/\s+/g, '');
+    list = [...DIRS].map(d => { const s = disp(d); if (!q) return { d, s, score: dirFreq(d) - d.split('/').length, idx: [] }; const m = fuzzy(q, s); return m && { d, s, score: m.score + dirFreq(d) * 0.2, idx: m.idx }; }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 8);
+    ps = Math.min(ps, Math.max(0, list.length - 1));
+    ul.innerHTML = list.map((r, i) => `<li class="row${i === ps ? ' sel' : ''}" data-i="${i}">${glyphDir()}<span>${hl(r.s, r.idx)}</span></li>`).join('') || '<li class="empty">No folder matches</li>';
+  }
+  const done = d => { ov.remove(); picking = false; if (d != null) onPick(d); render(); app.focus({ preventScroll: true }); };
+  pin.addEventListener('input', () => { ps = 0; draw(); });
+  pin.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { ps = Math.min(ps + 1, list.length - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { ps = Math.max(ps - 1, 0); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[ps]) done(list[ps].d); }
+    else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+  });
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { e.preventDefault(); done(list[+li.dataset.i].d); } });
+  draw(); setTimeout(() => pin.focus({ preventScroll: true }), 0);
+}
+
+/* verbs */
+function verbMove() {
+  const t = targets(); if (!t.length) return;
+  openPicker(`Move ${t.length === 1 ? t[0].name : plural(t.length, 'item')} to…`, d => {
+    snapshot(`move of ${plural(t.length, 'item')}`);
+    let n = 0;
+    t.forEach(e => { if (e.type === 'file') { moveFile(e.f, d); n++; } else if (!under(d, e.d)) { renameDir(e.d, join(d, base(e.d))); n++; } });
+    shelf = []; toast(`Moved ${plural(n, 'item')} to ${esc(disp(d))} · <kbd>u</kbd> undo`);
+  });
+}
+function verbCopy() {
+  const t = targets().filter(e => e.type === 'file'); if (!t.length) { toast('Copying folders isn\'t in this prototype'); return; }
+  openPicker(`Copy ${t.length === 1 ? t[0].name : plural(t.length, 'file')} to…`, d => {
+    snapshot(`copy of ${plural(t.length, 'file')}`);
+    t.forEach(e => FILES.push({ ...e.f, id: NEXT++, dir: d, tags: [...e.f.tags], age: 0 })); addDirChain(d);
+    shelf = []; toast(`Copied ${plural(t.length, 'file')} to ${esc(disp(d))} · <kbd>u</kbd> undo`);
+  });
+}
+function verbTrash() {
+  const t = targets(); if (!t.length) return;
+  snapshot(`trash of ${plural(t.length, 'item')}`);
+  t.forEach(e => e.type === 'file' ? trashFile(e.f) : trashDir(e.d));
+  shelf = []; toast(`Moved ${plural(t.length, 'item')} to the Trash · <kbd>u</kbd> undo`); render();
+}
+function verbTag() {
+  const t = targets().filter(e => e.type === 'file'); if (!t.length) return;
+  snapshot('tag change');
+  const all = t.every(e => e.f.tags.includes('client'));
+  t.forEach(e => { e.f.tags = all ? e.f.tags.filter(x => x !== 'client') : [...new Set([...e.f.tags, 'client'])]; });
+  toast(`${all ? 'Removed' : 'Added'} tag “client” ${all ? 'from' : 'on'} ${plural(t.length, 'file')}`); render();
+}
+function verbZip() {
+  const t = targets(); if (!t.length) return;
+  const dir = loc.kind === 'dir' ? loc.d : (t[0].type === 'file' ? t[0].f.dir : parent(t[0].d));
+  snapshot('compress');
+  const size = t.reduce((a, e) => a + (e.type === 'file' ? e.f.size : FILES.filter(f => under(f.dir, e.d)).reduce((s, f) => s + f.size, 0)), 0);
+  FILES.push({ id: NEXT++, dir, name: t.length === 1 ? t[0].name.replace(/\.[^.]+$/, '') + '.zip' : 'Archive.zip', size: Math.round(size * 0.62), age: 0, origin: 'created', freq: 0, tags: [], filed: false });
+  shelf = []; toast(`Compressed ${plural(t.length, 'item')} into ${esc(disp(dir))} · <kbd>u</kbd> undo`); render();
+}
+function verbPaths() { const t = targets(); if (!t.length) return; copyText(t.map(e => e.display).join('\n')); toast(`Copied ${plural(t.length, 'path')}`); }
+
+/* EDIT mode */
+function enterEdit(opts = {}) {
+  if (loc.kind !== 'dir') {
+    const r = rows[sel];
+    if (opts.rename && r) { const e = r.e; go(e.type === 'file' ? e.f.dir : parent(e.d), keyOf(e)); }
+    else { toast('Text mode works inside a folder. Press <kbd>@</kbd> to go back.'); return; }
+  } else if (opts.rename && rows[sel]?.sec === 'all') {
+    const e = rows[sel].e; go(e.type === 'file' ? e.f.dir : parent(e.d), keyOf(e));
+  }
+  inp.value = ''; computeRows();
+  const c = children(loc.d);
+  edit.orig = [...c.dirs.map(d => ({ kind: 'dir', name: base(d) + '/', ref: d })), ...c.files.map(f => ({ kind: 'file', name: f.name, ref: f }))];
+  const lines = edit.orig.map(o => o.name);
+  const curKey = rows[sel] ? keyOf(rows[sel].e) : null;
+  let line = Math.max(0, edit.orig.findIndex(o => (o.kind === 'dir' ? 'd:' + o.ref : 'f:' + o.ref.id) === curKey));
+  if (opts.newItem) { line = lines.length ? line + 1 : 0; lines.splice(line, 0, ''); }
+  buf.value = lines.join('\n') + '\n';
+  edit.quick = !!(opts.rename || opts.newItem); edit.escArmed = false;
+  setMode('edit'); diffEdit();
+  const start = lines.slice(0, line).reduce((a, l) => a + l.length + 1, 0);
+  if (opts.rename) { const nm = lines[line] || ''; const dot = nm.endsWith('/') ? nm.length - 1 : (nm.lastIndexOf('.') > 0 ? nm.lastIndexOf('.') : nm.length); buf.setSelectionRange(start, start + dot); }
+  else if (opts.newItem) buf.setSelectionRange(start, start);
+  else buf.setSelectionRange(0, 0);
+  buf.scrollTop = Math.max(0, line * 23 - 60);
+}
+function resolvePath(str) {
+  const clean = str.replace(/\/$/, '');
+  const p = clean.startsWith('~/') ? clean.slice(2) : join(loc.d, clean);
+  const i = p.lastIndexOf('/');
+  return { dir: i < 0 ? '' : p.slice(0, i), name: p.slice(i + 1), full: p };
+}
+function diffEdit() {
+  const a = edit.orig.map(o => o.name), b = buf.value.split('\n').map(s => s.trim()).filter(Boolean);
+  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const ops = []; let i = 0, j = 0, dels = [], adds = [];
+  const flush = () => {
+    const k = Math.min(dels.length, adds.length);
+    for (let x = 0; x < k; x++) { const o = edit.orig[dels[x]], to = adds[x]; ops.push({ type: to.replace(/\/$/, '').includes('/') ? 'move' : 'rename', o, to }); }
+    for (let x = k; x < dels.length; x++) ops.push({ type: 'trash', o: edit.orig[dels[x]] });
+    for (let x = k; x < adds.length; x++) ops.push({ type: adds[x].endsWith('/') ? 'folder' : 'create', to: adds[x] });
+    dels = []; adds = [];
+  };
+  while (i < n && j < m) { if (a[i] === b[j]) { flush(); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) dels.push(i++); else adds.push(b[j++]); }
+  while (i < n) dels.push(i++); while (j < m) adds.push(b[j++]); flush();
+  edit.pending = ops; renderEdit();
+}
+function renderEdit() {
+  listEl.hidden = true; buf.hidden = false; banner.hidden = false; chips.hidden = true;
+  banner.innerHTML = edit.quick
+    ? `<span>${edit.pending.length ? 'Editing. ⏎ applies.' : 'Type a name, then ⏎ to apply.'}</span><span class="dim">Other lines are editable too</span>`
+    : '<span>Editing this folder as text. Nothing changes until you apply.</span><span class="dim">⌃S apply · esc discard</span>';
+  const p = edit.pending;
+  side.innerHTML = `<div class="side-h"><span>Pending changes</span><span class="dim">${p.length ? plural(p.length, 'change') : ''}</span></div><div class="side-scroll">${p.map(op => {
+    let d = '';
+    if (op.type === 'rename') d = `${esc(op.o.name)} → <b>${esc(op.to)}</b>`;
+    else if (op.type === 'move') { const r = resolvePath(op.to); d = `${esc(op.o.name)} → <b>${esc(disp(r.dir))}/${esc(r.name)}</b>`; }
+    else if (op.type === 'trash') d = esc(op.o.name) + (op.o.kind === 'dir' ? ' and its contents' : '');
+    else if (op.type === 'create') d = `new empty file <b>${esc(op.to)}</b>`;
+    else d = `new folder <b>${esc(op.to)}</b>`;
+    return `<div class="op"><span class="t ${op.type}">${op.type}</span><span class="d">${d}</span></div>`;
+  }).join('') || '<div class="empty" style="padding:12px">No changes yet.</div>'}</div><div class="e-actions"><button class="btn primary" id="ed-apply"${p.length ? '' : ' disabled'}><kbd>⌃S</kbd>Apply</button><button class="btn" id="ed-cancel"><kbd>esc</kbd>${p.length ? 'Discard' : 'Done'}</button></div>`;
+  $('#ed-apply').onclick = applyEdit; $('#ed-cancel').onclick = leaveEdit;
+  hints.innerHTML = edit.quick ? '<span><kbd>⏎</kbd> apply</span> <span><kbd>esc</kbd> cancel</span>' : '<span><kbd>⌃S</kbd> apply</span> <span><kbd>esc</kbd> discard</span>';
+  ctx.textContent = disp(loc.d) + '/';
+}
+function applyEdit() {
+  const p = edit.pending; if (!p.length) { leaveEdit(); return; }
+  snapshot(`text edit (${plural(p.length, 'change')})`);
+  let focusKey = null;
+  p.forEach(op => {
+    if (op.type === 'rename' || op.type === 'move') {
+      const r = resolvePath(op.to);
+      if (op.o.kind === 'file') { op.o.ref.name = r.name; if (op.type === 'move') moveFile(op.o.ref, r.dir); else focusKey = 'f:' + op.o.ref.id; }
+      else { renameDir(op.o.ref, r.full); if (op.type === 'rename') focusKey = 'd:' + r.full; }
+    } else if (op.type === 'trash') { op.o.kind === 'file' ? trashFile(op.o.ref) : trashDir(op.o.ref); }
+    else if (op.type === 'create') { const r = resolvePath(op.to); addDirChain(r.dir); const f = { id: NEXT++, dir: r.dir, name: r.name, size: 0, age: 0, origin: 'created', freq: 1, tags: [], filed: false }; FILES.push(f); focusKey = 'f:' + f.id; }
+    else { const r = resolvePath(op.to); addDirChain(r.full); focusKey = 'd:' + r.full; }
+  });
+  mode = 'select'; computeRows();
+  if (focusKey) { const i = rows.findIndex(r => keyOf(r.e) === focusKey); if (i >= 0) sel = i; }
+  setMode('select'); toast(`Applied ${plural(p.length, 'change')} · <kbd>u</kbd> undo`);
+}
+function leaveEdit() { edit.pending = []; setMode('select'); }
+
+/* keyboard: GO (bar focused) */
+inp.addEventListener('input', () => { sel = 0; if (mode !== 'go') mode = 'go'; render(); });
+inp.addEventListener('focus', () => { if (mode !== 'go') { mode = 'go'; render(); } });
+inp.addEventListener('keydown', e => {
+  e.stopPropagation();
+  const empty = inp.value === '', r = rows[sel];
+  if (markMode) { e.preventDefault(); jumpMark(e.key); return; }
+  if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); sel = Math.min(sel + 1, rows.length - 1); render(); }
+  else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+  else if (e.key === 'Enter') { e.preventDefault(); if (r) openEntry(r.e); }
+  else if (e.key === 'Tab' || e.key === '/') { e.preventDefault(); goInto(r); }
+  else if (e.key === 'Backspace' && empty) { e.preventDefault(); up(); }
+  else if (e.key === "'" && empty) { e.preventDefault(); markMode = true; render(); }
+  else if (e.key === '@' && empty) { e.preventDefault(); goActivity(); }
+  else if (e.key === '~' && empty) { e.preventDefault(); go(''); }
+  else if (e.key === 'Escape') { e.preventDefault(); setMode('select'); }
+});
+
+/* keyboard: SELECT (window focused) */
+app.addEventListener('keydown', e => {
+  if (mode !== 'select' || picking || e.target !== app) return;
+  if (e.metaKey || (e.ctrlKey && e.key !== 'n' && e.key !== 'p')) return;
+  const k = e.key, r = rows[sel];
+  const stop = () => e.preventDefault();
+  if (markMode) { stop(); jumpMark(k); return; }
+  if (k === 'j' || k === 'ArrowDown' || (e.ctrlKey && k === 'n')) { stop(); sel = Math.min(sel + 1, rows.length - 1); render(); }
+  else if (k === 'k' || k === 'ArrowUp' || (e.ctrlKey && k === 'p')) { stop(); sel = Math.max(sel - 1, 0); render(); }
+  else if (k === 'h' || k === 'ArrowLeft') { stop(); up(); }
+  else if (k === 'l' || k === 'ArrowRight') { stop(); if (r) { if (r.e.type === 'dir' || r.sec === 'all') goInto(r); else openEntry(r.e); } }
+  else if (k === 'Enter') { stop(); if (r) openEntry(r.e); }
+  else if (k === 'x' || k === ' ') { stop(); if (!r) return; const key = keyOf(r.e); shelf = shelf.includes(key) ? shelf.filter(x => x !== key) : [...shelf, key]; sel = Math.min(sel + 1, rows.length - 1); render(); }
+  else if (k === 'a') { stop(); const keys = rows.map(x => keyOf(x.e)); const all = keys.every(x => shelf.includes(x)); shelf = all ? shelf.filter(x => !keys.includes(x)) : [...new Set([...shelf, ...keys])]; toast(all ? 'Removed the shown items from the shelf' : `Shelf now holds ${plural(shelf.length, 'item')}`); render(); }
+  else if (k === 'm') { stop(); verbMove(); }
+  else if (k === 'c') { stop(); verbCopy(); }
+  else if (k === 'y') { stop(); verbPaths(); }
+  else if (k === 't') { stop(); verbTag(); }
+  else if (k === 'z') { stop(); verbZip(); }
+  else if (k === 'd' || k === 'Backspace' || k === 'Delete') { stop(); verbTrash(); }
+  else if (k === 'u') { stop(); undo(); }
+  else if (k === 'r') { stop(); if (r) enterEdit({ rename: true }); }
+  else if (k === 'o') { stop(); enterEdit({ newItem: true }); }
+  else if (k === 'e') { stop(); enterEdit(); }
+  else if (k === '/') { stop(); setMode('go'); }
+  else if (k === '@') { stop(); goActivity(); }
+  else if (k === '~') { stop(); go(''); }
+  else if (k === "'") { stop(); markMode = true; render(); }
+  else if (k === 'i' && loc.kind === 'activity') { stop(); inbox = !inbox; sel = 0; render(); }
+  else if (/^[1-5]$/.test(k) && loc.kind === 'activity') { stop(); feedFilter = FEED_FILTERS[+k - 1][0]; sel = 0; render(); }
+  else if (k === 'Escape') { stop(); if (inp.value) { inp.value = ''; sel = 0; render(); } else if (shelf.length) { shelf = []; toast('Cleared the shelf'); render(); } }
+  else if (k.length === 1 && /[a-z0-9.]/i.test(k)) { toast(`<kbd>${esc(k)}</kbd> does nothing in SELECT. Press <kbd>/</kbd> to search.`); }
+});
+
+/* keyboard: EDIT (textarea) */
+buf.addEventListener('input', () => { edit.escArmed = false; diffEdit(); });
+buf.addEventListener('keydown', e => {
+  e.stopPropagation();
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); applyEdit(); }
+  else if (e.key === 'Enter' && edit.quick) { e.preventDefault(); applyEdit(); }
+  else if (e.key === 'Escape') {
+    e.preventDefault();
+    if (edit.pending.length && !edit.escArmed) { edit.escArmed = true; toast(`Press <kbd>esc</kbd> again to discard ${plural(edit.pending.length, 'change')}`); }
+    else leaveEdit();
+  }
+});
+
+/* mouse */
+listEl.addEventListener('mousedown', e => {
+  const li = e.target.closest('li.row'); if (!li) return;
+  e.preventDefault(); sel = +li.dataset.i; render();
+  (mode === 'go' ? inp : app).focus({ preventScroll: true });
+});
+listEl.addEventListener('dblclick', e => { const li = e.target.closest('li.row'); if (li && rows[+li.dataset.i]) openEntry(rows[+li.dataset.i].e); });
+app.addEventListener('mousedown', e => {
+  if (e.target.closest('input, textarea, button, .picker, li.row')) return;
+  e.preventDefault();
+  (mode === 'go' ? inp : mode === 'edit' ? buf : app).focus({ preventScroll: true });
+});
+
+render();
+</script>

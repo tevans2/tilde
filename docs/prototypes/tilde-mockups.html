@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tilde Mockups</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a page of concept "stages" — a live mock window on the left, design notes on the right — switched by tabs. */
+:root {
+  --bg: #F1F2EF; --fg: #16181B; --muted: #686E76; --line: #D8DBD6;
+  --panel: #FFFFFF; --win: #FBFBFA; --win-bar: #ECEDEA; --kbd-bg: #F6F6F4;
+  --sel: #DCE5FB; --sel-fg: #10285F; --accent: #2D56D6; --hit: #B25A12;
+  --wall-a: #C9D3E6; --wall-b: #E7DDCF;
+  --k-pdf: #B8433A; --k-img: #2F7D57; --k-code: #6A4FC2; --k-arc: #8C6D12; --k-doc: #2F6E9E; --k-txt: #5B6470; --k-dir: #3B5BD0;
+  --ok: #2F7D57; --warn: #A0621A; --bad: #B8433A;
+  --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111316; --fg: #E5E7EA; --muted: #8C939C; --line: #2A2F36;
+  --panel: #1A1D21; --win: #15181B; --win-bar: #1D2126; --kbd-bg: #22262C;
+  --sel: #223462; --sel-fg: #DDE6FF; --accent: #85A3FF; --hit: #F2A65E;
+  --wall-a: #1E2638; --wall-b: #2D2620;
+  --ok: #6CC79A; --warn: #E3A35C; --bad: #EE8379;
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #111316; --fg: #E5E7EA; --muted: #8C939C; --line: #2A2F36;
+  --panel: #1A1D21; --win: #15181B; --win-bar: #1D2126; --kbd-bg: #22262C;
+  --sel: #223462; --sel-fg: #DDE6FF; --accent: #85A3FF; --hit: #F2A65E;
+  --wall-a: #1E2638; --wall-b: #2D2620;
+  --ok: #6CC79A; --warn: #E3A35C; --bad: #EE8379;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 64px; }
+.wrap { max-width: 1260px; margin: 0 auto; display: grid; gap: 22px; }
+header h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; margin: 0; text-wrap: balance; display: flex; align-items: baseline; gap: 10px; }
+header h1 .tl { font-family: var(--mono); color: var(--accent); font-weight: 500; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 70ch; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: inherit; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px 7px 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 8px; cursor: pointer; }
+.tabs button .tk { font-family: var(--mono); font-size: 11px; width: 20px; height: 20px; display: inline-grid; place-items: center; border-radius: 5px; background: var(--win-bar); color: var(--muted); }
+.tabs button[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.tabs button[aria-selected="true"] .tk { background: var(--accent); color: var(--bg); }
+.tabs button:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+@media (max-width: 960px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.win-scroll { overflow-x: auto; min-width: 0; padding: 4px; margin: -4px; }
+.win { position: relative; min-width: 700px; height: 520px; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--win); border: 1px solid var(--line); border-radius: 11px; font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+  box-shadow: 0 22px 44px -30px rgba(0,0,0,.45); outline: none; }
+.win:focus-within { border-color: var(--accent); }
+.bar { flex: none; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--win-bar); border-bottom: 1px solid var(--line); }
+.dots { display: flex; gap: 6px; } .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.wtitle { flex: 1; text-align: center; color: var(--muted); font-size: 11.5px; margin-right: 46px; }
+.status { flex: none; display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 7px 12px; border-top: 1px solid var(--line); background: var(--win-bar); color: var(--muted); font-size: 11.5px; }
+kbd { font-family: var(--mono); font-size: 11px; line-height: 1; padding: 2px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--kbd-bg); color: var(--fg); white-space: nowrap; }
+ul { list-style: none; margin: 0; padding: 0; }
+.results, .list { overflow: auto; min-height: 0; padding: 6px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; cursor: default; min-width: 0; }
+.row.sel { background: var(--sel); color: var(--sel-fg); }
+.row .nm { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
+.row .dim, .dim { color: var(--muted); }
+.row .pth { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row.sel .dim { color: inherit; opacity: .7; }
+.row .age { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row.sel .age { color: inherit; opacity: .7; }
+.row.faded { opacity: .38; }
+.empty { padding: 14px 10px; color: var(--muted); white-space: normal; }
+mark { background: none; color: var(--hit); font-weight: 600; }
+.row.sel mark { color: var(--hit); }
+.g { flex: none; display: inline-flex; justify-content: center; width: 36px; padding: 2px 0; border-radius: 4px; font-size: 9.5px; font-weight: 600; letter-spacing: .04em; color: #fff; background: var(--k-txt); }
+.g-pdf { background: var(--k-pdf); } .g-img { background: var(--k-img); } .g-code { background: var(--k-code); }
+.g-arc { background: var(--k-arc); } .g-doc { background: var(--k-doc); } .g-txt { background: var(--k-txt); } .g-dir { background: var(--k-dir); }
+.tag { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--accent); color: var(--accent); }
+.row.sel .tag { border-color: currentColor; color: inherit; }
+.toast { position: absolute; left: 50%; bottom: 46px; transform: translate(-50%, 8px); opacity: 0; transition: opacity .18s, transform .18s;
+  background: var(--fg); color: var(--bg); padding: 8px 13px; border-radius: 8px; pointer-events: none; white-space: nowrap; z-index: 20; font-size: 12px; }
+.toast kbd { background: transparent; color: inherit; border-color: currentColor; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+
+/* shared: omnibar, preview */
+.omni { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.omni .prompt { color: var(--accent); font-weight: 600; }
+.omni input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 15px; }
+.omni input::placeholder { color: var(--muted); }
+.preview { border-left: 1px solid var(--line); overflow: auto; min-width: 0; }
+.pv { padding: 14px; display: grid; gap: 8px; }
+.pv-glyph { height: 96px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 600; font-size: 18px; letter-spacing: .06em; background: var(--k-txt); }
+.pv-glyph.g-pdf { background: var(--k-pdf); } .pv-glyph.g-img { background: var(--k-img); } .pv-glyph.g-code { background: var(--k-code); }
+.pv-glyph.g-arc { background: var(--k-arc); } .pv-glyph.g-doc { background: var(--k-doc); } .pv-glyph.g-dir { background: var(--k-dir); }
+.pv-img { height: 110px; border-radius: 8px; background: linear-gradient(160deg, var(--wall-a), var(--k-img) 140%); }
+.pv-snip { margin: 0; padding: 10px; border-radius: 8px; background: var(--win-bar); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 150px; overflow: hidden; }
+.pv-name { font-weight: 600; word-break: break-all; }
+.pv-path { color: var(--muted); word-break: break-all; margin-top: -6px; }
+.pv dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: 11.5px; }
+.pv dt { color: var(--muted); } .pv dd { margin: 0; min-width: 0; word-break: break-word; }
+.pv-list li { padding: 1px 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { margin: 10px 10px 0; border: 1px solid var(--accent); border-radius: 8px; padding: 6px; display: grid; gap: 2px; background: var(--panel); }
+.actions div { display: flex; gap: 10px; align-items: center; padding: 3px 6px; }
+.actions .h { color: var(--muted); font-size: 11px; padding-bottom: 2px; }
+
+/* picker overlay */
+.picker { position: absolute; inset: 30px 0 0; z-index: 10; display: flex; justify-content: center; align-items: flex-start; padding-top: 56px; background: color-mix(in srgb, var(--bg) 60%, transparent); }
+.picker-box { width: min(480px, 90%); background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; box-shadow: 0 24px 50px -24px rgba(0,0,0,.5); }
+.picker-title { padding: 9px 14px 0; color: var(--muted); font-size: 11.5px; }
+.picker .results { max-height: 260px; }
+.picker-foot { display: flex; gap: 14px; padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+
+/* A */
+.a-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 158px minmax(0, 1fr) 230px; }
+.a-side { border-right: 1px solid var(--line); padding: 12px 8px; display: grid; align-content: start; gap: 2px; }
+.lbl { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px 6px; }
+.a-side button { font: inherit; font-size: 12px; text-align: left; border: 0; background: transparent; color: var(--fg); padding: 5px 6px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.a-side button:hover { background: var(--win-bar); }
+.a-side button kbd { font-size: 10px; }
+.a-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px 0; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--win-bar); border: 1px solid var(--line); color: var(--muted); }
+.chip b { color: var(--fg); font-weight: 500; }
+
+/* B */
+.pathbar { display: flex; align-items: center; gap: 2px; padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 15px; flex-wrap: wrap; }
+.crumb { padding: 1px 6px; border-radius: 5px; background: var(--win-bar); }
+.sep { color: var(--muted); padding: 0 2px; }
+.pathbar input { flex: 1; min-width: 120px; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; padding-left: 4px; }
+.cands { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--line); min-height: 38px; font-size: 12px; }
+.cand { padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
+.cand.sel { background: var(--sel); color: var(--sel-fg); border-color: var(--accent); }
+.cols { flex: 1; min-height: 0; display: grid; grid-template-columns: 0.9fr 1.2fr 1.2fr; }
+.col { border-right: 1px solid var(--line); overflow: auto; min-width: 0; }
+.col:last-child { border-right: 0; }
+.col-h { position: sticky; top: 0; background: var(--win); padding: 8px 12px 4px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.col ul { padding: 0 6px 6px; }
+.marks { position: absolute; right: 14px; top: 84px; z-index: 5; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 8px; display: grid; gap: 2px; box-shadow: 0 20px 40px -24px rgba(0,0,0,.5); }
+.marks div { display: flex; gap: 10px; align-items: center; padding: 3px 6px; }
+
+/* C */
+.c-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; }
+.c-left { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.ftabs { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.ftab { padding: 3px 10px; border-radius: 6px; color: var(--muted); }
+.ftab.on { background: var(--sel); color: var(--sel-fg); }
+.chk { width: 14px; text-align: center; color: var(--muted); }
+.chk.on { color: var(--accent); }
+.row.sel .chk.on { color: inherit; }
+.shelf { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+.shelf-h { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+.shelf .list { flex: 1; }
+.shelf .row { flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 8px; }
+.shelf .row .nm { max-width: 100%; }
+.verbs { border-top: 1px solid var(--line); padding: 10px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 10px; font-size: 11.5px; }
+.verbs div { display: flex; gap: 8px; align-items: center; }
+.verbs.off { opacity: .45; }
+
+/* D */
+.d-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
+.d-left { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.filters span { padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); font-size: 11.5px; }
+.filters span.on { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+.filters span.inbox { margin-left: auto; }
+.grp { padding: 10px 8px 3px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.time { width: 48px; flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row.sel .time { color: inherit; opacity: .7; }
+.org { flex: none; width: 84px; font-size: 10.5px; color: var(--muted); }
+.org::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; background: currentColor; vertical-align: 1px; }
+.org-download { color: var(--accent); } .org-screenshot { color: var(--k-img); } .org-airdrop { color: var(--warn); } .org-edited { color: var(--k-code); } .org-created { color: var(--muted); }
+.row.sel .org { color: inherit; }
+.filed { font-size: 10.5px; color: var(--ok); }
+
+/* E */
+.e-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+.e-left { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.e-head { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; color: var(--muted); }
+.e-head b { color: var(--fg); font-weight: 500; }
+#ed-buf { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--fg); font: inherit; font-size: 13px; line-height: 1.8; padding: 10px 16px; white-space: pre; overflow: auto; }
+.e-ops { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
+.e-ops .list { flex: 1; display: grid; align-content: start; gap: 4px; }
+.op { display: grid; grid-template-columns: 58px 1fr; gap: 8px; padding: 4px 6px; font-size: 11.5px; align-items: baseline; }
+.op .t { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.op .t.rename { color: var(--accent); } .op .t.move { color: var(--k-code); } .op .t.trash { color: var(--bad); } .op .t.create, .op .t.mkdir { color: var(--ok); }
+.op .d { word-break: break-all; }
+.e-actions { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.btn { font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--win); color: var(--fg); cursor: pointer; display: inline-flex; gap: 8px; align-items: center; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.btn.primary kbd { background: transparent; color: inherit; border-color: currentColor; }
+.btn:disabled { opacity: .45; cursor: default; }
+
+/* F */
+.desk { flex: 1; min-height: 0; position: relative; background: linear-gradient(135deg, var(--wall-a), var(--wall-b)); outline: none; }
+.mail { position: absolute; left: 28px; top: 26px; width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; box-shadow: 0 24px 50px -28px rgba(0,0,0,.5); font-family: var(--sans); font-size: 13px; }
+.mail .bar { height: 26px; }
+.mail .f { display: flex; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.mail .f span:first-child { color: var(--muted); width: 54px; }
+.mail .b { padding: 10px 12px; min-height: 80px; color: var(--fg); }
+.atts { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 12px; border-top: 1px dashed var(--line); min-height: 42px; align-items: center; font-family: var(--mono); font-size: 11.5px; }
+.att { display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px 3px 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--win); }
+.sf-hint { position: absolute; right: 26px; bottom: 26px; width: 250px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-family: var(--sans); font-size: 13px; display: grid; gap: 10px; }
+.sf-panel { position: absolute; left: 50%; top: 34px; transform: translateX(-50%); width: 520px; max-width: calc(100% - 40px); background: var(--panel); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; box-shadow: 0 30px 70px -26px rgba(0,0,0,.6); z-index: 8; }
+.sf-panel .results { max-height: 236px; }
+.sf-sec { padding: 8px 14px 0; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sf-verbs { border-top: 1px solid var(--line); padding: 9px 14px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--muted); }
+.sf-verbs.on { background: var(--sel); color: var(--sel-fg); }
+.sf-verbs div { display: flex; gap: 6px; align-items: center; }
+.sf-shelf { border-top: 1px solid var(--line); padding: 7px 14px; font-size: 11.5px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+/* notes */
+.notes { display: grid; gap: 16px; font-size: 14px; }
+.notes h2 { font-size: 20px; margin: 0; font-weight: 600; text-wrap: balance; }
+.notes p { margin: 0; color: var(--fg); }
+.notes h3 { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+.notes ul { display: grid; gap: 6px; }
+.notes li { padding-left: 14px; position: relative; }
+.notes li::before { content: ""; position: absolute; left: 0; top: .65em; width: 5px; height: 5px; border-radius: 50%; background: var(--line); }
+.notes .try li::before { background: var(--accent); }
+.jobs { display: flex; flex-wrap: wrap; gap: 6px; }
+.jobs span { font-size: 12px; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); }
+.q { padding: 12px 14px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); }
+
+.compare { overflow-x: auto; }
+.compare table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 13.5px; }
+.compare th, .compare td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.compare th { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.compare td:first-child { font-weight: 600; white-space: nowrap; }
+section > h2.sec { font-size: 18px; margin: 18px 0 8px; }
+footer { color: var(--muted); font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1><span class="tl">~</span> Tilde mockups</h1>
+    <p>Six ways to navigate files from the keyboard. Each window is live: click into it and use the keys listed beside it. The files are made up but shared, so a file you move in one mockup has moved in all of them.</p>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Concepts">
+    <button role="tab" data-tab="query"><span class="tk">A</span>Query bar</button>
+    <button role="tab" data-tab="path"><span class="tk">B</span>Typed path</button>
+    <button role="tab" data-tab="shelf"><span class="tk">C</span>Shelf + verbs</button>
+    <button role="tab" data-tab="feed"><span class="tk">D</span>Activity feed</button>
+    <button role="tab" data-tab="edit"><span class="tk">E</span>Edit as text</button>
+    <button role="tab" data-tab="summon"><span class="tk">F</span>Summoned panel</button>
+  </nav>
+
+  <!-- A -->
+  <section class="stage" data-panel="query">
+    <div class="win-scroll"><div class="win" id="wa">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde · search everything</div></div>
+      <div class="a-body">
+        <aside class="a-side">
+          <div class="lbl">Saved views</div>
+          <button data-q="ext:pdf mod:<30d"><kbd>⌥1</kbd>Recent PDFs</button>
+          <button data-q="in:downloads size:>100M"><kbd>⌥2</kbd>Big downloads</button>
+          <button data-q="kind:image in:desktop"><kbd>⌥3</kbd>Screenshots</button>
+          <button data-q="in:tilde kind:code"><kbd>⌥4</kbd>Tilde code</button>
+        </aside>
+        <div class="a-main">
+          <div class="omni"><span class="prompt">❯</span><input id="qa-input" spellcheck="false" autocomplete="off" placeholder="Search: invoice · in:tilde · ext:pdf mod:<7d"></div>
+          <div class="chips" id="qa-chips" hidden></div>
+          <ul class="results" id="qa-results"></ul>
+        </div>
+        <aside class="preview" id="qa-preview"></aside>
+      </div>
+      <div class="status" id="qa-status"></div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>Every view is a search</h2>
+      <p>There is no current folder. Opening a folder just adds <code>in:</code> to the query. An empty query shows what you use most and most recently.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Get back to a known file</span><span>Find recent files</span><span>Preview</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li>Type <kbd>inv</kbd>, then <kbd>in:fin</kbd> to narrow it</li>
+        <li><kbd>tilde swift</kbd> matches across the path</li>
+        <li><kbd>ext:pdf mod:&lt;7d</kbd> or <kbd>size:&gt;100M</kbd></li>
+        <li><kbd>⌥1</kbd>–<kbd>⌥4</kbd> load saved views</li>
+        <li><kbd>tab</kbd> opens actions, then <kbd>m</kbd> to move</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>Weak for browsing a folder you don't know</li>
+        <li>Needs a global index, and ranking has to be excellent or you stop trusting it</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Should an empty query show recents (as here) or your home folder?</div>
+    </div>
+  </section>
+
+  <!-- B -->
+  <section class="stage" data-panel="path" hidden>
+    <div class="win-scroll"><div class="win" id="wb">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde · typed path</div></div>
+      <div class="pathbar"><span id="pb-crumbs"></span><input id="pb-input" spellcheck="false" autocomplete="off" aria-label="Path segment"></div>
+      <div class="cands" id="pb-cands"></div>
+      <div class="cols" id="pb-cols"></div>
+      <div class="marks" id="pb-marks" hidden></div>
+      <div class="status" id="pb-status"></div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>The path is a line you type</h2>
+      <p>Each path segment fuzzy-matches the folders inside the current one. With practice, <kbd>dev pro til</kbd> becomes muscle memory. The columns show where you are and what's next.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Browse</span><span>Get back to a known file</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li>Type <kbd>dev</kbd> <kbd>space</kbd> <kbd>pro</kbd> <kbd>space</kbd> <kbd>til</kbd> <kbd>⏎</kbd></li>
+        <li><kbd>⌫</kbd> on an empty segment goes up one level</li>
+        <li><kbd>↑</kbd><kbd>↓</kbd> pick a different match</li>
+        <li><kbd>'</kbd> then <kbd>d</kbd> jumps to the Downloads mark</li>
+        <li><kbd>~</kbd> goes home</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>You still need to know roughly where a file lives</li>
+        <li>Deep trees cost one step per level</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Should a segment match only direct children (as here) or any descendant, so you can skip levels?</div>
+    </div>
+  </section>
+
+  <!-- C -->
+  <section class="stage" data-panel="shelf" hidden>
+    <div class="win-scroll"><div class="win" id="wc" tabindex="0">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde · shelf</div></div>
+      <div class="c-body">
+        <div class="c-left">
+          <div class="ftabs" id="sc-tabs"></div>
+          <ul class="list" id="sc-list"></ul>
+        </div>
+        <aside class="shelf">
+          <div class="shelf-h"><span>Shelf</span><span class="dim" id="sc-count"></span></div>
+          <ul class="list" id="sc-shelf"></ul>
+          <div class="verbs" id="sc-verbs"></div>
+        </aside>
+      </div>
+      <div class="status"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>h</kbd><kbd>l</kbd> folder</span><span><kbd>x</kbd> collect</span><span><kbd>a</kbd> collect all</span><span><kbd>u</kbd> undo</span><span><kbd>esc</kbd> clear shelf</span></div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>Collect first, then act once</h2>
+      <p>The selection is a shelf that stays put while you move between folders. Each action is one key. Actions that need a destination open the same fuzzy jumper.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Act on files</span><span>Organize</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li><kbd>x</kbd> on two files in Downloads</li>
+        <li><kbd>l</kbd> to Desktop, <kbd>x</kbd> a screenshot</li>
+        <li><kbd>m</kbd>, type <kbd>arch</kbd>, <kbd>⏎</kbd></li>
+        <li><kbd>u</kbd> to undo the move</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>Single-letter actions need a mode where typing doesn't search</li>
+        <li>A shelf that outlives navigation can surprise people ("what's still selected?")</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Should the shelf survive a restart, like a clipboard you can see?</div>
+    </div>
+  </section>
+
+  <!-- D -->
+  <section class="stage" data-panel="feed" hidden>
+    <div class="win-scroll"><div class="win" id="wd" tabindex="0">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde · activity</div></div>
+      <div class="d-body">
+        <div class="d-left">
+          <div class="filters" id="fd-filters"></div>
+          <ul class="list" id="fd-list"></ul>
+        </div>
+        <aside class="preview" id="fd-preview"></aside>
+      </div>
+      <div class="status"><span><kbd>j</kbd><kbd>k</kbd> move</span><span><kbd>1</kbd>–<kbd>5</kbd> filter</span><span><kbd>i</kbd> inbox</span><span><kbd>f</kbd> file it</span><span><kbd>⏎</kbd> open</span><span><kbd>⌫</kbd> trash</span></div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>Files arranged by time, not place</h2>
+      <p>A feed of what arrived or changed, tagged by where it came from. Inbox mode shows only what's still sitting in Downloads or on the Desktop, so tidying up becomes working through a list.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Find recent files</span><span>Organize</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li><kbd>i</kbd> for inbox mode</li>
+        <li><kbd>f</kbd> on the invoice, type <kbd>fin 26</kbd>, <kbd>⏎</kbd></li>
+        <li><kbd>3</kbd> shows only screenshots</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>Needs a persistent history of file events (FSEvents makes this feasible)</li>
+        <li>"Where from" metadata is missing for some downloads</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Is this a main view, or just a saved query in concept A?</div>
+    </div>
+  </section>
+
+  <!-- E -->
+  <section class="stage" data-panel="edit" hidden>
+    <div class="win-scroll"><div class="win" id="we">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">tilde · edit folder as text</div></div>
+      <div class="e-body">
+        <div class="e-left">
+          <div class="e-head"><b>~/Downloads/</b><span>Edit freely. Nothing changes until you apply.</span></div>
+          <textarea id="ed-buf" spellcheck="false" aria-label="Folder contents as text"></textarea>
+        </div>
+        <aside class="e-ops">
+          <div class="shelf-h"><span>Pending changes</span><span class="dim" id="ed-count"></span></div>
+          <div class="list" id="ed-ops"></div>
+          <div class="e-actions"><button class="btn primary" id="ed-apply"><kbd>⌃S</kbd>Apply</button><button class="btn" id="ed-revert"><kbd>esc</kbd>Revert</button></div>
+        </aside>
+      </div>
+      <div class="status"><span>Rename: edit a name</span><span>Trash: delete the line</span><span>Move: type a path</span><span>New folder: end a line with /</span></div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>A folder is a text file</h2>
+      <p>Your editor skills become file operations: multi-cursor, find and replace, and deleting lines all work. As you type, the panel on the right shows exactly what will happen.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Organize</span><span>Bulk rename</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li>Rename <kbd>dataset-2026-10.zip</kbd> to anything</li>
+        <li>Delete the <kbd>Figma-Installer.dmg</kbd> line</li>
+        <li>Change a line to <kbd>~/Archive/receipt_8841.pdf</kbd></li>
+        <li>Add a line <kbd>receipts/</kbd></li>
+        <li><kbd>⌃S</kbd> to apply</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>This mockup matches lines by position. A real version needs hidden IDs per line (as oil.nvim does) so reordering can't confuse a rename with a delete.</li>
+        <li>Powerful enough that the review step is mandatory</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Is this the default way to view a folder, or a mode you switch into?</div>
+    </div>
+  </section>
+
+  <!-- F -->
+  <section class="stage" data-panel="summon" hidden>
+    <div class="win-scroll"><div class="win" id="wf">
+      <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">your desktop</div></div>
+      <div class="desk" id="sf-desk" tabindex="0">
+        <div class="mail">
+          <div class="bar"><div class="dots"><i></i><i></i><i></i></div><div class="wtitle">New Message</div></div>
+          <div class="f"><span>To</span><span>legal@acme.example</span></div>
+          <div class="f"><span>Subject</span><span>Signed contract</span></div>
+          <div class="b">Hi, the signed contract is attached. Shout if anything's missing.</div>
+          <div class="atts" id="mail-atts"><span class="dim">No attachments</span></div>
+        </div>
+        <div class="sf-hint" id="sf-hint">
+          <div>Tilde isn't a window here. It appears on a global hotkey, does one job, and goes away.</div>
+          <div><button class="btn primary" id="sf-summon"><kbd>⌥Space</kbd>Summon Tilde</button></div>
+          <div class="dim" style="font-size:12px">Or click the desktop and press <kbd>`</kbd>.</div>
+        </div>
+        <div class="sf-panel" id="sf-panel" hidden>
+          <div class="omni"><span class="prompt">~</span><input id="sf-input" spellcheck="false" autocomplete="off" placeholder="Find a file to hand off"></div>
+          <div class="sf-sec" id="sf-sec">Recent</div>
+          <ul class="results" id="sf-results"></ul>
+          <div class="sf-shelf" id="sf-shelf"></div>
+          <div class="sf-verbs" id="sf-verbs"></div>
+        </div>
+      </div>
+      <div class="toast"></div>
+    </div></div>
+    <div class="notes">
+      <h2>Summoned, not opened</h2>
+      <p>A floating panel on a hotkey, like Spotlight or Raycast. It makes handing files to other apps work from the keyboard, which is where keyboard-driven tools usually fall back to the mouse.</p>
+      <div><h3>Jobs it targets</h3><div class="jobs"><span>Hand off to other apps</span><span>Get back to a known file</span></div></div>
+      <div class="try"><h3>Try</h3><ul>
+        <li>Summon, type <kbd>contract</kbd></li>
+        <li><kbd>tab</kbd> to switch to actions, then <kbd>a</kbd> to attach it to the message</li>
+        <li>Collect two files with <kbd>tab</kbd> <kbd>s</kbd>, then attach both</li>
+        <li><kbd>o</kbd> types the path into a system Open dialog</li>
+      </ul></div>
+      <div><h3>Trade-offs</h3><ul>
+        <li>Driving other apps needs Accessibility permission</li>
+        <li>A panel is cramped for organizing, so you'd likely also want a full window</li>
+      </ul></div>
+      <div class="q"><h3>Open question</h3>Panel only, window only, or both? The <kbd>tab</kbd> switch here is one answer to the modal question: typing searches, and <kbd>tab</kbd> turns letters into actions.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="sec">How they compare</h2>
+    <div class="compare"><table>
+      <thead><tr><th>Concept</th><th>Best at</th><th>Keyboard model</th><th>Main risk</th><th>Fits with</th></tr></thead>
+      <tbody>
+        <tr><td>A · Query bar</td><td>Retrieving known and recent files</td><td>Always typing; actions behind <kbd>tab</kbd></td><td>Ranking quality, index cost</td><td>B, D, F</td></tr>
+        <tr><td>B · Typed path</td><td>Browsing and structured recall</td><td>Always typing; segments as completions</td><td>One step per level</td><td>A (it's the <code>in:</code> part)</td></tr>
+        <tr><td>C · Shelf + verbs</td><td>Batch actions across folders</td><td>Modal single keys (vim-like)</td><td>Mode confusion</td><td>Everything</td></tr>
+        <tr><td>D · Activity feed</td><td>Downloads, screenshots, tidying up</td><td>Single keys</td><td>Event history and metadata gaps</td><td>A, C</td></tr>
+        <tr><td>E · Edit as text</td><td>Bulk rename and reorganizing</td><td>Your text editor</td><td>Destructive if the diff is wrong</td><td>C</td></tr>
+        <tr><td>F · Summoned panel</td><td>Handing files to other apps</td><td>Hotkey, type, then <kbd>tab</kbd> for actions</td><td>Permissions, cramped space</td><td>A, C</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <footer>Mockups for brainstorming. File names, sizes and dates are invented.</footer>
+</div>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const NOW = new Date(2026, 9, 25, 14, 5);
+const MIN_TODAY = 14 * 60 + 5;
+
+/* ---------- fake filesystem ---------- */
+const RAW = [
+  ['Desktop/Screenshot 2026-10-25 at 13.40.12.png', 1.2e6, 25, 'screenshot', 1],
+  ['Desktop/Screenshot 2026-10-24 at 09.12.55.png', 0.9e6, 1733, 'screenshot', 0],
+  ['Desktop/todo.txt', 2e3, 300, 'edited', 6],
+  ['Downloads/contract-v3.pdf', 340e3, 40, 'download', 3, 'mail.google.com'],
+  ['Downloads/dataset-2026-10.zip', 2.1e9, 1200, 'download', 1, 'kaggle.com'],
+  ['Downloads/IMG_2231.HEIC', 3.4e6, 1560, 'airdrop', 0, 'AirDrop · iPhone'],
+  ['Downloads/invoice-oct-2026.pdf', 88e3, 1800, 'download', 2, 'billing.stripe.com'],
+  ['Downloads/Figma-Installer.dmg', 210e6, 5760, 'download', 0, 'figma.com'],
+  ['Downloads/slides-final-FINAL.key', 48e6, 4320, 'airdrop', 1, 'AirDrop · MacBook Air'],
+  ['Downloads/receipt_8841.pdf', 41e3, 8640, 'download', 0, 'takealot.com'],
+  ['Documents/Finance/2026/invoice-sep-2026.pdf', 86e3, 50400, 'created', 2],
+  ['Documents/Finance/2026/budget.numbers', 420e3, 2880, 'edited', 8],
+  ['Documents/Finance/2025/tax-return-2025.pdf', 1.1e6, 288000, 'created', 1],
+  ['Documents/Notes/ideas.md', 6e3, 180, 'edited', 9],
+  ['Documents/Notes/meeting-2026-10-20.md', 4e3, 7200, 'edited', 3],
+  ['Documents/Clients/Acme/proposal.pdf', 2.3e6, 17280, 'created', 4],
+  ['Documents/Clients/Acme/brief.docx', 90e3, 20160, 'download', 2, 'drive.google.com'],
+  ['Developer/projects/tilde/README.md', 3e3, 50, 'edited', 12],
+  ['Developer/projects/tilde/Package.swift', 1e3, 1440, 'edited', 5],
+  ['Developer/projects/tilde/Sources/Tilde/main.swift', 4e3, 15, 'edited', 14],
+  ['Developer/projects/tilde/Sources/Tilde/FileIndex.swift', 18e3, 90, 'edited', 10],
+  ['Developer/projects/tilde/Sources/Tilde/QueryParser.swift', 9e3, 120, 'edited', 8],
+  ['Developer/projects/blog/index.html', 12e3, 28800, 'edited', 2],
+  ['Developer/projects/blog/posts/hello-world.md', 5e3, 57600, 'edited', 1],
+  ['Pictures/Trips/Cape Town 2026/IMG_0412.jpg', 4.1e6, 86400, 'airdrop', 1, 'AirDrop · iPhone'],
+  ['Pictures/Trips/Cape Town 2026/IMG_0413.jpg', 3.9e6, 86400, 'airdrop', 0, 'AirDrop · iPhone'],
+  ['Pictures/Trips/Cape Town 2026/IMG_0419.jpg', 4.4e6, 86400, 'airdrop', 0, 'AirDrop · iPhone'],
+];
+const SNIPPETS = {
+  'README.md': '# tilde\n\nA keyboard-first file navigator for macOS.\n\n## Principles\n- Every action has a key\n- Nothing blocks the main thread\n- Undo everything',
+  'main.swift': 'import AppKit\n\nlet app = NSApplication.shared\nlet delegate = AppDelegate()\napp.delegate = delegate\napp.run()',
+  'FileIndex.swift': 'final class FileIndex {\n  private var paths: [String] = []\n  private var stream: FSEventStreamRef?\n\n  func search(_ q: String) -> [Hit] {',
+  'QueryParser.swift': 'enum Filter {\n  case inPath(String)\n  case ext(String)\n  case modified(within: TimeInterval)\n}',
+  'Package.swift': '// swift-tools-version:6.0\nimport PackageDescription\n\nlet package = Package(\n  name: "Tilde",\n  platforms: [.macOS(.v15)]',
+  'ideas.md': '- jump list per project\n- shelf survives restart?\n- edit folder as text\n- feed of downloads',
+  'todo.txt': '[ ] file October invoices\n[ ] send signed contract\n[x] book flights',
+  'meeting-2026-10-20.md': '# Planning, 20 Oct\n\n- agree MVP scope\n- pick nav model',
+};
+let NEXT = 1;
+const FILES = RAW.map(([p, size, age, origin, freq, from]) => {
+  const i = p.lastIndexOf('/');
+  return { id: NEXT++, dir: p.slice(0, i), name: p.slice(i + 1), size, age, origin, freq, from, tags: [], filed: false };
+});
+const DIRS = new Set(['', 'Archive', 'Music']);
+function addDirChain(d) { const parts = d.split('/'); for (let i = 1; i <= parts.length; i++) DIRS.add(parts.slice(0, i).join('/')); }
+FILES.forEach(f => addDirChain(f.dir));
+
+const disp = d => d ? '~/' + d : '~';
+const fpath = f => disp(f.dir) + '/' + f.name;
+const parent = d => d === '' ? null : (d.includes('/') ? d.slice(0, d.lastIndexOf('/')) : '');
+const base = d => d === '' ? '~' : d.slice(d.lastIndexOf('/') + 1);
+const under = (x, d) => d === '' || x === d || x.startsWith(d + '/');
+function dirFreq(d) { return FILES.filter(f => under(f.dir, d)).reduce((a, f) => a + f.freq, 0); }
+function dirAge(d) { let m = 43200; FILES.forEach(f => { if (under(f.dir, d)) m = Math.min(m, f.age); }); return m; }
+function children(d) {
+  const dirs = [...DIRS].filter(x => x !== '' && parent(x) === d).sort((a, b) => a.localeCompare(b));
+  const files = FILES.filter(f => f.dir === d).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return { dirs, files };
+}
+const fileEntry = f => ({ type: 'file', f, name: f.name, display: fpath(f) });
+const dirEntry = d => ({ type: 'dir', d, name: base(d), display: disp(d) });
+function entries() { return [...FILES.map(fileEntry), ...[...DIRS].filter(d => d).map(dirEntry)]; }
+const entryAge = e => e.type === 'file' ? e.f.age : dirAge(e.d);
+const entryFreq = e => e.type === 'file' ? e.f.freq : dirFreq(e.d) * 0.4;
+function moveFile(f, dir) { f.dir = dir; f.filed = true; addDirChain(dir); }
+function trashFile(f) { const i = FILES.indexOf(f); if (i >= 0) FILES.splice(i, 1); return i; }
+
+const EXT = { pdf: ['pdf', 'PDF'], png: ['img', 'PNG'], jpg: ['img', 'JPG'], jpeg: ['img', 'JPG'], heic: ['img', 'HEIC'], swift: ['code', 'SWFT'], html: ['code', 'HTML'], js: ['code', 'JS'], md: ['txt', 'MD'], txt: ['txt', 'TXT'], zip: ['arc', 'ZIP'], dmg: ['arc', 'DMG'], docx: ['doc', 'DOCX'], key: ['doc', 'KEY'], numbers: ['doc', 'NUM'] };
+function extInfo(name) { const m = name.match(/\.([^.]+)$/); const x = m ? m[1].toLowerCase() : ''; return EXT[x] || ['txt', (x || 'FILE').toUpperCase().slice(0, 4)]; }
+const kindOf = e => e.type === 'dir' ? 'dir' : extInfo(e.name)[0];
+const glyphDir = () => '<span class="g g-dir">DIR</span>';
+function glyph(e) { if (e.type === 'dir') return glyphDir(); const [k, l] = extInfo(e.name); return `<span class="g g-${k}">${l}</span>`; }
+function fmtAge(m) { if (m < 1) return 'now'; if (m < 60) return Math.floor(m) + 'm'; if (m < 1440) return Math.floor(m / 60) + 'h'; if (m < 10080) return Math.floor(m / 1440) + 'd'; if (m < 86400) return Math.floor(m / 10080) + 'w'; return Math.floor(m / 43200) + 'mo'; }
+function fmtSize(b) { if (b < 1e3) return b + ' B'; if (b < 1e6) return Math.round(b / 1e3) + ' KB'; if (b < 1e9) return (b / 1e6).toFixed(b < 1e7 ? 1 : 0) + ' MB'; return (b / 1e9).toFixed(1) + ' GB'; }
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function clock(age) {
+  const d = new Date(NOW.getTime() - age * 60000);
+  if (age < MIN_TODAY + 1440) return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  if (age < MIN_TODAY + 6 * 1440) return DAYS[d.getDay()];
+  return d.getDate() + ' ' + MONTHS[d.getMonth()];
+}
+
+/* ---------- fuzzy matching ---------- */
+function fuzzyFrom(q, s, t, start) {
+  let qi = 0, idx = [], score = 0, last = -2;
+  for (let i = start; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) {
+      let b = 1; if (i === last + 1) b += 4;
+      const p = s[i - 1]; if (i === 0 || ' /-_.'.includes(p) || (s[i] !== t[i] && p === p.toLowerCase())) b += 3;
+      score += b; idx.push(i); last = i; qi++;
+    }
+  }
+  return qi < q.length ? null : { score: score - (idx[idx.length - 1] - idx[0]) * 0.15, idx };
+}
+function fuzzy(q, s) {
+  q = q.toLowerCase(); if (!q) return { score: 0, idx: [] };
+  const t = s.toLowerCase(); let best = null;
+  for (let i = t.indexOf(q[0]); i >= 0; i = t.indexOf(q[0], i + 1)) { const m = fuzzyFrom(q, s, t, i); if (!m) break; if (!best || m.score > best.score) best = m; }
+  return best;
+}
+function hl(s, idx) { const set = new Set(idx); let out = ''; for (let i = 0; i < s.length; i++) out += set.has(i) ? `<mark>${esc(s[i])}</mark>` : esc(s[i]); return out; }
+const shift = (idx, off) => idx.filter(i => i >= off).map(i => i - off);
+
+/* ---------- query language ---------- */
+function parseQuery(q) {
+  const filters = [], terms = [];
+  q.trim().split(/\s+/).filter(Boolean).forEach(t => { const m = t.match(/^(in|ext|kind|mod|size):(.+)$/i); if (m) filters.push({ k: m[1].toLowerCase(), v: m[2].toLowerCase() }); else terms.push(t); });
+  return { filters, text: terms.join('') };
+}
+const KIND_ALIAS = { image: 'img', images: 'img', img: 'img', folder: 'dir', dir: 'dir', code: 'code', archive: 'arc', zip: 'arc', pdf: 'pdf', doc: 'doc', docs: 'doc', text: 'txt', txt: 'txt' };
+function passes(e, filters) {
+  for (const { k, v } of filters) {
+    if (k === 'in') { const where = (e.type === 'file' ? disp(e.f.dir) : disp(parent(e.d))).toLowerCase(); if (!fuzzy(v.replace(/^~\/?/, ''), where)) return false; }
+    else if (k === 'ext') { if (e.type !== 'file' || !e.name.toLowerCase().endsWith('.' + v.replace(/^\./, ''))) return false; }
+    else if (k === 'kind') { if (kindOf(e) !== (KIND_ALIAS[v] || v)) return false; }
+    else if (k === 'mod') { const m = v.match(/^<?(\d+)([mhdw])$/); if (m && entryAge(e) > +m[1] * { m: 1, h: 60, d: 1440, w: 10080 }[m[2]]) return false; }
+    else if (k === 'size') { const m = v.match(/^>?(\d+(?:\.\d+)?)([kmg]?)b?$/); if (m) { if (e.type !== 'file') return false; if (e.f.size <= +m[1] * { '': 1, k: 1e3, m: 1e6, g: 1e9 }[m[2]]) return false; } }
+  }
+  return true;
+}
+function search(q, limit = 30) {
+  const { filters, text } = parseQuery(q); const out = [];
+  for (const e of entries()) {
+    if (!passes(e, filters)) continue;
+    if (!text) { out.push({ e, idx: [], score: entryFreq(e) * 3 + 40 / (1 + entryAge(e) / 60) }); continue; }
+    const nameStart = e.display.length - e.name.length;
+    const inName = fuzzy(text, e.name), inPath = fuzzy(text, e.display);
+    let m = null, s = 0;
+    if (inName) { m = { idx: inName.idx.map(i => i + nameStart) }; s = inName.score + 8; }
+    if (inPath && (!m || inPath.score > s)) { m = inPath; s = inPath.score; }
+    if (!m) continue;
+    out.push({ e, idx: m.idx, score: s + entryFreq(e) * 0.6 - e.display.length * 0.03 });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+/* ---------- shared UI ---------- */
+function rowHTML(r, isSel, i, extra = '') {
+  const e = r.e, ns = e.display.length - e.name.length;
+  return `<li class="row${isSel ? ' sel' : ''}" data-i="${i}">${glyph(e)}<span class="nm">${hl(e.display.slice(ns), shift(r.idx, ns))}${e.type === 'dir' ? '/' : ''}</span>${e.type === 'file' && e.f.tags.length ? e.f.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('') : ''}<span class="dim pth">${hl(e.display.slice(0, ns), r.idx.filter(x => x < ns))}</span>${extra}<span class="age">${fmtAge(entryAge(e))}</span></li>`;
+}
+function previewHTML(e) {
+  if (!e) return '<div class="pv"><span class="dim">Nothing selected</span></div>';
+  if (e.type === 'dir') {
+    const c = children(e.d), items = [...c.dirs.map(d => base(d) + '/'), ...c.files.map(f => f.name)];
+    return `<div class="pv"><div class="pv-glyph g-dir">DIR</div><div class="pv-name">${esc(e.name)}/</div><div class="pv-path">${esc(disp(parent(e.d)))}</div><dl><dt>Contains</dt><dd>${items.length} item${items.length === 1 ? '' : 's'}</dd><dt>Modified</dt><dd>${fmtAge(dirAge(e.d))} ago</dd></dl><ul class="pv-list">${items.slice(0, 8).map(n => `<li>${esc(n)}</li>`).join('')}${items.length > 8 ? `<li>+${items.length - 8} more</li>` : ''}</ul></div>`;
+  }
+  const f = e.f, k = kindOf(e);
+  const top = SNIPPETS[f.name] ? `<pre class="pv-snip">${esc(SNIPPETS[f.name])}</pre>` : k === 'img' ? '<div class="pv-img"></div>' : `<div class="pv-glyph g-${k}">${extInfo(f.name)[1]}</div>`;
+  return `<div class="pv">${top}<div class="pv-name">${esc(f.name)}</div><div class="pv-path">${esc(disp(f.dir))}</div><dl><dt>Size</dt><dd>${fmtSize(f.size)}</dd><dt>Modified</dt><dd>${fmtAge(f.age)} ago</dd>${f.from ? `<dt>From</dt><dd>${esc(f.from)}</dd>` : ''}${f.tags.length ? `<dt>Tags</dt><dd>${f.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(' ')}</dd>` : ''}</dl></div>`;
+}
+const APP = { pdf: 'Preview', img: 'Preview', code: 'Xcode', txt: 'your editor', arc: 'Archive Utility', doc: 'its app' };
+function openMsg(e) { if (e.type === 'dir') return `Opened ${esc(e.name)}/`; e.f.freq++; return `Opened ${esc(e.name)} in ${APP[kindOf(e)]}`; }
+function toast(win, html) { const t = win.querySelector(':scope > .toast'); t.innerHTML = html; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2600); }
+function copyText(s) { try { navigator.clipboard.writeText(s).catch(() => {}); } catch (_) {} }
+function plural(n, w) { return `${n} ${w}${n === 1 ? '' : 's'}`; }
+
+function openPicker(win, title, onPick, onClose) {
+  const ov = document.createElement('div'); ov.className = 'picker';
+  ov.innerHTML = `<div class="picker-box"><div class="picker-title">${esc(title)}</div><div class="omni"><span class="prompt">→</span><input spellcheck="false" autocomplete="off" placeholder="Type a destination, e.g. fin 26"></div><ul class="results"></ul><div class="picker-foot"><span><kbd>↑↓</kbd> choose</span><span><kbd>⏎</kbd> confirm</span><span><kbd>esc</kbd> cancel</span></div></div>`;
+  win.appendChild(ov);
+  const inp = ov.querySelector('input'), ul = ov.querySelector('ul'); let sel = 0, list = [];
+  function render() {
+    const q = inp.value.replace(/\s+/g, '');
+    list = [...DIRS].map(d => { const s = disp(d); if (!q) return { d, s, score: dirFreq(d) - d.split('/').length, idx: [] }; const m = fuzzy(q, s); return m && { d, s, score: m.score + dirFreq(d) * 0.2, idx: m.idx }; }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, 8);
+    sel = Math.min(sel, Math.max(0, list.length - 1));
+    ul.innerHTML = list.map((r, i) => `<li class="row${i === sel ? ' sel' : ''}" data-i="${i}">${glyphDir()}<span>${hl(r.s, r.idx)}</span></li>`).join('') || '<li class="empty">No folder matches</li>';
+  }
+  const done = d => { ov.remove(); if (d != null) onPick(d); onClose && onClose(); };
+  inp.addEventListener('input', () => { sel = 0; render(); });
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { sel = Math.min(sel + 1, list.length - 1); render(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { sel = Math.max(sel - 1, 0); render(); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[sel]) done(list[sel].d); }
+    else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+  });
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { e.preventDefault(); done(list[+li.dataset.i].d); } });
+  render(); setTimeout(() => inp.focus({ preventScroll: true }), 0);
+}
+function clickToFocus(win, focusFn) {
+  win.addEventListener('mousedown', e => { if (e.target.closest('input, textarea, button, .picker')) return; e.preventDefault(); focusFn(); });
+}
+const SHOW = {};
+
+/* ---------- A: query bar ---------- */
+(function () {
+  const win = $('#wa'), inp = $('#qa-input'), ul = $('#qa-results'), pv = $('#qa-preview'), chips = $('#qa-chips'), st = $('#qa-status');
+  let sel = 0, res = [], actions = false;
+  const ACTIONS = [['⏎', 'Open'], ['r', 'Reveal in folder'], ['y', 'Copy path'], ['m', 'Move to…'], ['c', 'Copy as file']];
+  function render() {
+    const { filters } = parseQuery(inp.value);
+    chips.innerHTML = filters.map(f => `<span class="chip">${f.k}:<b>${esc(f.v)}</b></span>`).join('');
+    chips.hidden = !filters.length;
+    res = search(inp.value, 40); sel = Math.min(sel, Math.max(0, res.length - 1));
+    ul.innerHTML = res.map((r, i) => rowHTML(r, i === sel, i)).join('') || '<li class="empty">Nothing matches. Filters you can use: in: ext: kind: mod:&lt;7d size:&gt;100M</li>';
+    st.innerHTML = `<span>${plural(res.length, 'result')}${inp.value.trim() ? '' : ' · recent and frequent'}</span><span><kbd>↑↓</kbd> move</span><span><kbd>⏎</kbd> open</span><span><kbd>tab</kbd> actions</span><span><kbd>esc</kbd> clear</span>`;
+    pv.innerHTML = (actions && res[sel] ? `<div class="actions"><div class="h">Actions · press a key</div>${ACTIONS.map(([k, l]) => `<div><kbd>${k}</kbd>${l}</div>`).join('')}</div>` : '') + previewHTML(res[sel]?.e);
+    ul.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+  function act(k) {
+    const e = res[sel]?.e; if (!e) return;
+    actions = false;
+    if (k === 'Enter') toast(win, openMsg(e));
+    else if (k === 'r') toast(win, `Revealed in ${esc(e.type === 'file' ? disp(e.f.dir) : disp(parent(e.d)))}`);
+    else if (k === 'y') { copyText(e.display); toast(win, `Copied ${esc(e.display)}`); }
+    else if (k === 'c') toast(win, `Copied ${esc(e.name)} as a file. Paste into Mail or Slack to attach it.`);
+    else if (k === 'm') {
+      if (e.type !== 'file') { toast(win, 'Moving folders isn\'t in this mockup'); render(); return; }
+      openPicker(win, `Move ${e.name} to…`, d => { moveFile(e.f, d); toast(win, `Moved ${esc(e.name)} to ${esc(disp(d))}`); }, () => { render(); inp.focus(); });
+      return;
+    }
+    render();
+  }
+  inp.addEventListener('input', () => { sel = 0; actions = false; render(); });
+  inp.addEventListener('keydown', e => {
+    if (e.altKey && /^Digit[1-4]$/.test(e.code)) { e.preventDefault(); const b = win.querySelectorAll('.a-side button')[+e.code.slice(5) - 1]; inp.value = b.dataset.q; sel = 0; actions = false; render(); return; }
+    if (actions) {
+      if (['Enter', 'r', 'y', 'm', 'c'].includes(e.key)) { e.preventDefault(); act(e.key); return; }
+      if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); actions = false; render(); return; }
+    }
+    if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); sel = Math.min(sel + 1, res.length - 1); render(); }
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); act('Enter'); }
+    else if (e.key === 'Tab') { e.preventDefault(); if (res[sel]) { actions = true; render(); } }
+    else if (e.key === 'Escape') { e.preventDefault(); inp.value = ''; sel = 0; render(); }
+  });
+  win.querySelectorAll('.a-side button').forEach(b => b.addEventListener('click', () => { inp.value = b.dataset.q; sel = 0; actions = false; render(); inp.focus(); }));
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { e.preventDefault(); sel = +li.dataset.i; render(); inp.focus(); } });
+  ul.addEventListener('dblclick', () => act('Enter'));
+  clickToFocus(win, () => inp.focus());
+  SHOW.query = () => { render(); inp.focus({ preventScroll: true }); };
+  render();
+})();
+
+/* ---------- B: typed path ---------- */
+(function () {
+  const win = $('#wb'), inp = $('#pb-input'), crumbs = $('#pb-crumbs'), cands = $('#pb-cands'), cols = $('#pb-cols'), st = $('#pb-status'), marksEl = $('#pb-marks');
+  let cwd = '', sel = 0, list = [], markMode = false;
+  const MARKS = { d: 'Downloads', t: 'Developer/projects/tilde', f: 'Documents/Finance/2026', n: 'Documents/Notes', p: 'Pictures', h: '' };
+  const items = d => { const c = children(d); return [...c.dirs.map(dirEntry), ...c.files.map(fileEntry)]; };
+  function compute() {
+    const q = inp.value.trim(), all = items(cwd);
+    if (!q) list = all.map(e => ({ e, idx: [] }));
+    else list = all.map(e => { const m = fuzzy(q, e.name); return m && { e, idx: m.idx, score: m.score + (e.type === 'dir' ? 2 : 0) + entryFreq(e) * 0.3 }; }).filter(Boolean).sort((a, b) => b.score - a.score);
+    sel = Math.min(sel, Math.max(0, list.length - 1));
+  }
+  function colHTML(title, ents, selKey, idxMap, dimOthers) {
+    const rows = ents.map(e => {
+      const key = e.type === 'dir' ? 'd:' + e.d : 'f:' + e.f.id, idx = idxMap && idxMap.get(key);
+      const faded = dimOthers && !idx;
+      return `<li class="row${key === selKey ? ' sel' : ''}${faded ? ' faded' : ''}">${glyph(e)}<span class="nm">${idx ? hl(e.name, idx) : esc(e.name)}${e.type === 'dir' ? '/' : ''}</span></li>`;
+    }).join('') || '<li class="empty">Empty folder</li>';
+    return `<div class="col"><div class="col-h">${esc(title)}</div><ul>${rows}</ul></div>`;
+  }
+  const keyOf = e => e.type === 'dir' ? 'd:' + e.d : 'f:' + e.f.id;
+  function render() {
+    compute();
+    const segs = cwd ? cwd.split('/') : [];
+    crumbs.innerHTML = '<span class="crumb">~</span>' + segs.map(s => `<span class="sep">/</span><span class="crumb">${esc(s)}</span>`).join('') + '<span class="sep">/</span>';
+    const q = inp.value.trim();
+    cands.innerHTML = q
+      ? (list.slice(0, 6).map((r, i) => `<span class="cand${i === sel ? ' sel' : ''}">${hl(r.e.name, r.idx)}${r.e.type === 'dir' ? '/' : ''}</span>`).join('') + (list.length > 6 ? `<span class="dim">+${list.length - 6}</span>` : '') || '<span class="dim">No match in this folder</span>')
+      : '<span class="dim">Type to match something in this folder. <kbd>space</kbd>, <kbd>tab</kbd> or <kbd>/</kbd> goes into it. <kbd>⌫</kbd> on an empty segment goes up.</span>';
+    const cur = list[sel]?.e, par = parent(cwd);
+    const idxMap = new Map(q ? list.map(r => [keyOf(r.e), r.idx]) : []);
+    const left = par === null ? `<div class="col"><div class="col-h">Mac</div><ul><li class="row sel">${glyphDir()}<span class="nm">~</span></li></ul></div>` : colHTML(disp(par), items(par), 'd:' + cwd);
+    const mid = colHTML(disp(cwd), items(cwd), cur ? keyOf(cur) : '', idxMap, !!q);
+    const right = !cur ? '<div class="col"></div>' : cur.type === 'dir' ? colHTML(cur.name + '/', items(cur.d)) : `<div class="col">${previewHTML(cur)}</div>`;
+    cols.innerHTML = left + mid + right;
+    cols.querySelectorAll('.col').forEach(c => c.querySelector('.sel')?.scrollIntoView({ block: 'nearest' }));
+    marksEl.hidden = !markMode;
+    marksEl.innerHTML = '<div class="dim" style="font-size:11px">Jump to mark</div>' + Object.entries(MARKS).map(([k, d]) => `<div><kbd>${k}</kbd>${esc(disp(d))}</div>`).join('');
+    st.innerHTML = `<span>${esc(disp(cwd))}</span><span><kbd>↑↓</kbd> pick</span><span><kbd>⏎</kbd> open</span><span><kbd>⌫</kbd> up</span><span><kbd>'</kbd> marks</span><span><kbd>~</kbd> home</span>`;
+  }
+  function enter(d) { cwd = d; inp.value = ''; sel = 0; render(); }
+  function up() { if (cwd === '') return; const from = cwd; cwd = parent(cwd); inp.value = ''; compute(); sel = Math.max(0, list.findIndex(r => r.e.type === 'dir' && r.e.d === from)); render(); }
+  inp.addEventListener('input', () => { sel = 0; render(); });
+  inp.addEventListener('keydown', e => {
+    const empty = inp.value === '';
+    if (markMode) { e.preventDefault(); markMode = false; if (e.key in MARKS) enter(MARKS[e.key]); else render(); return; }
+    const cur = list[sel]?.e;
+    if (e.key === "'" && empty) { e.preventDefault(); markMode = true; render(); }
+    else if (e.key === '~' && empty) { e.preventDefault(); enter(''); }
+    else if (e.key === 'Tab' || e.key === '/' || e.key === ' ' || (e.key === 'ArrowRight' && inp.selectionStart === inp.value.length)) {
+      e.preventDefault(); if (cur && cur.type === 'dir' && (!empty || e.key === 'Tab' || e.key === 'ArrowRight')) enter(cur.d);
+    }
+    else if (e.key === 'Enter') { e.preventDefault(); if (!cur) return; if (cur.type === 'dir') enter(cur.d); else toast(win, openMsg(cur)); }
+    else if ((e.key === 'Backspace' || e.key === 'ArrowLeft') && empty) { e.preventDefault(); up(); }
+    else if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); sel = Math.min(sel + 1, list.length - 1); render(); }
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    else if (e.key === 'Escape') { e.preventDefault(); inp.value = ''; sel = 0; render(); }
+  });
+  clickToFocus(win, () => inp.focus());
+  SHOW.path = () => { render(); inp.focus({ preventScroll: true }); };
+  render();
+})();
+
+/* ---------- C: shelf + verbs ---------- */
+(function () {
+  const win = $('#wc'), tabs = $('#sc-tabs'), ul = $('#sc-list'), shelfUl = $('#sc-shelf'), count = $('#sc-count'), verbs = $('#sc-verbs');
+  const FOLDERS = ['Downloads', 'Desktop', 'Documents/Finance/2026'];
+  let fi = 0, cur = 0, shelf = [], undo = [], picking = false;
+  const filesIn = () => children(FOLDERS[fi]).files;
+  const shelfFiles = () => { shelf = shelf.filter(id => FILES.some(f => f.id === id)); return shelf.map(id => FILES.find(f => f.id === id)); };
+  function render() {
+    const fs = filesIn(); cur = Math.min(cur, Math.max(0, fs.length - 1));
+    tabs.innerHTML = '<kbd>h</kbd>' + FOLDERS.map((d, i) => `<span class="ftab${i === fi ? ' on' : ''}">${esc(base(d))}</span>`).join('') + '<kbd>l</kbd>';
+    ul.innerHTML = fs.map((f, i) => { const on = shelf.includes(f.id); return `<li class="row${i === cur ? ' sel' : ''}" data-i="${i}"><span class="chk${on ? ' on' : ''}">${on ? '●' : '○'}</span>${glyph(fileEntry(f))}<span class="nm">${esc(f.name)}</span>${f.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}<span class="age">${fmtSize(f.size)}</span></li>`; }).join('') || '<li class="empty">This folder is empty</li>';
+    const sf = shelfFiles();
+    count.textContent = sf.length ? plural(sf.length, 'item') : '';
+    shelfUl.innerHTML = sf.map(f => `<li class="row"><span class="nm">${esc(f.name)}</span><span class="dim">${esc(disp(f.dir))}</span></li>`).join('') || '<li class="empty">Empty. Press <kbd>x</kbd> on a file to collect it. Collect from several folders, then act once.</li>';
+    const V = [['m', 'Move…'], ['c', 'Copy…'], ['y', 'Copy paths'], ['t', 'Tag "client"'], ['z', 'Compress'], ['⌫', 'Trash']];
+    verbs.className = 'verbs' + (sf.length ? '' : ' off');
+    verbs.innerHTML = V.map(([k, l]) => `<div><kbd>${k}</kbd>${l}</div>`).join('');
+    ul.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+  function needShelf() { const sf = shelfFiles(); if (!sf.length) { toast(win, 'Shelf is empty. Press <kbd>x</kbd> to collect files first.'); return null; } return sf; }
+  function pick(title, fn) { picking = true; openPicker(win, title, fn, () => { picking = false; render(); win.focus(); }); }
+  win.addEventListener('keydown', e => {
+    if (picking || e.metaKey || e.ctrlKey) return;
+    const fs = filesIn(), k = e.key, f = fs[cur];
+    const handled = () => e.preventDefault();
+    if (k === 'j' || k === 'ArrowDown') { handled(); cur = Math.min(cur + 1, fs.length - 1); render(); }
+    else if (k === 'k' || k === 'ArrowUp') { handled(); cur = Math.max(cur - 1, 0); render(); }
+    else if (k === 'l' || k === 'ArrowRight') { handled(); fi = (fi + 1) % FOLDERS.length; cur = 0; render(); }
+    else if (k === 'h' || k === 'ArrowLeft') { handled(); fi = (fi + FOLDERS.length - 1) % FOLDERS.length; cur = 0; render(); }
+    else if (k === 'x' || k === ' ') { handled(); if (!f) return; shelf = shelf.includes(f.id) ? shelf.filter(id => id !== f.id) : [...shelf, f.id]; cur = Math.min(cur + 1, fs.length - 1); render(); }
+    else if (k === 'a') { handled(); const all = fs.every(x => shelf.includes(x.id)); shelf = all ? shelf.filter(id => !fs.some(x => x.id === id)) : [...new Set([...shelf, ...fs.map(x => x.id)])]; render(); }
+    else if (k === 'Escape') { handled(); shelf = []; render(); }
+    else if (k === 'Enter') { handled(); if (f) toast(win, openMsg(fileEntry(f))); }
+    else if (k === 'm') { handled(); const sf = needShelf(); if (!sf) return; pick(`Move ${plural(sf.length, 'item')} to…`, d => { const rec = sf.map(x => ({ f: x, prev: x.dir })); rec.forEach(r => moveFile(r.f, d)); undo.push({ type: 'move', rec, label: `move of ${plural(rec.length, 'item')}` }); shelf = []; toast(win, `Moved ${plural(rec.length, 'item')} to ${esc(disp(d))} · <kbd>u</kbd> undo`); }); }
+    else if (k === 'c') { handled(); const sf = needShelf(); if (!sf) return; pick(`Copy ${plural(sf.length, 'item')} to…`, d => { const made = sf.map(x => { const n = { ...x, id: NEXT++, dir: d, tags: [...x.tags], age: 0 }; FILES.push(n); return n; }); addDirChain(d); undo.push({ type: 'create', made, label: `copy of ${plural(made.length, 'item')}` }); toast(win, `Copied ${plural(made.length, 'item')} to ${esc(disp(d))} · <kbd>u</kbd> undo`); }); }
+    else if (k === 'y') { handled(); const sf = needShelf(); if (!sf) return; copyText(sf.map(fpath).join('\n')); toast(win, `Copied ${plural(sf.length, 'path')} to the clipboard`); }
+    else if (k === 't') { handled(); const sf = needShelf(); if (!sf) return; const all = sf.every(x => x.tags.includes('client')); sf.forEach(x => { x.tags = all ? x.tags.filter(t => t !== 'client') : [...new Set([...x.tags, 'client'])]; }); toast(win, `${all ? 'Removed' : 'Added'} tag "client" ${all ? 'from' : 'on'} ${plural(sf.length, 'item')}`); render(); }
+    else if (k === 'z') { handled(); const sf = needShelf(); if (!sf) return; const n = { id: NEXT++, dir: FOLDERS[fi], name: 'Archive.zip', size: Math.round(sf.reduce((a, x) => a + x.size, 0) * 0.62), age: 0, origin: 'created', freq: 0, tags: [], filed: false }; FILES.push(n); undo.push({ type: 'create', made: [n], label: 'compress' }); toast(win, `Created Archive.zip in ${esc(disp(FOLDERS[fi]))} from ${plural(sf.length, 'item')}`); render(); }
+    else if (k === 'Backspace' || k === 'Delete' || k === 'd') { handled(); const sf = shelfFiles().length ? shelfFiles() : (f ? [f] : []); if (!sf.length) return; const rec = sf.map(x => ({ f: x, i: trashFile(x) })); undo.push({ type: 'trash', rec, label: `trash of ${plural(rec.length, 'item')}` }); shelf = []; toast(win, `Moved ${plural(rec.length, 'item')} to the Trash · <kbd>u</kbd> undo`); render(); }
+    else if (k === 'u') { handled(); const op = undo.pop(); if (!op) { toast(win, 'Nothing to undo'); return; }
+      if (op.type === 'move') op.rec.forEach(r => { r.f.dir = r.prev; r.f.filed = false; });
+      else if (op.type === 'trash') op.rec.slice().reverse().forEach(r => FILES.splice(Math.min(r.i, FILES.length), 0, r.f));
+      else if (op.type === 'create') op.made.forEach(trashFile);
+      toast(win, `Undid ${op.label}`); render(); }
+  });
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { cur = +li.dataset.i; render(); } });
+  clickToFocus(win, () => win.focus());
+  SHOW.shelf = () => { render(); win.focus({ preventScroll: true }); };
+  render();
+})();
+
+/* ---------- D: activity feed ---------- */
+(function () {
+  const win = $('#wd'), filt = $('#fd-filters'), ul = $('#fd-list'), pv = $('#fd-preview');
+  const FILTERS = [['all', 'All'], ['download', 'Downloaded'], ['screenshot', 'Screenshots'], ['edited', 'Edited'], ['airdrop', 'AirDrop']];
+  const ORG = { download: 'Download', screenshot: 'Screenshot', edited: 'Edited', airdrop: 'AirDrop', created: 'Created' };
+  let filter = 'all', inbox = false, cur = 0, picking = false, shown = [];
+  const inInbox = f => !f.filed && (f.dir === 'Downloads' || f.dir === 'Desktop');
+  const group = a => a < MIN_TODAY ? 'Today' : a < MIN_TODAY + 1440 ? 'Yesterday' : a < MIN_TODAY + 6 * 1440 ? 'Earlier this week' : 'Older';
+  function render() {
+    shown = FILES.filter(f => (filter === 'all' || f.origin === filter) && (!inbox || inInbox(f))).sort((a, b) => a.age - b.age).slice(0, 40);
+    cur = Math.min(cur, Math.max(0, shown.length - 1));
+    const n = FILES.filter(inInbox).length;
+    filt.innerHTML = FILTERS.map(([k, l], i) => `<span class="${filter === k ? 'on' : ''}"><kbd>${i + 1}</kbd> ${l}</span>`).join('') + `<span class="inbox${inbox ? ' on' : ''}"><kbd>i</kbd> Inbox · ${n} to file</span>`;
+    let g = '', html = '';
+    shown.forEach((f, i) => {
+      const gg = group(f.age); if (gg !== g) { g = gg; html += `<li class="grp">${gg}</li>`; }
+      html += `<li class="row${i === cur ? ' sel' : ''}" data-i="${i}"><span class="time">${clock(f.age)}</span><span class="org org-${f.origin}">${ORG[f.origin]}</span>${glyph(fileEntry(f))}<span class="nm">${esc(f.name)}</span><span class="dim pth">${esc(disp(f.dir))}</span>${f.filed ? '<span class="filed">filed</span>' : ''}</li>`;
+    });
+    ul.innerHTML = html || `<li class="empty">${inbox ? 'Inbox zero. Everything in Downloads and on the Desktop has been filed.' : 'No activity for this filter'}</li>`;
+    pv.innerHTML = previewHTML(shown[cur] ? fileEntry(shown[cur]) : null) + (shown[cur] && inInbox(shown[cur]) ? '<div class="pv" style="padding-top:0"><span class="dim">Press <kbd>f</kbd> to file this somewhere</span></div>' : '');
+    ul.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+  win.addEventListener('keydown', e => {
+    if (picking || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key, f = shown[cur];
+    if (k === 'j' || k === 'ArrowDown') { e.preventDefault(); cur = Math.min(cur + 1, shown.length - 1); render(); }
+    else if (k === 'k' || k === 'ArrowUp') { e.preventDefault(); cur = Math.max(cur - 1, 0); render(); }
+    else if (/^[1-5]$/.test(k)) { e.preventDefault(); filter = FILTERS[+k - 1][0]; cur = 0; render(); }
+    else if (k === 'i') { e.preventDefault(); inbox = !inbox; cur = 0; render(); }
+    else if (k === 'Enter') { e.preventDefault(); if (f) toast(win, openMsg(fileEntry(f))); }
+    else if (k === 'f') { e.preventDefault(); if (!f) return; picking = true; openPicker(win, `File ${f.name} in…`, d => { moveFile(f, d); toast(win, `Filed ${esc(f.name)} in ${esc(disp(d))}`); }, () => { picking = false; render(); win.focus(); }); }
+    else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); if (!f) return; trashFile(f); toast(win, `Moved ${esc(f.name)} to the Trash`); render(); }
+  });
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { cur = +li.dataset.i; render(); } });
+  clickToFocus(win, () => win.focus());
+  SHOW.feed = () => { render(); win.focus({ preventScroll: true }); };
+  render();
+})();
+
+/* ---------- E: edit folder as text ---------- */
+(function () {
+  const win = $('#we'), ta = $('#ed-buf'), opsEl = $('#ed-ops'), countEl = $('#ed-count'), applyBtn = $('#ed-apply'), revertBtn = $('#ed-revert');
+  const CWD = 'Downloads';
+  let orig = [], pending = [];
+  function load() {
+    const c = children(CWD);
+    orig = [...c.dirs.map(d => ({ kind: 'dir', name: base(d) + '/', ref: d })), ...c.files.map(f => ({ kind: 'file', name: f.name, ref: f }))];
+    ta.value = orig.map(o => o.name).join('\n') + '\n';
+    diff();
+  }
+  function resolve(str) {
+    const clean = str.replace(/\/$/, '');
+    const p = clean.startsWith('~/') ? clean.slice(2) : CWD + '/' + clean;
+    const i = p.lastIndexOf('/');
+    return { dir: i < 0 ? '' : p.slice(0, i), name: p.slice(i + 1), full: p };
+  }
+  function diff() {
+    const a = orig.map(o => o.name), b = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+    const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    const ops = []; let i = 0, j = 0, dels = [], adds = [];
+    const flush = () => {
+      const k = Math.min(dels.length, adds.length);
+      for (let x = 0; x < k; x++) { const o = orig[dels[x]], to = adds[x]; ops.push({ type: to.replace(/\/$/, '').includes('/') ? 'move' : 'rename', o, to }); }
+      for (let x = k; x < dels.length; x++) ops.push({ type: 'trash', o: orig[dels[x]] });
+      for (let x = k; x < adds.length; x++) ops.push({ type: adds[x].endsWith('/') ? 'mkdir' : 'create', to: adds[x] });
+      dels = []; adds = [];
+    };
+    while (i < n && j < m) { if (a[i] === b[j]) { flush(); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) dels.push(i++); else adds.push(b[j++]); }
+    while (i < n) dels.push(i++); while (j < m) adds.push(b[j++]); flush();
+    pending = ops; renderOps();
+  }
+  function renderOps() {
+    countEl.textContent = pending.length ? plural(pending.length, 'change') : '';
+    applyBtn.disabled = revertBtn.disabled = !pending.length;
+    opsEl.innerHTML = pending.map(op => {
+      let d = '';
+      if (op.type === 'rename') d = `${esc(op.o.name)} → <b>${esc(op.to)}</b>`;
+      else if (op.type === 'move') { const r = resolve(op.to); d = `${esc(op.o.name)} → <b>${esc(disp(r.dir))}/${esc(r.name)}</b>`; }
+      else if (op.type === 'trash') d = `${esc(op.o.name)}${op.o.kind === 'dir' ? ' and its contents' : ''}`;
+      else if (op.type === 'create') d = `new empty file <b>${esc(op.to)}</b>`;
+      else d = `new folder <b>${esc(op.to)}</b>`;
+      return `<div class="op"><span class="t ${op.type}">${op.type === 'mkdir' ? 'folder' : op.type}</span><span class="d">${d}</span></div>`;
+    }).join('') || '<div class="empty">No changes yet. Edit the text on the left: rename a line, delete one, or type a path to move a file.</div>';
+  }
+  function renameDir(from, to) {
+    [...DIRS].forEach(d => { if (under(d, from)) { DIRS.delete(d); DIRS.add(to + d.slice(from.length)); } });
+    FILES.forEach(f => { if (under(f.dir, from)) f.dir = to + f.dir.slice(from.length); });
+  }
+  function apply() {
+    if (!pending.length) return;
+    const n = pending.length;
+    pending.forEach(op => {
+      if (op.type === 'rename' || op.type === 'move') {
+        const r = resolve(op.to);
+        if (op.o.kind === 'file') { op.o.ref.name = r.name; if (op.type === 'move') moveFile(op.o.ref, r.dir); }
+        else { addDirChain(r.dir || ''); renameDir(op.o.ref, r.full); }
+      } else if (op.type === 'trash') {
+        if (op.o.kind === 'file') trashFile(op.o.ref);
+        else { [...DIRS].forEach(d => { if (under(d, op.o.ref)) DIRS.delete(d); }); FILES.filter(f => under(f.dir, op.o.ref)).forEach(trashFile); }
+      } else if (op.type === 'create') {
+        const r = resolve(op.to); addDirChain(r.dir);
+        FILES.push({ id: NEXT++, dir: r.dir, name: r.name, size: 0, age: 0, origin: 'created', freq: 1, tags: [], filed: false });
+      } else { addDirChain(resolve(op.to).full); }
+    });
+    load(); toast(win, `Applied ${plural(n, 'change')}. In the real app, ⌘Z would undo them all.`);
+  }
+  ta.addEventListener('input', diff);
+  ta.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); apply(); }
+    else if (e.key === 'Escape') { e.preventDefault(); load(); toast(win, 'Reverted to what\'s on disk'); }
+  });
+  applyBtn.addEventListener('click', apply);
+  revertBtn.addEventListener('click', () => { load(); ta.focus(); });
+  clickToFocus(win, () => ta.focus());
+  SHOW.edit = () => { if (!pending.length) load(); ta.focus({ preventScroll: true }); };
+  load();
+})();
+
+/* ---------- F: summoned panel ---------- */
+(function () {
+  const win = $('#wf'), desk = $('#sf-desk'), panel = $('#sf-panel'), inp = $('#sf-input'), ul = $('#sf-results'), sec = $('#sf-sec'), verbsEl = $('#sf-verbs'), shelfEl = $('#sf-shelf'), atts = $('#mail-atts'), hint = $('#sf-hint');
+  let open = false, sel = 0, res = [], verbMode = false, shelf = [], attached = [];
+  const VERBS = [['a', 'Attach to “New Message”'], ['c', 'Copy as file'], ['y', 'Copy path'], ['o', 'Fill Open dialog'], ['s', 'Add to shelf'], ['r', 'Reveal']];
+  function summon() { open = true; panel.hidden = false; hint.hidden = true; inp.value = ''; sel = 0; verbMode = false; render(); inp.focus({ preventScroll: true }); }
+  function dismiss() { open = false; panel.hidden = true; hint.hidden = false; desk.focus({ preventScroll: true }); }
+  function render() {
+    const q = inp.value.trim();
+    res = q ? search(q, 7) : FILES.slice().sort((a, b) => a.age - b.age).slice(0, 6).map(f => ({ e: fileEntry(f), idx: [] }));
+    sel = Math.min(sel, Math.max(0, res.length - 1));
+    sec.textContent = q ? 'Results' : 'Recent';
+    ul.innerHTML = res.map((r, i) => rowHTML(r, i === sel, i, r.e.type === 'file' && shelf.includes(r.e.f.id) ? '<span class="tag">shelf</span>' : '')).join('') || '<li class="empty">Nothing matches</li>';
+    const sf = shelf.map(id => FILES.find(f => f.id === id)).filter(Boolean);
+    shelfEl.hidden = !sf.length;
+    shelfEl.innerHTML = `Shelf · ${sf.map(f => esc(f.name)).join(', ')} <span class="dim">(actions apply to the shelf)</span>`;
+    verbsEl.className = 'sf-verbs' + (verbMode ? ' on' : '');
+    verbsEl.innerHTML = verbMode
+      ? VERBS.map(([k, l]) => `<div><kbd>${k}</kbd>${l}</div>`).join('') + '<div><kbd>esc</kbd>back to search</div>'
+      : '<div><kbd>↑↓</kbd> move</div><div><kbd>⏎</kbd> open</div><div><kbd>tab</kbd> actions</div><div><kbd>esc</kbd> dismiss</div>';
+    ul.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+  function targets() { const sf = shelf.map(id => FILES.find(f => f.id === id)).filter(Boolean); if (sf.length) return sf; const e = res[sel]?.e; return e && e.type === 'file' ? [e.f] : []; }
+  function verb(k) {
+    const e = res[sel]?.e, t = targets();
+    if (k === 's') { if (!e || e.type !== 'file') return; shelf = shelf.includes(e.f.id) ? shelf.filter(id => id !== e.f.id) : [...shelf, e.f.id]; verbMode = false; render(); return; }
+    if (k === 'r') { if (e) { toast(win, `Opened the full Tilde window at ${esc(e.type === 'file' ? disp(e.f.dir) : e.display)}`); dismiss(); } return; }
+    if (!t.length) { toast(win, 'Pick a file first. Folders would need compressing (z) before they can be attached.'); return; }
+    if (k === 'a') {
+      t.forEach(f => { if (!attached.includes(f.id)) attached.push(f.id); });
+      atts.innerHTML = attached.map(id => FILES.find(f => f.id === id)).filter(Boolean).map(f => `<span class="att">${glyph(fileEntry(f))}${esc(f.name)} <span class="dim">${fmtSize(f.size)}</span></span>`).join('');
+      shelf = []; dismiss(); toast(win, `Attached ${plural(t.length, 'file')} to “Signed contract”`);
+    } else if (k === 'c') { shelf = []; dismiss(); toast(win, `${plural(t.length, 'file')} on the clipboard. ⌘V in any app pastes the file itself.`); }
+    else if (k === 'y') { copyText(t.map(fpath).join('\n')); shelf = []; dismiss(); toast(win, `Copied ${plural(t.length, 'path')}`); }
+    else if (k === 'o') { dismiss(); toast(win, `Typed ${esc(fpath(t[0]))} into the frontmost Open dialog (⌘⇧G)`); }
+  }
+  desk.addEventListener('keydown', e => { if (!open && ((e.altKey && e.code === 'Space') || e.key === '`')) { e.preventDefault(); summon(); } });
+  inp.addEventListener('input', () => { sel = 0; verbMode = false; render(); });
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (verbMode) {
+      if (VERBS.some(([k]) => k === e.key)) { e.preventDefault(); verb(e.key); return; }
+      if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); verbMode = false; render(); return; }
+      if (e.key.length === 1) { e.preventDefault(); return; }
+    }
+    if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); sel = Math.min(sel + 1, res.length - 1); render(); }
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+    else if (e.key === 'Tab') { e.preventDefault(); if (res.length) { verbMode = true; render(); } }
+    else if (e.key === 'Enter') { e.preventDefault(); const r = res[sel]; if (r) { toast(win, openMsg(r.e)); dismiss(); } }
+    else if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
+  });
+  $('#sf-summon').addEventListener('click', summon);
+  ul.addEventListener('mousedown', e => { const li = e.target.closest('li.row'); if (li) { e.preventDefault(); sel = +li.dataset.i; render(); inp.focus(); } });
+  desk.addEventListener('mousedown', e => { if (e.target.closest('button, input, .sf-panel')) return; e.preventDefault(); if (open) dismiss(); else desk.focus({ preventScroll: true }); });
+  SHOW.summon = () => { if (open) { render(); inp.focus({ preventScroll: true }); } else desk.focus({ preventScroll: true }); };
+  render();
+})();
+
+/* ---------- tabs ---------- */
+const TABS = ['query', 'path', 'shelf', 'feed', 'edit', 'summon'];
+function show(t, focus = true) {
+  document.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== t; });
+  document.querySelectorAll('[data-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
+  if (focus) SHOW[t]?.();
+}
+document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => { show(b.dataset.tab); try { history.replaceState(null, '', '#' + b.dataset.tab); } catch (_) {} }));
+const initial = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'query';
+show(initial, false);
+</script>
