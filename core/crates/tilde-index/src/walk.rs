@@ -19,8 +19,17 @@ pub struct ScanConfig {
 }
 
 impl ScanConfig {
-    fn descends_into(&self, path: &Path, name: &str) -> bool {
+    pub(crate) fn descends_into(&self, path: &Path, name: &str) -> bool {
         !self.exclude_names.contains(name) && !self.exclude_paths.iter().any(|p| p == path)
+    }
+
+    /// Whether the scan lists the contents of folder `dir`, so changes inside it matter.
+    pub fn scans_inside(&self, dir: &Path) -> bool {
+        if self.roots.iter().any(|r| r == dir) {
+            return true;
+        }
+        let name = dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        self.covers(dir) && self.descends_into(dir, &name)
     }
 
     /// Whether a scan reaches `path`. Used to add zoxide folders the scan would miss.
@@ -47,7 +56,25 @@ impl ScanConfig {
 /// Folders are entered unless excluded. Packages, symlinks and mount points (other disks,
 /// network shares, container filesystems) are listed but never entered.
 pub fn scan(config: &ScanConfig, stop: &AtomicBool, on_entry: &(dyn Fn(&Path, &Entry) + Sync)) {
-    let opts = ListOptions { include_hidden: config.include_hidden, ..Default::default() };
+    walk_parallel(config.roots.clone(), config.include_hidden, stop, &|dir, entries| {
+        let mut next = Vec::new();
+        for e in &entries {
+            on_entry(dir, e);
+            let child = dir.join(&e.name);
+            if e.kind == EntryKind::Folder && !e.mount_point && config.descends_into(&child, &e.name) {
+                next.push(child);
+            }
+        }
+        next
+    });
+}
+
+/// Called with each folder's listing; returns the subfolders to list next.
+pub type OnListing<'a> = dyn Fn(&Path, Vec<Entry>) -> Vec<PathBuf> + Sync + 'a;
+
+/// Lists `dirs` and, recursively, whatever `on_listing` returns, in parallel.
+pub fn walk_parallel(dirs: Vec<PathBuf>, include_hidden: bool, stop: &AtomicBool, on_listing: &OnListing<'_>) {
+    let opts = ListOptions { include_hidden, ..Default::default() };
     // Listing is I/O-bound; a few more threads than cores keeps the disk busy without
     // starving the matcher's own pool.
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
@@ -57,10 +84,9 @@ pub fn scan(config: &ScanConfig, stop: &AtomicBool, on_entry: &(dyn Fn(&Path, &E
         .build()
         .expect("scan thread pool");
     pool.scope(|s| {
-        for root in &config.roots {
-            let root = root.clone();
+        for dir in dirs {
             let opts = &opts;
-            s.spawn(move |s| walk(root, s, config, opts, stop, on_entry));
+            s.spawn(move |s| walk(dir, s, opts, stop, on_listing));
         }
     });
 }
@@ -68,22 +94,26 @@ pub fn scan(config: &ScanConfig, stop: &AtomicBool, on_entry: &(dyn Fn(&Path, &E
 fn walk<'s>(
     dir: PathBuf,
     s: &rayon::Scope<'s>,
-    config: &'s ScanConfig,
     opts: &'s ListOptions,
     stop: &'s AtomicBool,
-    on_entry: &'s (dyn Fn(&Path, &Entry) + Sync),
+    on_listing: &'s OnListing<'s>,
 ) {
     if stop.load(Ordering::Relaxed) {
         return;
     }
     let Ok(entries) = list_dir(&dir, opts, || stop.load(Ordering::Relaxed)) else { return };
-    for e in &entries {
-        on_entry(&dir, e);
-        if e.kind == EntryKind::Folder && !e.mount_point {
-            let child = dir.join(&e.name);
-            if config.descends_into(&child, &e.name) {
-                s.spawn(move |s| walk(child, s, config, opts, stop, on_entry));
-            }
+    for child in on_listing(&dir, entries) {
+        s.spawn(move |s| walk(child, s, opts, stop, on_listing));
+    }
+}
+
+/// Like `walk_parallel` but on the calling thread, for small incremental updates.
+pub fn walk_sequential(dirs: Vec<PathBuf>, include_hidden: bool, on_listing: &OnListing<'_>) {
+    let opts = ListOptions { include_hidden, ..Default::default() };
+    let mut stack = dirs;
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = list_dir(&dir, &opts, || false) {
+            stack.extend(on_listing(&dir, entries));
         }
     }
 }
@@ -129,6 +159,17 @@ mod tests {
         let mut seen = seen.into_inner().unwrap();
         seen.sort();
         assert_eq!(seen, ["App.app", "Library", "a", "a/b", "a/b/deep.txt", "a/top.txt", "node_modules"]);
+    }
+
+    #[test]
+    fn scans_inside_follows_exclusions() {
+        let root = PathBuf::from("/Users/me");
+        let c = config(&root);
+        assert!(c.scans_inside(&root));
+        assert!(c.scans_inside(Path::new("/Users/me/Developer")));
+        assert!(!c.scans_inside(Path::new("/Users/me/node_modules")), "listed, but its contents aren't");
+        assert!(!c.scans_inside(Path::new("/Users/me/Library")));
+        assert!(!c.scans_inside(Path::new("/Users/me/.git")));
     }
 
     #[test]

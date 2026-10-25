@@ -33,7 +33,7 @@ fn main() {
     };
 
     let t = Instant::now();
-    let mut index = GlobalIndex::start(config);
+    let mut index = GlobalIndex::start(config, || {});
     while index.status().scanning {
         std::thread::sleep(Duration::from_millis(20));
     }

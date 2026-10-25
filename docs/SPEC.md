@@ -564,7 +564,13 @@ Measured (M-series, APFS, release build, best of 20):
 
 Measured on the developer's home folder (release, M-series): 55,560 items scanned in 0.2 s, queries 3–8 ms, 38 MB peak.
 
-Still to do for M2: persist the index and catch up with FSEvents on launch, live updates while running, Tilde's own frecency store.
+### M2, live updates (done)
+
+- `tilde-fs::watch`: direct FSEvents bindings (CoreServices + a dispatch queue), folder-level events with IDs and rescan flags, exclusion paths.
+- Index updates in place: every item has an ID; a per-folder table of name and metadata hashes lets a fresh listing of a changed folder be diffed. New items are pushed, changed items re-pushed, removed items (and whole removed subtrees) marked dead and skipped by search. Rescan flags re-walk the subtree. Events that arrive during the initial scan are applied after it.
+- The open folder has its own watcher: it re-lists on change without a new generation (the UI keeps the selection) and moves to the nearest existing parent if the folder is deleted. Index changes refresh Everywhere results while a search is active.
+
+Still to do for M2: persist the index and catch up from the saved FSEvents ID on launch, Tilde's own frecency store, compaction of dead items.
 
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.

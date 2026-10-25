@@ -57,8 +57,10 @@ Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contai
 
 Typing shows matches in the current folder first, then an **Everywhere** section from an
 index of your home folder. The index is built in the background at launch (the status bar
-shows progress); it skips `~/Library`, hidden files, `node_modules`, `.git` and similar
-folders, and doesn't cross into other disks or mounts. Configure it under `[index]`.
+shows progress) and kept current with FSEvents while Tilde runs; it skips `~/Library`,
+hidden files, `node_modules`, `.git` and similar folders, and doesn't cross into other
+disks or mounts. Configure it under `[index]`. The open folder also refreshes by itself
+when its contents change.
 
 If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, folders you visit often
 rank higher, every folder zoxide knows is searchable, and folders you open in Tilde are

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tilde_fs::{ListOptions, list_dir, sort_entries};
+use tilde_fs::{ListOptions, SINCE_NOW, Watcher, list_dir, sort_entries, watch};
 use tilde_index::{GlobalHit, GlobalIndex, IndexConfig, ScanConfig};
 use tilde_query::{HereMatcher, Hit, Query};
 use tilde_types::Entry;
@@ -16,6 +16,8 @@ use crate::views::RowView;
 const EVERYWHERE_LIMIT: usize = 200;
 /// How often results refresh while the index is still being built.
 const SCAN_REFRESH: Duration = Duration::from_millis(400);
+/// FSEvents coalescing window for the open folder.
+const FOLDER_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
 /// Implemented by the Swift app. Called on a background thread.
 #[uniffi::export(with_foreign)]
@@ -36,9 +38,22 @@ pub struct IndexStatus {
 }
 
 enum Command {
-    Open { path: PathBuf, generation: u64 },
-    Query { text: String, generation: u64 },
-    ShowHidden { show: bool, generation: u64 },
+    Open {
+        path: PathBuf,
+        generation: u64,
+    },
+    Query {
+        text: String,
+        generation: u64,
+    },
+    ShowHidden {
+        show: bool,
+        generation: u64,
+    },
+    /// FSEvents reported a change directly inside this folder.
+    FolderChanged(PathBuf),
+    /// The index applied a batch of changes.
+    IndexChanged,
 }
 
 /// What `rows` reads from. Replaced wholesale by the worker after each update.
@@ -150,14 +165,22 @@ impl Engine {
         }));
         let status = Arc::new(Mutex::new(IndexStatus { items: 0, scanning: index.is_some() }));
         let latest_open = Arc::new(AtomicU64::new(0));
+        let index_tx = tx.clone();
+        let index = index.map(|config| {
+            GlobalIndex::start(config, move || {
+                let _ = index_tx.send(Command::IndexChanged);
+            })
+        });
         let worker = Worker {
             rx,
+            tx: tx.clone(),
+            folder_watcher: None,
             listener,
             published: published.clone(),
             status: status.clone(),
             latest_open: latest_open.clone(),
             home,
-            index: index.map(GlobalIndex::start),
+            index,
             record_visits,
             generation: 0,
             folder: PathBuf::new(),
@@ -177,6 +200,9 @@ fn home_dir() -> PathBuf {
 
 struct Worker {
     rx: Receiver<Command>,
+    /// For the open folder's watcher to report back.
+    tx: Sender<Command>,
+    folder_watcher: Option<Watcher>,
     listener: Arc<dyn EngineListener>,
     published: Arc<Mutex<Published>>,
     status: Arc<Mutex<IndexStatus>>,
@@ -221,7 +247,10 @@ impl Worker {
             // Coalesce everything queued so fast typing only ranks the latest text.
             let mut open = None;
             let mut relist = false;
+            let mut user_change = false;
+            let mut index_changed = false;
             for cmd in std::iter::once(first).chain(self.rx.try_iter()) {
+                user_change |= matches!(cmd, Command::Open { .. } | Command::Query { .. } | Command::ShowHidden { .. });
                 match cmd {
                     Command::Open { path, generation } => {
                         open = Some((path, generation));
@@ -236,7 +265,13 @@ impl Worker {
                         self.show_hidden = show;
                         self.generation = self.generation.max(generation);
                     }
+                    Command::FolderChanged(path) => relist |= path == self.folder,
+                    Command::IndexChanged => index_changed = true,
                 }
+            }
+            // Index updates only matter to a search in progress.
+            if !user_change && !relist && !(index_changed && !self.query.is_empty()) {
+                continue;
             }
 
             let explicit_open = open.is_some();
@@ -260,10 +295,24 @@ impl Worker {
                         {
                             index.record_visit(&path);
                         }
+                        if path != self.folder {
+                            self.watch_folder(&path);
+                        }
                         self.folder = path;
                         self.entries = Arc::new(entries);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if !explicit_open && e.kind() == std::io::ErrorKind::NotFound => {
+                        // The open folder was deleted: move to the nearest folder that exists.
+                        let mut up = path.clone();
+                        while !up.is_dir() && up.pop() {}
+                        if let Ok(mut entries) = list_dir(&up, &opts, || false) {
+                            sort_entries(&mut entries);
+                            self.watch_folder(&up);
+                            self.folder = up;
+                            self.entries = Arc::new(entries);
+                        }
+                    }
                     Err(e) => {
                         self.listener.folder_failed(open_generation, path.to_string_lossy().into(), e.to_string());
                     }
@@ -271,6 +320,21 @@ impl Worker {
             }
             self.publish();
         }
+    }
+
+    /// Replaces the open folder's watcher with one for `folder`.
+    fn watch_folder(&mut self, folder: &std::path::Path) {
+        self.folder_watcher = None;
+        let tx = self.tx.clone();
+        let target = folder.to_path_buf();
+        let roots = [target.clone()];
+        self.folder_watcher = watch(&roots, &[], SINCE_NOW, FOLDER_WATCH_LATENCY, move |batch| {
+            // The stream is recursive; only changes directly inside the folder matter.
+            if batch.iter().any(|e| e.path == target || (e.needs_rescan() && target.starts_with(&e.path))) {
+                let _ = tx.send(Command::FolderChanged(target.clone()));
+            }
+        })
+        .ok();
     }
 
     /// Copies the index status for `Engine::index_status`. Returns whether it's scanning.
@@ -410,6 +474,33 @@ mod tests {
         assert_eq!(folder, dir.path().to_string_lossy());
         assert_eq!(here, 1);
         assert_eq!(rec.failures.lock().unwrap()[0].0, 2);
+    }
+
+    #[test]
+    fn open_folder_refreshes_when_its_contents_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("inner")).unwrap();
+        std::fs::write(root.join("a.txt"), b"").unwrap();
+        let rec = Arc::new(Recorder::default());
+        let engine = engine_without_index(rec.clone());
+
+        engine.open_folder(root.join("inner").to_string_lossy().into(), 1);
+        engine.set_query(String::new(), 2);
+        assert_eq!(rec.wait_for(2).2, 0);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // A new file appears in the open folder without any command, same generation.
+        std::fs::write(root.join("inner/new.txt"), b"").unwrap();
+        let (generation, _, here, _) = rec.wait_until(2, |e| e.2 == 1);
+        assert_eq!(generation, 2);
+        assert_eq!(engine.rows(2, 0, 10)[0].name, "new.txt");
+
+        // Deleting the open folder moves up to its parent.
+        std::fs::remove_dir_all(root.join("inner")).unwrap();
+        let (_, folder, here_after, _) = rec.wait_until(2, |e| e.1 == root.to_string_lossy());
+        assert_eq!((here, here_after), (1, 1));
+        assert_eq!(folder, root.to_string_lossy());
     }
 
     #[test]

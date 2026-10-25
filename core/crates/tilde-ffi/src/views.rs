@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn everywhere_rows_split_highlights_between_folder_and_name() {
         use tilde_index::ItemMeta;
-        let meta = ItemMeta { kind: EntryKind::File, size: 1, modified: 0, child_count: None };
+        let meta = ItemMeta { id: 0, kind: EntryKind::File, size: 1, modified: 0, child_count: None };
         // "Developer/tilde/main.swift": D=0 … t=10 (in "tilde"), m=16 (name start).
         let hit = GlobalHit { key: "Developer/tilde/main.swift".into(), meta, indices: vec![0, 10, 16, 17], score: 0 };
         let row = RowView::everywhere(Path::new("/Users/me"), &hit);

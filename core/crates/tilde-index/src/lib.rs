@@ -1,17 +1,18 @@
 //! The global filename index behind the Everywhere scope.
 //!
-//! First cut (see docs/SPEC.md §6.2): an in-memory index built by a background scan on
-//! startup, matched with nucleo, re-ranked with filename, depth, recency and zoxide
-//! boosts. Persistence and FSEvents catch-up come later.
+//! An in-memory index built by a background scan on startup and kept current with
+//! FSEvents, matched with nucleo and re-ranked with filename, depth, recency and zoxide
+//! boosts (see docs/SPEC.md §6.2). Persistence across launches comes later.
 //!
 //! Paths are stored as keys relative to the home folder (`Developer/tilde/README.md`), or
 //! absolute for anything outside it. Relative keys keep memory down and stop every query
 //! from matching the home folder's own name.
 
+mod live;
 mod walk;
 mod zoxide;
 
-pub use walk::{ScanConfig, scan};
+pub use walk::{ScanConfig, scan, walk_parallel, walk_sequential};
 pub use zoxide::{Zoxide, parse_scores};
 
 use std::collections::HashMap;
@@ -21,13 +22,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo::{Config, Injector, Matcher, Nucleo, Utf32Str, Utf32String};
+use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
+use tilde_fs::{FsEvent, SINCE_NOW, Watcher, watch};
 use tilde_query::{Candidate, FilterContext, Query};
 use tilde_types::EntryKind;
+
+use crate::live::Shared;
 
 /// How many top matches are re-ranked with boosts.
 const RERANK_CANDIDATES: usize = 3000;
 const ZOXIDE_REFRESH: Duration = Duration::from_secs(60);
+/// FSEvents coalescing window.
+const WATCH_LATENCY: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub struct IndexConfig {
@@ -39,6 +45,8 @@ pub struct IndexConfig {
 /// What the index keeps per item besides its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemMeta {
+    /// Assigned when the item is added; used to mark it dead when it changes or goes.
+    pub id: u32,
     pub kind: EntryKind,
     pub size: u64,
     pub modified: i64,
@@ -63,11 +71,11 @@ pub struct IndexStatus {
 
 pub struct GlobalIndex {
     nucleo: Nucleo<ItemMeta>,
-    /// Kept for its live count of pushed items (the snapshot only updates on `tick`).
-    counter: Injector<ItemMeta>,
-    home: PathBuf,
+    shared: Arc<Shared>,
     scanning: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// Dropping it ends the stream, which ends the update thread.
+    _watcher: Option<Watcher>,
     zoxide: Option<Zoxide>,
     /// zoxide scores by key.
     zoxide_scores: HashMap<String, f64>,
@@ -79,16 +87,27 @@ pub struct GlobalIndex {
 }
 
 impl GlobalIndex {
-    /// Creates the index and starts scanning in the background.
-    pub fn start(config: IndexConfig) -> GlobalIndex {
+    /// Creates the index, starts scanning in the background, then keeps it current with
+    /// FSEvents. `on_change` runs after each batch of changes is applied.
+    pub fn start(config: IndexConfig, on_change: impl Fn() + Send + 'static) -> GlobalIndex {
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
         let zoxide = config.zoxide.then(Zoxide::find).flatten();
+        let shared = Arc::new(Shared::new(config.home.clone(), config.scan.clone(), nucleo.injector()));
+
+        // Start watching before scanning so nothing that changes mid-scan is missed;
+        // events queue up until the scan is done.
+        let (events_tx, events_rx) = std::sync::mpsc::channel::<Vec<FsEvent>>();
+        let watcher = watch(&config.scan.roots, &config.scan.exclude_paths, SINCE_NOW, WATCH_LATENCY, move |batch| {
+            let _ = events_tx.send(batch);
+        })
+        .ok();
+
         let mut index = GlobalIndex {
-            counter: nucleo.injector(),
             nucleo,
-            home: config.home.clone(),
+            shared: shared.clone(),
             scanning: Arc::new(AtomicBool::new(true)),
             stop: Arc::new(AtomicBool::new(false)),
+            _watcher: watcher,
             zoxide,
             zoxide_scores: HashMap::new(),
             zoxide_loaded: Instant::now(),
@@ -99,22 +118,12 @@ impl GlobalIndex {
         };
         let zoxide_dirs = index.reload_zoxide();
 
-        let injector = index.nucleo.injector();
-        let (scanning, stop, home) = (index.scanning.clone(), index.stop.clone(), config.home.clone());
+        let (scanning, stop) = (index.scanning.clone(), index.stop.clone());
         std::thread::Builder::new()
             .name("tilde-index".into())
             .spawn(move || {
-                let push = |path: &Path, meta: ItemMeta| {
-                    let key = key_for(&home, path);
-                    if !key.is_empty() {
-                        injector.push(meta, |_, cols| cols[0] = Utf32String::from(key.as_str()));
-                    }
-                };
-                scan(&config.scan, &stop, &|dir, e| {
-                    push(
-                        &dir.join(&e.name),
-                        ItemMeta { kind: e.kind, size: e.size, modified: e.modified, child_count: e.child_count },
-                    );
+                walk_parallel(config.scan.roots.clone(), config.scan.include_hidden, &stop, &|dir, entries| {
+                    shared.sync_dir(dir, &entries, false)
                 });
                 // zoxide folders the scan can't reach (hidden, excluded, outside home).
                 for dir in zoxide_dirs.iter().filter(|d| !config.scan.covers(d)) {
@@ -126,27 +135,40 @@ impl GlobalIndex {
                             .ok()
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map_or(0, |d| d.as_secs() as i64);
-                        push(dir, ItemMeta { kind: EntryKind::Folder, size: 0, modified, child_count: None });
+                        let key = shared.key(dir);
+                        let meta = ItemMeta { id: 0, kind: EntryKind::Folder, size: 0, modified, child_count: None };
+                        if !key.is_empty() {
+                            shared.push(&key, meta);
+                        }
                     }
                 }
                 scanning.store(false, Ordering::SeqCst);
+                on_change();
+
+                // Then apply changes as they arrive, a batch at a time.
+                while let Ok(first) = events_rx.recv() {
+                    let mut batch = first;
+                    batch.extend(events_rx.try_iter().flatten());
+                    shared.apply(&batch);
+                    on_change();
+                }
             })
             .expect("spawn index thread");
         index
     }
 
     pub fn status(&self) -> IndexStatus {
-        IndexStatus { items: self.counter.injected_items() as u64, scanning: self.scanning.load(Ordering::SeqCst) }
+        IndexStatus { items: self.shared.live_items(), scanning: self.scanning.load(Ordering::SeqCst) }
     }
 
     /// The key form of a path (relative to home, or absolute). Empty for home itself.
     pub fn key(&self, path: &Path) -> String {
-        key_for(&self.home, path)
+        self.shared.key(path)
     }
 
     /// Absolute path for a key.
     pub fn absolute(&self, key: &str) -> PathBuf {
-        if key.starts_with('/') { PathBuf::from(key) } else { self.home.join(key) }
+        if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
     }
 
     /// Records a folder visit with zoxide, if enabled.
@@ -185,6 +207,7 @@ impl GlobalIndex {
         while self.nucleo.tick(10).running && Instant::now() < deadline {}
 
         let snap = self.nucleo.snapshot();
+        let dead = self.shared.dead();
         let ctx = FilterContext { now, cwd };
         let has_text = !query.text.is_empty();
         let name_pattern = has_text.then(|| Pattern::parse(&query.text, CaseMatching::Ignore, Normalization::Smart));
@@ -196,6 +219,9 @@ impl GlobalIndex {
             }
             let Some(item) = snap.get_matched_item(n) else { break };
             let meta = *item.data;
+            if dead.contains(meta.id) {
+                continue;
+            }
             let column = &item.matcher_columns[0];
             let score = with_str(column, |key| {
                 let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
@@ -253,7 +279,7 @@ impl GlobalIndex {
         self.zoxide_loaded = Instant::now();
         let Some(z) = &self.zoxide else { return Vec::new() };
         let scores = z.scores();
-        self.zoxide_scores = scores.iter().map(|(p, s)| (key_for(&self.home, p), *s)).collect();
+        self.zoxide_scores = scores.iter().map(|(p, s)| (self.shared.key(p), *s)).collect();
         scores.into_iter().map(|(p, _)| p).collect()
     }
 }
@@ -264,7 +290,7 @@ impl Drop for GlobalIndex {
     }
 }
 
-fn key_for(home: &Path, path: &Path) -> String {
+pub(crate) fn key_for(home: &Path, path: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(rel) => rel.to_string_lossy().into_owned(),
         Err(_) => path.to_string_lossy().into_owned(),
@@ -296,7 +322,7 @@ mod tests {
             },
             zoxide: false,
         };
-        let index = GlobalIndex::start(config);
+        let index = GlobalIndex::start(config, || {});
         let t = Instant::now();
         while index.status().scanning {
             assert!(t.elapsed() < Duration::from_secs(10));
@@ -365,6 +391,94 @@ mod tests {
         // Items directly in the current folder are left to the Here scope.
         let hits = index.search(&Query::parse("notes"), None, Some("Documents"), 0, 10);
         assert!(hits.is_empty());
+    }
+
+    fn search_keys(index: &mut GlobalIndex, q: &str) -> Vec<String> {
+        let mut k: Vec<String> = index.search(&Query::parse(q), None, None, 0, 50).into_iter().map(|h| h.key).collect();
+        k.sort();
+        k
+    }
+
+    fn changed(dir: PathBuf) -> FsEvent {
+        FsEvent { path: dir, flags: 0, id: 0 }
+    }
+
+    #[test]
+    fn applying_changes_adds_updates_and_removes() {
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        let before = index.status().items;
+
+        // New file and new folder with contents.
+        fs::write(root.join("Documents/fresh-report.txt"), b"x").unwrap();
+        fs::create_dir_all(root.join("Documents/Archive/2025")).unwrap();
+        fs::write(root.join("Documents/Archive/2025/old-report.txt"), b"x").unwrap();
+        index.shared.apply(&[changed(root.join("Documents"))]);
+        assert_eq!(
+            search_keys(&mut index, "report"),
+            ["Documents/Archive/2025/old-report.txt", "Documents/fresh-report.txt"]
+        );
+        assert_eq!(index.status().items, before + 4);
+
+        // A changed file is replaced, not duplicated.
+        fs::write(root.join("Documents/fresh-report.txt"), b"longer contents").unwrap();
+        index.shared.apply(&[changed(root.join("Documents"))]);
+        let hits = index.search(&Query::parse("fresh-report"), None, None, 0, 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].meta.size, 15);
+
+        // Removing a folder removes everything under it.
+        fs::remove_dir_all(root.join("Documents/Archive")).unwrap();
+        index.shared.apply(&[changed(root.join("Documents")), changed(root.join("Documents/Archive"))]);
+        assert_eq!(search_keys(&mut index, "report"), ["Documents/fresh-report.txt"]);
+        assert_eq!(index.status().items, before + 1);
+
+        // Changes inside excluded folders are ignored.
+        fs::write(root.join("node_modules/left-pad/extra.js"), b"x").unwrap();
+        index.shared.apply(&[changed(root.join("node_modules/left-pad"))]);
+        assert!(search_keys(&mut index, "extra").is_empty());
+    }
+
+    #[test]
+    fn rescan_picks_up_changes_deep_inside() {
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        fs::write(root.join("Developer/projects/tilde/Sources/Watcher.swift"), b"x").unwrap();
+        fs::remove_file(root.join("Developer/projects/tilde/README.md")).unwrap();
+        index.shared.apply(&[FsEvent { path: root.clone(), flags: 0x01, id: 0 }]);
+        assert_eq!(search_keys(&mut index, "Watcher"), ["Developer/projects/tilde/Sources/Watcher.swift"]);
+        assert!(search_keys(&mut index, "README").is_empty());
+    }
+
+    #[test]
+    fn real_fsevents_keep_the_index_current() {
+        let (_dir, root) = tree();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let config = IndexConfig {
+            home: root.clone(),
+            scan: ScanConfig {
+                roots: vec![root.clone()],
+                exclude_names: Default::default(),
+                exclude_paths: vec![],
+                include_hidden: false,
+            },
+            zoxide: false,
+        };
+        let mut index = GlobalIndex::start(config, move || {
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(10)).expect("initial scan");
+        std::thread::sleep(Duration::from_millis(300));
+
+        fs::write(root.join("Documents/created-live.md"), b"x").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if search_keys(&mut index, "created-live") == ["Documents/created-live.md"] {
+                break;
+            }
+            assert!(Instant::now() < deadline, "new file never appeared in the index");
+            let _ = rx.recv_timeout(Duration::from_millis(500));
+        }
     }
 
     #[test]
