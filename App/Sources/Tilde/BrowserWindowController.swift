@@ -12,6 +12,7 @@ enum Mode {
 @MainActor
 final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private let events = EngineEvents()
+    private let index: IndexService
     private let engine: Engine
     private let results: ResultsCache
 
@@ -36,10 +37,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// they arrive, so fast typing acts on the right row.
     private var pendingAction: (() -> Void)?
     private var indexTimer: Timer?
-    private var indexStatus = IndexStatus(items: 0, scanning: true)
+    private var indexStatus = IndexStatus(state: .scanning, items: 0, capped: false)
 
-    init() {
-        engine = Engine(listener: events)
+    init(index: IndexService) {
+        self.index = index
+        engine = Engine(listener: events, index: index)
         results = ResultsCache(engine: engine)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 680),
@@ -305,6 +307,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case "G": select(row: results.tableRows - 1)
         case "/": setMode(.go)
         case "~": open(folder: engine.homeDir())
+        case "X": hideHighlightedFromSearch()
         case let c where c.count == 1 && c.first!.isLetter:
             statusBar.flash("\(c) does nothing yet in SELECT. Press / to search.")
         default: return false
@@ -335,26 +338,43 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             parts.append("\(results.hereCount.formatted()) here")
             parts.append("\(results.everywhereCount.formatted()) everywhere")
         }
-        if indexStatus.scanning {
-            parts.append("indexing \(Int(indexStatus.items).formatted())…")
+        switch indexStatus.state {
+        case .scanning: parts.append("indexing \(Int(indexStatus.items).formatted())…")
+        case .cleared, .disabled: parts.append("search index off · ⌘⇧I")
+        case .ready where indexStatus.capped: parts.append("index full · ⌘⇧I")
+        case .ready: break
         }
         return parts.joined(separator: " · ")
     }
 
-    /// Polls index progress for the status bar until the first scan finishes.
+    /// Polls the shared index for the status bar (cheap: a lock and two counters).
     private func startIndexProgress() {
+        indexStatus = index.status()
         indexTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollIndex() }
         }
     }
 
     private func pollIndex() {
-        indexStatus = engine.indexStatus()
+        let previous = indexStatus
+        indexStatus = index.status()
+        guard indexStatus != previous else { return }
         updateChrome()
-        if !indexStatus.scanning {
-            indexTimer?.invalidate()
-            indexTimer = nil
-            statusBar.flash("Indexed \(Int(indexStatus.items).formatted()) items")
+        if previous.state == .scanning, indexStatus.state == .ready {
+            let note = indexStatus.capped ? " (limit reached; see ⌘⇧I)" : ""
+            statusBar.flash("Indexed \(Int(indexStatus.items).formatted()) items\(note)")
+        }
+    }
+
+    /// `X` in SELECT: leave the highlighted item out of search for good (adds it to
+    /// `[index] hide` in the config and rebuilds).
+    private func hideHighlightedFromSearch() {
+        guard let row = selectedRow else { return }
+        do {
+            try index.addExclusion(path: row.path, hide: true)
+            statusBar.flash("Hid \(row.name) from search. Undo in the config (⌘,), then Rebuild (⌘⇧I).")
+        } catch {
+            statusBar.flash("Couldn't update the config: \(error.localizedDescription)")
         }
     }
 

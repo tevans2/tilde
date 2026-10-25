@@ -1,29 +1,34 @@
 //! The global filename index behind the Everywhere scope.
 //!
-//! An in-memory index built by a background scan on startup and kept current with
-//! FSEvents, matched with nucleo and re-ranked with filename, depth, recency and zoxide
-//! boosts (see docs/SPEC.md §6.2). Persistence across launches comes later.
+//! Built by a background scan, kept current with FSEvents, and saved between launches
+//! (see docs/SPEC.md §6.2). On launch a saved index is loaded and FSEvents replays only
+//! what changed since. Matching is nucleo, re-ranked with filename, depth, recency and
+//! zoxide boosts.
 //!
 //! Paths are stored as keys relative to the home folder (`Developer/tilde/README.md`), or
 //! absolute for anything outside it. Relative keys keep memory down and stop every query
 //! from matching the home folder's own name.
 
 mod live;
+mod persist;
 mod walk;
 mod zoxide;
 
-pub use walk::{ScanConfig, scan, walk_parallel, walk_sequential};
+pub use live::FolderSize;
+pub use walk::{ScanConfig, glob_match, scan, walk_parallel, walk_sequential};
 pub use zoxide::{Zoxide, parse_scores};
 
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Nucleo, Utf32Str, Utf32String};
-use tilde_fs::{FsEvent, SINCE_NOW, Watcher, watch};
+use tilde_fs::{FsEvent, SINCE_NOW, Watcher, current_event_id, watch};
 use tilde_query::{Candidate, FilterContext, Query};
 use tilde_types::EntryKind;
 
@@ -34,12 +39,36 @@ const RERANK_CANDIDATES: usize = 3000;
 const ZOXIDE_REFRESH: Duration = Duration::from_secs(60);
 /// FSEvents coalescing window.
 const WATCH_LATENCY: Duration = Duration::from_millis(200);
+/// How often a changed index is saved while running.
+const AUTOSAVE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct IndexConfig {
     pub home: PathBuf,
     pub scan: ScanConfig,
     pub zoxide: bool,
+    pub max_items: u64,
+    /// Where the index is saved between launches. `None` keeps it in memory only.
+    pub cache_path: Option<PathBuf>,
+}
+
+impl IndexConfig {
+    /// Identifies the settings a saved index was built with; a saved index built with
+    /// different ones is discarded.
+    fn fingerprint(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        "tilde-index-1".hash(&mut h);
+        self.home.hash(&mut h);
+        self.scan.roots.hash(&mut h);
+        let mut names: Vec<&String> = self.scan.exclude_names.iter().collect();
+        names.sort();
+        names.hash(&mut h);
+        self.scan.exclude_paths.hash(&mut h);
+        self.scan.hide_names.hash(&mut h);
+        self.scan.hide_paths.hash(&mut h);
+        self.scan.include_hidden.hash(&mut h);
+        h.finish()
+    }
 }
 
 /// What the index keeps per item besides its path.
@@ -51,6 +80,8 @@ pub struct ItemMeta {
     pub size: u64,
     pub modified: i64,
     pub child_count: Option<u32>,
+    /// Added from zoxide rather than scanned; not saved.
+    pub extra: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,13 +98,75 @@ pub struct GlobalHit {
 pub struct IndexStatus {
     pub items: u64,
     pub scanning: bool,
+    /// Stopped adding at `max_items`.
+    pub capped: bool,
+}
+
+/// Thread-safe access to the index's size, stats and saving, without the search lock.
+#[derive(Clone)]
+pub struct IndexHandle {
+    shared: Arc<Shared>,
+    scanning: Arc<AtomicBool>,
+}
+
+impl IndexHandle {
+    pub fn status(&self) -> IndexStatus {
+        IndexStatus {
+            items: self.shared.live_items(),
+            scanning: self.scanning.load(Ordering::SeqCst),
+            capped: self.shared.capped.load(Ordering::SeqCst),
+        }
+    }
+
+    pub fn max_items(&self) -> u64 {
+        self.shared.max_items
+    }
+
+    /// Rough bytes of memory the index uses.
+    pub fn memory_estimate(&self) -> u64 {
+        self.shared.memory_estimate()
+    }
+
+    pub fn largest_folders(&self, limit: usize) -> Vec<FolderSize> {
+        self.shared.largest_folders(limit)
+    }
+
+    pub fn cache_path(&self) -> Option<&Path> {
+        self.shared.cache.as_ref().map(|(p, _)| p.as_path())
+    }
+
+    /// Size of the saved index on disk, if there is one.
+    pub fn disk_size(&self) -> Option<u64> {
+        std::fs::metadata(self.cache_path()?).ok().map(|m| m.len())
+    }
+
+    /// Saves now. Returns the file size, or `None` if saving is off.
+    pub fn save(&self) -> Option<std::io::Result<u64>> {
+        self.shared.save()
+    }
+
+    /// Deletes the saved index and stops this index from saving again.
+    pub fn delete_saved(&self) -> std::io::Result<()> {
+        self.shared.saving_disabled.store(true, Ordering::SeqCst);
+        match self.cache_path() {
+            Some(p) => match std::fs::remove_file(p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            },
+            None => Ok(()),
+        }
+    }
+
+    /// Absolute path for a key.
+    pub fn absolute(&self, key: &str) -> PathBuf {
+        if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
+    }
 }
 
 pub struct GlobalIndex {
     nucleo: Nucleo<ItemMeta>,
     shared: Arc<Shared>,
     scanning: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
     /// Dropping it ends the stream, which ends the update thread.
     _watcher: Option<Watcher>,
     zoxide: Option<Zoxide>,
@@ -87,26 +180,48 @@ pub struct GlobalIndex {
 }
 
 impl GlobalIndex {
-    /// Creates the index, starts scanning in the background, then keeps it current with
-    /// FSEvents. `on_change` runs after each batch of changes is applied.
+    /// Loads the saved index or scans, then keeps the index current with FSEvents.
+    /// `on_change` runs when the first load or scan finishes and after each batch of
+    /// changes is applied.
     pub fn start(config: IndexConfig, on_change: impl Fn() + Send + 'static) -> GlobalIndex {
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
         let zoxide = config.zoxide.then(Zoxide::find).flatten();
-        let shared = Arc::new(Shared::new(config.home.clone(), config.scan.clone(), nucleo.injector()));
+        let fingerprint = config.fingerprint();
+        let cache = config.cache_path.clone().map(|p| (p, fingerprint));
+        let shared =
+            Arc::new(Shared::new(config.home.clone(), config.scan.clone(), config.max_items, cache, nucleo.injector()));
+
+        // A saved index is usable if it was built with these settings and FSEvents can
+        // replay everything since (IDs only go backwards if its database was reset).
+        let saved = config
+            .cache_path
+            .as_deref()
+            .and_then(|p| persist::load(p, fingerprint))
+            .filter(|s| s.last_event_id <= current_event_id());
+        let resume_from = saved.map(|s| {
+            shared.load(s.items);
+            s.last_event_id
+        });
+        shared.last_event_id.store(resume_from.unwrap_or_else(current_event_id), Ordering::SeqCst);
 
         // Start watching before scanning so nothing that changes mid-scan is missed;
-        // events queue up until the scan is done.
+        // events (or replayed history) queue up until the scan is done.
         let (events_tx, events_rx) = std::sync::mpsc::channel::<Vec<FsEvent>>();
-        let watcher = watch(&config.scan.roots, &config.scan.exclude_paths, SINCE_NOW, WATCH_LATENCY, move |batch| {
-            let _ = events_tx.send(batch);
-        })
+        let watcher = watch(
+            &config.scan.roots,
+            &config.scan.exclude_paths,
+            resume_from.unwrap_or(SINCE_NOW),
+            WATCH_LATENCY,
+            move |batch| {
+                let _ = events_tx.send(batch);
+            },
+        )
         .ok();
 
         let mut index = GlobalIndex {
             nucleo,
             shared: shared.clone(),
-            scanning: Arc::new(AtomicBool::new(true)),
-            stop: Arc::new(AtomicBool::new(false)),
+            scanning: Arc::new(AtomicBool::new(resume_from.is_none())),
             _watcher: watcher,
             zoxide,
             zoxide_scores: HashMap::new(),
@@ -118,13 +233,16 @@ impl GlobalIndex {
         };
         let zoxide_dirs = index.reload_zoxide();
 
-        let (scanning, stop) = (index.scanning.clone(), index.stop.clone());
+        let scanning = index.scanning.clone();
         std::thread::Builder::new()
             .name("tilde-index".into())
             .spawn(move || {
-                walk_parallel(config.scan.roots.clone(), config.scan.include_hidden, &stop, &|dir, entries| {
-                    shared.sync_dir(dir, &entries, false)
-                });
+                if resume_from.is_none() {
+                    let stop = shared.stop.clone();
+                    walk_parallel(config.scan.roots.clone(), config.scan.include_hidden, &stop, &|dir, entries| {
+                        shared.sync_dir(dir, &entries, false)
+                    });
+                }
                 // zoxide folders the scan can't reach (hidden, excluded, outside home).
                 for dir in zoxide_dirs.iter().filter(|d| !config.scan.covers(d)) {
                     if let Ok(md) = std::fs::metadata(dir)
@@ -136,21 +254,41 @@ impl GlobalIndex {
                             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                             .map_or(0, |d| d.as_secs() as i64);
                         let key = shared.key(dir);
-                        let meta = ItemMeta { id: 0, kind: EntryKind::Folder, size: 0, modified, child_count: None };
+                        let meta = ItemMeta {
+                            id: 0,
+                            kind: EntryKind::Folder,
+                            size: 0,
+                            modified,
+                            child_count: None,
+                            extra: true,
+                        };
                         if !key.is_empty() {
                             shared.push(&key, meta);
                         }
                     }
                 }
+                if resume_from.is_none() {
+                    let _ = shared.save();
+                }
                 scanning.store(false, Ordering::SeqCst);
                 on_change();
 
-                // Then apply changes as they arrive, a batch at a time.
-                while let Ok(first) = events_rx.recv() {
-                    let mut batch = first;
-                    batch.extend(events_rx.try_iter().flatten());
-                    shared.apply(&batch);
-                    on_change();
+                // Then apply changes as they arrive, a batch at a time, saving now and then.
+                loop {
+                    match events_rx.recv_timeout(AUTOSAVE) {
+                        Ok(first) => {
+                            let mut batch = first;
+                            batch.extend(events_rx.try_iter().flatten());
+                            shared.apply(&batch);
+                            on_change();
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            if shared.dirty.load(Ordering::SeqCst) {
+                                let _ = shared.save();
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
                 }
             })
             .expect("spawn index thread");
@@ -158,7 +296,11 @@ impl GlobalIndex {
     }
 
     pub fn status(&self) -> IndexStatus {
-        IndexStatus { items: self.shared.live_items(), scanning: self.scanning.load(Ordering::SeqCst) }
+        self.handle().status()
+    }
+
+    pub fn handle(&self) -> IndexHandle {
+        IndexHandle { shared: self.shared.clone(), scanning: self.scanning.clone() }
     }
 
     /// The key form of a path (relative to home, or absolute). Empty for home itself.
@@ -286,7 +428,7 @@ impl GlobalIndex {
 
 impl Drop for GlobalIndex {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.shared.stop.store(true, Ordering::SeqCst);
     }
 }
 
@@ -311,17 +453,21 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn build(root: &Path) -> GlobalIndex {
-        let config = IndexConfig {
+    fn config(root: &Path) -> IndexConfig {
+        IndexConfig {
             home: root.to_path_buf(),
             scan: ScanConfig {
                 roots: vec![root.to_path_buf()],
                 exclude_names: ["node_modules".to_string()].into(),
-                exclude_paths: vec![],
-                include_hidden: false,
+                ..Default::default()
             },
             zoxide: false,
-        };
+            max_items: 1_000_000,
+            cache_path: None,
+        }
+    }
+
+    fn start_and_wait(config: IndexConfig) -> GlobalIndex {
         let index = GlobalIndex::start(config, || {});
         let t = Instant::now();
         while index.status().scanning {
@@ -329,6 +475,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         index
+    }
+
+    fn build(root: &Path) -> GlobalIndex {
+        start_and_wait(config(root))
     }
 
     fn tree() -> (tempfile::TempDir, PathBuf) {
@@ -454,17 +604,7 @@ mod tests {
     fn real_fsevents_keep_the_index_current() {
         let (_dir, root) = tree();
         let (tx, rx) = std::sync::mpsc::channel();
-        let config = IndexConfig {
-            home: root.clone(),
-            scan: ScanConfig {
-                roots: vec![root.clone()],
-                exclude_names: Default::default(),
-                exclude_paths: vec![],
-                include_hidden: false,
-            },
-            zoxide: false,
-        };
-        let mut index = GlobalIndex::start(config, move || {
+        let mut index = GlobalIndex::start(config(&root), move || {
             let _ = tx.send(());
         });
         rx.recv_timeout(Duration::from_secs(10)).expect("initial scan");
@@ -479,6 +619,98 @@ mod tests {
             assert!(Instant::now() < deadline, "new file never appeared in the index");
             let _ = rx.recv_timeout(Duration::from_millis(500));
         }
+    }
+
+    #[test]
+    fn saves_and_resumes_with_changes_since() {
+        let (_dir, root) = tree();
+        // Outside the indexed folder, or saving would itself show up as a change.
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = cache_dir.path().join("cache/index.bin");
+        let with_cache = || IndexConfig { cache_path: Some(cache.clone()), ..config(&root) };
+
+        let first = start_and_wait(with_cache());
+        let items = first.status().items;
+        let size = first.handle().disk_size().expect("saved after the first scan");
+        assert!(size > 0);
+        drop(first);
+
+        // Changes while "closed" are replayed from FSEvents history on the next start.
+        std::thread::sleep(Duration::from_millis(500));
+        fs::write(root.join("Documents/while-closed.txt"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let mut second = GlobalIndex::start(with_cache(), || {});
+        assert!(!second.status().scanning, "loaded, not scanned");
+        assert!(second.status().items >= items);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while search_keys(&mut second, "while-closed").is_empty() {
+            assert!(Instant::now() < deadline, "change made while closed was never replayed");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Different settings discard the saved index.
+        let mut changed = with_cache();
+        changed.scan.hide_names = vec!["*.md".into()];
+        let third = start_and_wait(changed);
+        assert!(third.status().items < items);
+    }
+
+    #[test]
+    fn deleting_the_saved_index_stops_saving() {
+        let (_dir, root) = tree();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = cache_dir.path().join("index.bin");
+        let index = start_and_wait(IndexConfig { cache_path: Some(cache.clone()), ..config(&root) });
+        assert!(cache.exists());
+        index.handle().delete_saved().unwrap();
+        assert!(!cache.exists());
+        assert!(index.handle().save().is_none());
+        drop(index);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn stops_at_max_items() {
+        let (_dir, root) = tree();
+        let index = start_and_wait(IndexConfig { max_items: 5, ..config(&root) });
+        let status = index.status();
+        assert_eq!(status.items, 5);
+        assert!(status.capped);
+    }
+
+    #[test]
+    fn hide_rules_leave_items_out() {
+        let (_dir, root) = tree();
+        let mut cfg = config(&root);
+        cfg.scan.hide_names = vec!["*.swift".into()];
+        cfg.scan.hide_paths = vec![root.join("Documents/Finance")];
+        let mut index = start_and_wait(cfg);
+        assert!(search_keys(&mut index, "swift").is_empty());
+        assert!(search_keys(&mut index, "invoice").is_empty());
+        assert!(search_keys(&mut index, "Finance").is_empty());
+        assert_eq!(search_keys(&mut index, "notes"), ["Documents/notes.md"]);
+    }
+
+    #[test]
+    fn largest_folders_point_at_the_real_culprit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        fs::create_dir_all(root.join("Developer/huge/vendor")).unwrap();
+        fs::create_dir_all(root.join("Documents")).unwrap();
+        for i in 0..900 {
+            fs::write(root.join(format!("Developer/huge/vendor/f{i}")), b"").unwrap();
+        }
+        for i in 0..20 {
+            fs::write(root.join(format!("Documents/d{i}")), b"").unwrap();
+        }
+        let index = build(&root);
+        let largest = index.handle().largest_folders(5);
+        // Developer and huge are almost entirely vendor, so vendor is what's listed.
+        assert_eq!(largest[0], FolderSize { key: "Developer/huge/vendor".into(), items: 900 });
+        assert!(largest.iter().all(|f| f.key != "Developer" && f.key != "Developer/huge"));
+        assert!(index.handle().memory_estimate() > 900 * 100);
     }
 
     #[test]

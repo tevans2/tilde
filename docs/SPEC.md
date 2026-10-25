@@ -570,7 +570,16 @@ Measured on the developer's home folder (release, M-series): 55,560 items scanne
 - Index updates in place: every item has an ID; a per-folder table of name and metadata hashes lets a fresh listing of a changed folder be diffed. New items are pushed, changed items re-pushed, removed items (and whole removed subtrees) marked dead and skipped by search. Rescan flags re-walk the subtree. Events that arrive during the initial scan are applied after it.
 - The open folder has its own watcher: it re-lists on change without a new generation (the UI keeps the selection) and moves to the nearest existing parent if the folder is deleted. Index changes refresh Everywhere results while a search is active.
 
-Still to do for M2: persist the index and catch up from the saved FSEvents ID on launch, Tilde's own frecency store, compaction of dead items.
+### M2, saved index and index controls (done)
+
+- Saved to `~/Library/Caches/Tilde/index.bin` (header with format version, settings fingerprint and the FSEvents ID it's current to; one record per item; written atomically). Saved after the first scan, every 5 minutes when changed, and on quit. On launch a matching saved index is loaded and FSEvents replays changes since its ID; a mismatched or damaged file means a fresh scan.
+- One `IndexService` shared by every window (previously each window built its own).
+- `[index]` gains `enabled`, `hide` (names, `*`/`?` patterns, paths; left out entirely) and `max_items` (indexing stops there and reports it). Config edits from the app go through `toml_edit`, keeping comments.
+- Search Index window (⌘⇧I): status, items against the limit, approximate memory, size on disk, saved path, roots, largest folders (skipping folders mostly made of one subfolder) with Exclude contents / Hide, Rebuild, Clear, Edit Config. `X` in SELECT hides the highlighted item.
+
+Measured on the developer's home folder: 55,581 items; saved file 5.3 MB written in 73 ms; loading it takes 37 ms instead of a 0.2–0.45 s scan.
+
+Still to do for M2: Tilde's own frecency store, compaction of dead items, folder counts and dates in Everywhere rows kept current.
 
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.

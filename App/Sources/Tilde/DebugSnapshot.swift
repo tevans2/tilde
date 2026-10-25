@@ -4,16 +4,19 @@ import AppKit
 /// Development aid: `TILDE_SNAPSHOT=/path/out.png` renders the key window to a PNG after
 /// launch and quits. `TILDE_SNAPSHOT_KEYS` replays keystrokes first (`\e` is escape, `\t` tab,
 /// `\r` return, `\b` delete), so flows can be checked without screen-recording access.
+/// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead.
 @MainActor
 enum DebugSnapshot {
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let out = env["TILDE_SNAPSHOT"] else { return }
         let keys = decode(env["TILDE_SNAPSHOT_KEYS"] ?? "")
+        let showIndex = env["TILDE_SNAPSHOT_INDEX"] == "1"
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             type(Array(keys)) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    write(to: out)
+                if showIndex { NSApp.sendAction(#selector(AppDelegate.showIndex(_:)), to: nil, from: nil) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + (showIndex ? 2.0 : 0.6)) {
+                    write(to: out, panel: showIndex)
                     NSApp.terminate(nil)
                 }
             }
@@ -53,8 +56,11 @@ enum DebugSnapshot {
         )
     }
 
-    private static func write(to path: String) {
-        guard let window = NSApp.keyWindow ?? NSApp.windows.first, let view = window.contentView?.superview else { return }
+    private static func write(to path: String, panel: Bool) {
+        let window = panel
+            ? NSApp.windows.first { $0 is NSPanel && $0.isVisible }
+            : (NSApp.keyWindow ?? NSApp.windows.first)
+        guard let window, let view = window.contentView?.superview else { return }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))

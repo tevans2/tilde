@@ -6,10 +6,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tilde_fs::{ListOptions, SINCE_NOW, Watcher, list_dir, sort_entries, watch};
-use tilde_index::{GlobalHit, GlobalIndex, IndexConfig, ScanConfig};
+use tilde_index::GlobalHit;
 use tilde_query::{HereMatcher, Hit, Query};
 use tilde_types::Entry;
 
+use crate::index::{IndexService, IndexState, home_dir};
 use crate::views::RowView;
 
 /// Most Everywhere results returned for one query.
@@ -31,13 +32,7 @@ pub trait EngineListener: Send + Sync {
     fn folder_failed(&self, generation: u64, folder: String, message: String);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
-pub struct IndexStatus {
-    pub items: u64,
-    pub scanning: bool,
-}
-
-enum Command {
+pub(crate) enum Command {
     Open {
         path: PathBuf,
         generation: u64,
@@ -70,30 +65,16 @@ struct Published {
 pub struct Engine {
     tx: Sender<Command>,
     published: Arc<Mutex<Published>>,
-    status: Arc<Mutex<IndexStatus>>,
     /// Generation of the newest `open_folder` call, so an in-flight listing can stop early.
     latest_open: Arc<AtomicU64>,
 }
 
 #[uniffi::export]
 impl Engine {
-    /// Starts an engine configured from the user's config file. Indexing starts at once.
+    /// Starts an engine (one per window) that searches the shared `index`.
     #[uniffi::constructor]
-    pub fn new(listener: Arc<dyn EngineListener>) -> Arc<Self> {
-        let home = home_dir();
-        let config = tilde_config::load(&tilde_config::config_path()).config;
-        let resolved = config.index.resolve(&home);
-        let index = IndexConfig {
-            home: home.clone(),
-            scan: ScanConfig {
-                roots: resolved.roots,
-                exclude_names: resolved.exclude_names.into_iter().collect(),
-                exclude_paths: resolved.exclude_paths,
-                include_hidden: config.index.include_hidden,
-            },
-            zoxide: config.zoxide.enabled,
-        };
-        Engine::start(listener, home, Some(index), config.zoxide.enabled && config.zoxide.add_on_visit)
+    pub fn new(listener: Arc<dyn EngineListener>, index: Arc<IndexService>) -> Arc<Self> {
+        Engine::start(listener, index.home().to_path_buf(), Some(index))
     }
 
     /// Lists `path` and makes it the current folder. The current query is kept; the UI
@@ -137,10 +118,6 @@ impl Engine {
         p.here.iter().position(|h| p.entries[h.index as usize].name == name).map(|i| i as u32)
     }
 
-    pub fn index_status(&self) -> IndexStatus {
-        *self.status.lock().unwrap()
-    }
-
     pub fn home_dir(&self) -> String {
         home_dir().to_string_lossy().into_owned()
     }
@@ -148,12 +125,7 @@ impl Engine {
 
 impl Engine {
     /// `index: None` disables the Everywhere scope (used by tests).
-    fn start(
-        listener: Arc<dyn EngineListener>,
-        home: PathBuf,
-        index: Option<IndexConfig>,
-        record_visits: bool,
-    ) -> Arc<Self> {
+    fn start(listener: Arc<dyn EngineListener>, home: PathBuf, index: Option<Arc<IndexService>>) -> Arc<Self> {
         let (tx, rx) = mpsc::channel();
         let published = Arc::new(Mutex::new(Published {
             generation: 0,
@@ -163,25 +135,19 @@ impl Engine {
             here: Vec::new(),
             everywhere: Vec::new(),
         }));
-        let status = Arc::new(Mutex::new(IndexStatus { items: 0, scanning: index.is_some() }));
         let latest_open = Arc::new(AtomicU64::new(0));
-        let index_tx = tx.clone();
-        let index = index.map(|config| {
-            GlobalIndex::start(config, move || {
-                let _ = index_tx.send(Command::IndexChanged);
-            })
-        });
+        if let Some(index) = &index {
+            index.subscribe(tx.clone());
+        }
         let worker = Worker {
             rx,
             tx: tx.clone(),
             folder_watcher: None,
             listener,
             published: published.clone(),
-            status: status.clone(),
             latest_open: latest_open.clone(),
             home,
             index,
-            record_visits,
             generation: 0,
             folder: PathBuf::new(),
             entries: Arc::new(Vec::new()),
@@ -190,12 +156,8 @@ impl Engine {
             matcher: HereMatcher::default(),
         };
         thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
-        Arc::new(Engine { tx, published, status, latest_open })
+        Arc::new(Engine { tx, published, latest_open })
     }
-}
-
-fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
 
 struct Worker {
@@ -205,11 +167,9 @@ struct Worker {
     folder_watcher: Option<Watcher>,
     listener: Arc<dyn EngineListener>,
     published: Arc<Mutex<Published>>,
-    status: Arc<Mutex<IndexStatus>>,
     latest_open: Arc<AtomicU64>,
     home: PathBuf,
-    index: Option<GlobalIndex>,
-    record_visits: bool,
+    index: Option<Arc<IndexService>>,
     generation: u64,
     folder: PathBuf,
     entries: Arc<Vec<Entry>>,
@@ -223,7 +183,7 @@ impl Worker {
         loop {
             // While the index is being built, wake periodically to report progress and
             // refresh results so Everywhere fills in as the scan goes.
-            let scanning = self.update_status();
+            let scanning = self.index_scanning();
             let first = if scanning {
                 match self.rx.recv_timeout(SCAN_REFRESH) {
                     Ok(cmd) => Some(cmd),
@@ -237,7 +197,7 @@ impl Worker {
                 }
             };
             let Some(first) = first else {
-                let still_scanning = self.update_status();
+                let still_scanning = self.index_scanning();
                 if !self.query.is_empty() || !still_scanning {
                     self.publish();
                 }
@@ -288,7 +248,6 @@ impl Worker {
                         sort_entries(&mut entries);
                         // Only folders the user navigated to: not the one opened at launch.
                         if explicit_open
-                            && self.record_visits
                             && !self.folder.as_os_str().is_empty()
                             && path != self.folder
                             && let Some(index) = &self.index
@@ -337,27 +296,15 @@ impl Worker {
         .ok();
     }
 
-    /// Copies the index status for `Engine::index_status`. Returns whether it's scanning.
-    fn update_status(&self) -> bool {
-        let status = match &self.index {
-            Some(index) => {
-                let s = index.status();
-                IndexStatus { items: s.items, scanning: s.scanning }
-            }
-            None => IndexStatus { items: 0, scanning: false },
-        };
-        *self.status.lock().unwrap() = status;
-        status.scanning
+    fn index_scanning(&self) -> bool {
+        self.index.as_ref().is_some_and(|i| i.status().state == IndexState::Scanning)
     }
 
     fn publish(&mut self) {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
         let here = self.matcher.rank(&self.entries, &self.query, now);
-        let everywhere = match &mut self.index {
-            Some(index) if !self.query.is_empty() => {
-                let cwd = index.key(&self.folder);
-                index.search(&self.query, Some(&cwd), Some(&cwd), now, EVERYWHERE_LIMIT)
-            }
+        let everywhere = match &self.index {
+            Some(index) if !self.query.is_empty() => index.search(&self.query, &self.folder, now, EVERYWHERE_LIMIT),
             _ => Vec::new(),
         };
         let (here_count, everywhere_count) = (here.len() as u32, everywhere.len() as u32);
@@ -425,7 +372,7 @@ mod tests {
     }
 
     fn engine_without_index(rec: Arc<Recorder>) -> Arc<Engine> {
-        Engine::start(rec, home_dir(), None, false)
+        Engine::start(rec, home_dir(), None)
     }
 
     #[test]
@@ -512,19 +459,17 @@ mod tests {
         std::fs::write(root.join("projects/main-notes.md"), b"").unwrap();
 
         let rec = Arc::new(Recorder::default());
-        let index = IndexConfig {
+        let config = tilde_index::IndexConfig {
             home: root.clone(),
-            scan: ScanConfig {
-                roots: vec![root.clone()],
-                exclude_names: Default::default(),
-                exclude_paths: vec![],
-                include_hidden: false,
-            },
+            scan: tilde_index::ScanConfig { roots: vec![root.clone()], ..Default::default() },
             zoxide: false,
+            max_items: 1_000_000,
+            cache_path: None,
         };
-        let engine = Engine::start(rec.clone(), root.clone(), Some(index), false);
+        let index = IndexService::with_config(config, false);
+        let engine = Engine::start(rec.clone(), root.clone(), Some(index.clone()));
         let t = Instant::now();
-        while engine.index_status().scanning || engine.index_status().items < 5 {
+        while index.status().state == IndexState::Scanning || index.status().items < 5 {
             assert!(t.elapsed() < Duration::from_secs(5), "scan didn't finish");
             std::thread::sleep(Duration::from_millis(10));
         }

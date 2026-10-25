@@ -39,17 +39,25 @@ impl Default for FontConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IndexConfig {
+    pub enabled: bool,
     /// Folders to index. `~` is the home folder.
     pub roots: Vec<String>,
     /// Folder names (any depth) or paths (starting with `~/` or `/`) whose contents are
     /// skipped. The folders themselves are still indexed.
     pub exclude: Vec<String>,
+    /// Names, `*`/`?` patterns, or paths of files and folders left out entirely.
+    pub hide: Vec<String>,
     pub include_hidden: bool,
+    /// Indexing stops at this many items.
+    pub max_items: u64,
 }
+
+pub const DEFAULT_MAX_ITEMS: u64 = 1_000_000;
 
 impl Default for IndexConfig {
     fn default() -> Self {
         IndexConfig {
+            enabled: true,
             roots: vec!["~".into()],
             exclude: [
                 "node_modules",
@@ -66,7 +74,9 @@ impl Default for IndexConfig {
             ]
             .map(String::from)
             .to_vec(),
+            hide: Vec::new(),
             include_hidden: false,
+            max_items: DEFAULT_MAX_ITEMS,
         }
     }
 }
@@ -77,6 +87,9 @@ pub struct ResolvedIndex {
     pub roots: Vec<PathBuf>,
     pub exclude_names: Vec<String>,
     pub exclude_paths: Vec<PathBuf>,
+    /// Exact names and `*`/`?` patterns.
+    pub hide_names: Vec<String>,
+    pub hide_paths: Vec<PathBuf>,
 }
 
 impl IndexConfig {
@@ -88,12 +101,15 @@ impl IndexConfig {
                 _ => PathBuf::from(s),
             }
         };
-        let (paths, names): (Vec<&String>, Vec<&String>) =
-            self.exclude.iter().partition(|e| e.starts_with('/') || e.starts_with("~/"));
+        let is_path = |e: &&String| e.starts_with('/') || e.starts_with("~/");
+        let (paths, names): (Vec<&String>, Vec<&String>) = self.exclude.iter().partition(is_path);
+        let (hide_paths, hide_names): (Vec<&String>, Vec<&String>) = self.hide.iter().partition(is_path);
         ResolvedIndex {
             roots: self.roots.iter().map(|r| expand(r)).collect(),
             exclude_names: names.into_iter().cloned().collect(),
             exclude_paths: paths.into_iter().map(|p| expand(p)).collect(),
+            hide_names: hide_names.into_iter().cloned().collect(),
+            hide_paths: hide_paths.into_iter().map(|p| expand(p)).collect(),
         }
     }
 }
@@ -173,8 +189,9 @@ family = "JetBrains Mono"
 # Base size in points for the file list (8–32). Other text is sized relative to it.
 size = 13
 
-# What searching Everywhere covers. Changes apply on the next launch.
+# What searching Everywhere covers. Apply changes with Rebuild in the Index window (⌘⇧I).
 [index]
+enabled = true
 roots = ["~"]
 # Folder names (at any depth) or paths (starting with ~/ or /) whose contents are
 # skipped. The folders themselves still show up in results.
@@ -182,7 +199,12 @@ exclude = [
   "node_modules", ".git", "target", "build", "DerivedData", "Pods",
   "__pycache__", ".venv", "venv", "~/Library", "~/.Trash",
 ]
+# Files and folders left out entirely: names, patterns with * and ?, or paths.
+# For example: ["*.log", "*.pyc", "~/Downloads/huge-dataset"]
+hide = []
 include_hidden = false
+# Indexing stops at this many items; the Index window shows what to exclude.
+max_items = 1000000
 
 [zoxide]
 # Rank folders you visit often (per zoxide) higher, and include every folder it knows.
@@ -190,6 +212,46 @@ enabled = true
 # Tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
 add_on_visit = true
 "#;
+
+/// The two `[index]` lists an entry can be added to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexList {
+    Exclude,
+    Hide,
+}
+
+/// Adds `entry` to `[index].exclude` or `[index].hide` in the config file, keeping its
+/// comments and formatting. Creates the file from the template if needed. If the list
+/// isn't in the file yet, it starts from the default so the defaults aren't lost.
+pub fn add_index_entry(path: &Path, list: IndexList, entry: &str) -> std::io::Result<()> {
+    ensure_file(path)?;
+    let text = std::fs::read_to_string(path)?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
+    let index = doc
+        .entry("index")
+        .or_insert_with(toml_edit::table)
+        .as_table_mut()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "[index] is not a table"))?;
+    let (key, defaults) = match list {
+        IndexList::Exclude => ("exclude", IndexConfig::default().exclude),
+        IndexList::Hide => ("hide", IndexConfig::default().hide),
+    };
+    if !index.contains_key(key) {
+        let mut array = toml_edit::Array::new();
+        for d in &defaults {
+            array.push(d.as_str());
+        }
+        index.insert(key, toml_edit::value(array));
+    }
+    let array = index[key]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("index.{key} is not a list")))?;
+    if !array.iter().any(|v| v.as_str() == Some(entry)) {
+        array.push(entry);
+    }
+    std::fs::write(path, doc.to_string())
+}
 
 /// Creates the config file from `TEMPLATE` if it doesn't exist.
 pub fn ensure_file(path: &Path) -> std::io::Result<()> {
@@ -251,12 +313,41 @@ mod tests {
         let cfg = IndexConfig {
             roots: vec!["~".into(), "/Volumes/Work".into()],
             exclude: vec!["node_modules".into(), "~/Library".into(), "/tmp".into()],
-            include_hidden: false,
+            hide: vec!["*.log".into(), "~/Downloads/big.iso".into()],
+            ..Default::default()
         };
         let r = cfg.resolve(Path::new("/Users/me"));
         assert_eq!(r.roots, [PathBuf::from("/Users/me"), PathBuf::from("/Volumes/Work")]);
         assert_eq!(r.exclude_names, ["node_modules"]);
         assert_eq!(r.exclude_paths, [PathBuf::from("/Users/me/Library"), PathBuf::from("/tmp")]);
+        assert_eq!(r.hide_names, ["*.log"]);
+        assert_eq!(r.hide_paths, [PathBuf::from("/Users/me/Downloads/big.iso")]);
+    }
+
+    #[test]
+    fn adding_index_entries_keeps_comments_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+
+        // Missing file: created from the template, entry appended.
+        add_index_entry(&p, IndexList::Hide, "*.log").unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# Tilde configuration"));
+        assert_eq!(load(&p).config.index.hide, ["*.log"]);
+
+        // Adding twice doesn't duplicate.
+        add_index_entry(&p, IndexList::Hide, "*.log").unwrap();
+        assert_eq!(load(&p).config.index.hide, ["*.log"]);
+
+        // A file without the list starts from the defaults.
+        std::fs::write(&p, "# mine\n[font]\nsize = 14\n").unwrap();
+        add_index_entry(&p, IndexList::Exclude, "~/Movies").unwrap();
+        let l = load(&p);
+        assert!(l.error.is_none(), "{:?}", l.error);
+        assert!(l.config.index.exclude.contains(&"node_modules".to_string()));
+        assert!(l.config.index.exclude.contains(&"~/Movies".to_string()));
+        assert_eq!(l.config.font.size, 14.0);
+        assert!(std::fs::read_to_string(&p).unwrap().starts_with("# mine"));
     }
 
     #[test]

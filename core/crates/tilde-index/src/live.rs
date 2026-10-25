@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use nucleo::{Injector, Utf32String};
 use tilde_fs::{FsEvent, ListOptions, list_dir};
@@ -30,12 +30,34 @@ struct Child {
 pub(crate) struct Shared {
     pub home: PathBuf,
     pub scan: ScanConfig,
+    pub max_items: u64,
+    /// Set when `max_items` is reached; adding stops.
+    pub capped: AtomicBool,
+    /// Stops a scan in progress (on drop, or when capped).
+    pub stop: Arc<AtomicBool>,
+    /// The FSEvents ID the index is current to, for resuming after a restart.
+    pub last_event_id: AtomicU64,
+    /// Changed since the last save.
+    pub dirty: AtomicBool,
+    /// Where to save and the settings fingerprint to save with.
+    pub cache: Option<(PathBuf, u64)>,
+    /// Set after the saved index is deleted, so it isn't written back.
+    pub saving_disabled: AtomicBool,
+    save_lock: Mutex<()>,
     injector: Injector<ItemMeta>,
     next_id: AtomicU32,
     killed: AtomicU32,
     dead: RwLock<Vec<u64>>,
     /// Folder key → its indexed entries.
     children: Mutex<HashMap<String, Vec<Child>>>,
+}
+
+/// One folder and how many items the index holds under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderSize {
+    /// Index key (relative to home, or absolute).
+    pub key: String,
+    pub items: u64,
 }
 
 /// Dead item IDs, read-locked for the duration of a search.
@@ -48,10 +70,24 @@ impl DeadSet<'_> {
 }
 
 impl Shared {
-    pub fn new(home: PathBuf, scan: ScanConfig, injector: Injector<ItemMeta>) -> Shared {
+    pub fn new(
+        home: PathBuf,
+        scan: ScanConfig,
+        max_items: u64,
+        cache: Option<(PathBuf, u64)>,
+        injector: Injector<ItemMeta>,
+    ) -> Shared {
         Shared {
             home,
             scan,
+            max_items,
+            capped: AtomicBool::new(false),
+            stop: Arc::new(AtomicBool::new(false)),
+            last_event_id: AtomicU64::new(0),
+            dirty: AtomicBool::new(false),
+            cache,
+            saving_disabled: AtomicBool::new(false),
+            save_lock: Mutex::new(()),
             injector,
             next_id: AtomicU32::new(0),
             killed: AtomicU32::new(0),
@@ -73,11 +109,17 @@ impl Shared {
         DeadSet(self.dead.read().unwrap())
     }
 
-    /// Adds an item. Returns its ID.
-    pub fn push(&self, key: &str, mut meta: ItemMeta) -> u32 {
+    /// Adds an item and returns its ID, or `None` once the index is full.
+    pub fn push(&self, key: &str, mut meta: ItemMeta) -> Option<u32> {
+        if self.live_items() >= self.max_items {
+            if !self.capped.swap(true, Ordering::SeqCst) {
+                self.stop.store(true, Ordering::SeqCst);
+            }
+            return None;
+        }
         meta.id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.injector.push(meta, |_, cols| cols[0] = Utf32String::from(key));
-        meta.id
+        Some(meta.id)
     }
 
     fn kill(&self, id: u32) {
@@ -101,6 +143,9 @@ impl Shared {
         let mut next = Vec::new();
 
         for e in entries {
+            if self.scan.hides(&dir.join(&e.name), &e.name) {
+                continue;
+            }
             let name_hash = hash(&e.name);
             let is_folder = e.kind == EntryKind::Folder && !e.mount_point;
             let meta_hash = if e.kind == EntryKind::Folder { 0 } else { hash(&(e.kind as u8, e.size, e.modified)) };
@@ -114,10 +159,9 @@ impl Shared {
                     c.id
                 }
                 existing => {
+                    let is_new = existing.is_none();
                     if let Some(c) = existing {
                         self.kill(c.id);
-                    } else if descend {
-                        next.push(path);
                     }
                     let item_key = if key.is_empty() { e.name.clone() } else { format!("{key}/{}", e.name) };
                     let meta = ItemMeta {
@@ -126,8 +170,13 @@ impl Shared {
                         size: e.size,
                         modified: e.modified,
                         child_count: e.child_count,
+                        extra: false,
                     };
-                    self.push(&item_key, meta)
+                    let Some(id) = self.push(&item_key, meta) else { continue };
+                    if descend && (is_new || rescan) {
+                        next.push(path);
+                    }
+                    id
                 }
             };
             table.push(Child { name_hash, meta_hash, id, dir_name: is_folder.then(|| e.name.as_str().into()) });
@@ -158,6 +207,10 @@ impl Shared {
 
     /// Applies a batch of FSEvents: re-lists each changed folder the index covers.
     pub fn apply(&self, events: &[FsEvent]) {
+        if let Some(max) = events.iter().map(|e| e.id).max() {
+            self.last_event_id.fetch_max(max, Ordering::SeqCst);
+        }
+        self.dirty.store(true, Ordering::SeqCst);
         let mut done = HashSet::new();
         for e in events {
             if e.is_history_done() || !self.scan.scans_inside(&e.path) {
@@ -185,6 +238,104 @@ impl Shared {
             }
             Err(_) => {}
         }
+    }
+
+    /// Adds saved items, rebuilding the per-folder tables.
+    pub fn load(&self, items: Vec<(String, ItemMeta)>) {
+        let mut tables = self.children.lock().unwrap();
+        for (key, meta) in items {
+            let Some(id) = self.push(&key, meta) else { break };
+            let (parent, name) = key.rsplit_once('/').unwrap_or(("", &key));
+            let parent = if parent.is_empty() && key.starts_with('/') { "/" } else { parent };
+            let meta_hash =
+                if meta.kind == EntryKind::Folder { 0 } else { hash(&(meta.kind as u8, meta.size, meta.modified)) };
+            let dir_name = (meta.kind == EntryKind::Folder).then(|| name.into());
+            tables.entry(parent.to_string()).or_default().push(Child {
+                name_hash: hash(&name),
+                meta_hash,
+                id,
+                dir_name,
+            });
+        }
+    }
+
+    /// Writes the index to its cache file. `None` if saving is off.
+    pub fn save(&self) -> Option<std::io::Result<u64>> {
+        let (path, fingerprint) = self.cache.as_ref()?;
+        if self.saving_disabled.load(Ordering::SeqCst) {
+            return None;
+        }
+        let _guard = self.save_lock.lock().unwrap();
+        self.dirty.store(false, Ordering::SeqCst);
+        let last_event_id = self.last_event_id.load(Ordering::SeqCst);
+        Some(crate::persist::save(path, *fingerprint, last_event_id, &self.snapshot()))
+    }
+
+    /// Every live item scanned from the roots (not zoxide extras), for saving.
+    pub fn snapshot(&self) -> Vec<(String, ItemMeta)> {
+        let dead = self.dead();
+        (0..self.injector.injected_items())
+            .filter_map(|i| self.injector.get(i))
+            .filter(|item| !item.data.extra && !dead.contains(item.data.id))
+            .map(|item| (item.matcher_columns[0].to_string(), *item.data))
+            .collect()
+    }
+
+    /// Rough memory use: path text plus per-item overhead in nucleo, the dead set and the
+    /// folder tables.
+    pub fn memory_estimate(&self) -> u64 {
+        const PER_ITEM: u64 = 200;
+        let injected = self.injector.injected_items();
+        let text: u64 = (0..injected)
+            .filter_map(|i| self.injector.get(i))
+            .map(|item| {
+                let s = &item.matcher_columns[0];
+                if s.slice(..).is_ascii() { s.len() as u64 } else { s.len() as u64 * 4 }
+            })
+            .sum();
+        text + injected as u64 * PER_ITEM
+    }
+
+    /// The folders holding the most items, skipping any whose items are mostly in one
+    /// subfolder (that subfolder is listed instead). Folders at the top of a root aren't
+    /// candidates only when they're a root themselves.
+    pub fn largest_folders(&self, limit: usize) -> Vec<FolderSize> {
+        let tables = self.children.lock().unwrap();
+        let mut totals: HashMap<String, u64> = HashMap::new();
+        for (key, table) in tables.iter() {
+            let n = table.len() as u64;
+            *totals.entry(key.clone()).or_default() += n;
+            let mut k = key.as_str();
+            while let Some((parent, _)) = k.rsplit_once('/') {
+                if parent.is_empty() {
+                    break;
+                }
+                *totals.entry(parent.to_string()).or_default() += n;
+                k = parent;
+            }
+            if !key.is_empty() && !key.starts_with('/') && !key.contains('/') {
+                // Top-level folder under home also counts towards home.
+                *totals.entry(String::new()).or_default() += n;
+            }
+        }
+        drop(tables);
+        let total_items = self.live_items().max(1);
+        let threshold = (total_items / 50).max(500);
+        let mut candidates: Vec<FolderSize> = totals
+            .iter()
+            .filter(|(key, items)| !key.is_empty() && **items >= threshold)
+            .filter(|(key, items)| {
+                // Skip if one direct subfolder holds 80% or more of this folder's items.
+                let prefix = format!("{key}/");
+                !totals
+                    .iter()
+                    .any(|(k, n)| k.starts_with(&prefix) && !k[prefix.len()..].contains('/') && *n * 5 >= **items * 4)
+            })
+            .map(|(key, items)| FolderSize { key: key.clone(), items: *items })
+            .collect();
+        candidates.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.key.cmp(&b.key)));
+        candidates.truncate(limit);
+        candidates
     }
 }
 

@@ -48,19 +48,27 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 | Mode | Keys |
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` move · `⏎` open · `tab` or `/` go into folder (or reveal an Everywhere file) · `⌫` on empty bar goes up · `~` home · `esc` → SELECT |
-| SELECT | `j` `k` move · `h` `l` out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter |
-| Anywhere | `⌘⇧.` show hidden files · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
+| SELECT | `j` `k` move · `h` `l` out / in · `⏎` open · `g` `G` top / bottom · `X` hide from search · `/` → GO · `esc` clear filter |
+| Anywhere | `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
 
 ## Search
 
 Typing shows matches in the current folder first, then an **Everywhere** section from an
-index of your home folder. The index is built in the background at launch (the status bar
-shows progress) and kept current with FSEvents while Tilde runs; it skips `~/Library`,
-hidden files, `node_modules`, `.git` and similar folders, and doesn't cross into other
-disks or mounts. Configure it under `[index]`. The open folder also refreshes by itself
-when its contents change.
+index of your home folder. The first launch builds it in the background (the status bar
+shows progress); after that it's saved to `~/Library/Caches/Tilde/index.bin` and loaded at
+launch, with FSEvents replaying whatever changed while Tilde was closed. While Tilde runs,
+changes are picked up as they happen. It skips `~/Library`, hidden files, `node_modules`,
+`.git` and similar folders, and doesn't cross into other disks or mounts. The open folder
+also refreshes by itself when its contents change.
+
+**Search Index window (`⌘⇧I`):** item count against the limit, memory, size on disk, and the
+folders holding the most items, each with **Exclude contents** (keep the folder, skip what's
+inside) and **Hide** (leave it out). **Rebuild** re-reads the config and indexes again;
+**Clear** deletes the saved index and turns Everywhere off until you rebuild. In SELECT,
+`X` hides the highlighted item. Exclusions are written to the config, so you can undo them
+there.
 
 If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, folders you visit often
 rank higher, every folder zoxide knows is searchable, and folders you open in Tilde are
@@ -76,11 +84,14 @@ commented template and opens it; `⌘R` applies changes.
 family = "JetBrains Mono"   # closest installed match is used, e.g. "JetBrainsMono Nerd Font"
 size = 13                   # 8–32; other text scales from this
 
-[index]                     # applies on next launch
+[index]                     # apply with Rebuild (⌘⇧I)
+enabled = true
 roots = ["~"]
 exclude = ["node_modules", ".git", "target", "build", "DerivedData", "Pods",
-           "__pycache__", ".venv", "venv", "~/Library", "~/.Trash"]
+           "__pycache__", ".venv", "venv", "~/Library", "~/.Trash"]   # skip contents
+hide = []                   # leave out entirely: names, *.log-style patterns, or paths
 include_hidden = false
+max_items = 1000000         # indexing stops here; ⌘⇧I shows what to exclude
 
 [zoxide]
 enabled = true              # rank by zoxide frecency, include its folders

@@ -7,10 +7,12 @@
 
 mod config;
 mod engine;
+mod index;
 mod views;
 
 pub use config::{AppConfig, ConfigError, ConfigLoad, ensure_config_file, load_config};
-pub use engine::{Engine, EngineListener, IndexStatus};
+pub use engine::{Engine, EngineListener};
+pub use index::{FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
 pub use views::{Category, HighlightRange, RowKind, RowView, Section};
 
 uniffi::setup_scaffolding!();

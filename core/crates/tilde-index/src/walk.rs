@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilde_fs::{ListOptions, list_dir};
 use tilde_types::{Entry, EntryKind};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScanConfig {
     pub roots: Vec<PathBuf>,
     /// Folder names whose contents are skipped at any depth. The folder itself is still
@@ -15,10 +15,19 @@ pub struct ScanConfig {
     pub exclude_names: HashSet<String>,
     /// Absolute folders whose contents are skipped.
     pub exclude_paths: Vec<PathBuf>,
+    /// Names or `*`/`?` patterns (matched case-insensitively) of items left out entirely.
+    pub hide_names: Vec<String>,
+    /// Items left out entirely.
+    pub hide_paths: Vec<PathBuf>,
     pub include_hidden: bool,
 }
 
 impl ScanConfig {
+    /// Whether an item is left out entirely (not indexed, not entered).
+    pub fn hides(&self, path: &Path, name: &str) -> bool {
+        self.hide_names.iter().any(|p| glob_match(p, name)) || self.hide_paths.iter().any(|p| p == path)
+    }
+
     pub(crate) fn descends_into(&self, path: &Path, name: &str) -> bool {
         !self.exclude_names.contains(name) && !self.exclude_paths.iter().any(|p| p == path)
     }
@@ -43,6 +52,9 @@ impl ScanConfig {
                 return false;
             }
             current.push(name);
+            if self.hides(&current, name) {
+                return false;
+            }
             let is_last = i + 1 == parts.len();
             if !is_last && !self.descends_into(&current, name) {
                 return false;
@@ -59,8 +71,11 @@ pub fn scan(config: &ScanConfig, stop: &AtomicBool, on_entry: &(dyn Fn(&Path, &E
     walk_parallel(config.roots.clone(), config.include_hidden, stop, &|dir, entries| {
         let mut next = Vec::new();
         for e in &entries {
-            on_entry(dir, e);
             let child = dir.join(&e.name);
+            if config.hides(&child, &e.name) {
+                continue;
+            }
+            on_entry(dir, e);
             if e.kind == EntryKind::Folder && !e.mount_point && config.descends_into(&child, &e.name) {
                 next.push(child);
             }
@@ -118,6 +133,32 @@ pub fn walk_sequential(dirs: Vec<PathBuf>, include_hidden: bool, on_listing: &On
     }
 }
 
+/// Case-insensitive glob with `*` (any run) and `?` (one char). A pattern without either
+/// is an exact name.
+pub fn glob_match(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
+    let n: Vec<char> = name.chars().flat_map(char::to_lowercase).collect();
+    // Iterative matcher that backtracks to the last `*`.
+    let (mut pi, mut ni, mut star, mut mark) = (0, 0, None, 0);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,20 +170,37 @@ mod tests {
             roots: vec![root.to_path_buf()],
             exclude_names: ["node_modules".to_string()].into(),
             exclude_paths: vec![root.join("Library")],
+            hide_names: vec!["*.log".into()],
+            hide_paths: vec![root.join("a/secret")],
             include_hidden: false,
         }
+    }
+
+    #[test]
+    fn globs() {
+        assert!(glob_match("*.log", "server.LOG"));
+        assert!(glob_match("*.log", ".log"));
+        assert!(!glob_match("*.log", "log.txt"));
+        assert!(glob_match("IMG_????.jpg", "img_0412.JPG"));
+        assert!(!glob_match("IMG_????.jpg", "img_412.jpg"));
+        assert!(glob_match("*cache*", "DerivedCacheData"));
+        assert!(glob_match(".DS_Store", ".DS_Store"));
+        assert!(!glob_match(".DS_Store", "x.DS_Store"));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
     }
 
     #[test]
     fn scans_recursively_respecting_exclusions() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        for d in ["a/b", "node_modules/pkg", "Library/Caches", ".hidden", "App.app/Contents"] {
+        for d in ["a/b", "a/secret/inner", "node_modules/pkg", "Library/Caches", ".hidden", "App.app/Contents"] {
             fs::create_dir_all(root.join(d)).unwrap();
         }
         for f in [
             "a/b/deep.txt",
+            "a/b/noise.log",
             "a/top.txt",
+            "a/secret/inner/x.txt",
             "node_modules/pkg/index.js",
             "Library/Caches/c",
             ".hidden/x",
@@ -182,5 +240,6 @@ mod tests {
         assert!(!c.covers(Path::new("/Users/me/Library/Caches")));
         assert!(!c.covers(Path::new("/Users/me/.config/nvim")));
         assert!(!c.covers(Path::new("/opt/homebrew")));
+        assert!(!c.covers(Path::new("/Users/me/a/secret/inner")), "hidden by path");
     }
 }

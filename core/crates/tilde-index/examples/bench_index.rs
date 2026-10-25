@@ -26,18 +26,35 @@ fn main() {
             .map(String::from)
             .into(),
             exclude_paths: vec![home.join("Library"), home.join(".Trash")],
-            include_hidden: false,
+            ..Default::default()
         },
         home,
         zoxide: true,
+        max_items: 5_000_000,
+        cache_path: Some(std::env::temp_dir().join(format!("tilde-bench-{}.bin", std::process::id()))),
     };
+    let cache = config.cache_path.clone().unwrap();
+
+    let t = Instant::now();
+    let first = GlobalIndex::start(config.clone(), || {});
+    while first.status().scanning {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let handle = first.handle();
+    println!("scan: {} items in {:.2?}", first.status().items, t.elapsed());
+    println!("memory (estimate): {} MB", handle.memory_estimate() / 1_048_576);
+    let t = Instant::now();
+    let saved = handle.save().unwrap().unwrap();
+    println!("save: {} MB in {:.2?}", saved / 1_048_576, t.elapsed());
+    for f in handle.largest_folders(5) {
+        println!("  largest: {:>7} items  ~/{}", f.items, f.key);
+    }
+    drop(first);
 
     let t = Instant::now();
     let mut index = GlobalIndex::start(config, || {});
-    while index.status().scanning {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    println!("scan: {} items in {:.2?}", index.status().items, t.elapsed());
+    println!("load: {} items in {:.2?}", index.status().items, t.elapsed());
+    let _ = std::fs::remove_file(&cache);
 
     let mut queries: Vec<String> = std::env::args().skip(1).collect();
     if queries.is_empty() {

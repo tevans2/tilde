@@ -3,7 +3,10 @@ import TildeFFI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// One index for every window: loaded from disk or scanned at launch.
+    private let index = IndexService()
     private var windows: [BrowserWindowController] = []
+    private lazy var indexWindow = IndexWindowController(index: index)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = MainMenu.build()
@@ -16,8 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // So the next launch loads instead of scanning.
+        index.save()
+    }
+
     @objc func newWindow(_ sender: Any?) {
-        let controller = BrowserWindowController()
+        let controller = BrowserWindowController(index: index)
         windows.append(controller)
         controller.showWindow(nil)
     }
@@ -38,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
             NSWorkspace.shared.open([url], withApplicationAt: textEdit, configuration: NSWorkspace.OpenConfiguration())
         }
+    }
+
+    @objc func showIndex(_ sender: Any?) {
+        indexWindow.showWindow(nil)
     }
 
     @objc func reloadConfig(_ sender: Any?) {
@@ -85,6 +97,9 @@ enum MainMenu {
         let viewMenu = NSMenu(title: "View")
         let hidden = viewMenu.addItem(withTitle: "Show Hidden Files", action: #selector(BrowserWindowController.toggleHidden(_:)), keyEquivalent: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
+        viewMenu.addItem(.separator())
+        let indexItem = viewMenu.addItem(withTitle: "Search Index…", action: #selector(AppDelegate.showIndex(_:)), keyEquivalent: "i")
+        indexItem.keyEquivalentModifierMask = [.command, .shift]
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
