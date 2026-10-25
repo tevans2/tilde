@@ -1,6 +1,7 @@
 import AppKit
 import TildeFFI
 
+@MainActor
 enum Format {
     static func badgeText(_ row: RowView) -> String {
         switch row.kind {
@@ -19,19 +20,7 @@ enum Format {
     }
 
     static func badgeColor(_ category: TildeFFI.Category) -> NSColor {
-        switch category {
-        case .folder: return .systemBlue
-        case .app: return .systemIndigo
-        case .image: return .systemGreen
-        case .video: return .systemPink
-        case .audio: return .systemMint
-        case .pdf: return .systemRed
-        case .document: return .systemTeal
-        case .code: return .systemPurple
-        case .text: return .systemGray
-        case .archive: return .systemBrown
-        case .other: return .systemGray
-        }
+        Theme.shared.colors.badge(category)
     }
 
     /// Size for files, item count for folders.
@@ -41,7 +30,10 @@ enum Format {
             guard let n = row.childCount else { return "" }
             return "\(n) item\(n == 1 ? "" : "s")"
         case .file:
-            return ByteCountFormatter.string(fromByteCount: Int64(clamping: row.size), countStyle: .file)
+            let f = ByteCountFormatter()
+            f.countStyle = .file
+            f.allowsNonnumericFormatting = false // "0 bytes", not "Zero KB"
+            return f.string(fromByteCount: Int64(clamping: row.size))
         case .package, .symlink, .other:
             return ""
         }

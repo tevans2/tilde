@@ -23,6 +23,8 @@ tilde-fs.workspace = true
 tilde-query.workspace = true
 tilde-config.workspace = true
 tilde-index.workspace = true
+tilde-ops.workspace = true
+tilde-preview.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true
 

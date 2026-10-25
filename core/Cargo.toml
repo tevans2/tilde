@@ -14,11 +14,18 @@ tilde-fs = { path = "crates/tilde-fs" }
 tilde-query = { path = "crates/tilde-query" }
 tilde-config = { path = "crates/tilde-config" }
 tilde-index = { path = "crates/tilde-index" }
+tilde-ops = { path = "crates/tilde-ops" }
+tilde-preview = { path = "crates/tilde-preview" }
 libc = "0.2"
 nucleo-matcher = "0.3"
 uniffi = "0.32"
 tempfile = "3"
 thiserror = "2"
+
+# Optimize dependencies even in debug builds: unoptimized nucleo is ~50x slower, too slow
+# to search a large index. Our own crates stay debuggable and quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

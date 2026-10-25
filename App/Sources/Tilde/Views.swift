@@ -12,6 +12,9 @@ final class PathBar: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         crumbs.lineBreakMode = .byTruncatingHead
+        crumbs.maximumNumberOfLines = 1
+        crumbs.usesSingleLineMode = true
+        crumbs.cell?.wraps = false
         crumbs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         crumbs.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -49,8 +52,12 @@ final class PathBar: NSView {
         let parts = display.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         let s = NSMutableAttributedString()
         let font = Theme.shared.bar
-        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
-        let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+        // Attributed strings ignore the field's line break mode; deep paths keep their end.
+        let truncate = NSMutableParagraphStyle()
+        truncate.lineBreakMode = .byTruncatingHead
+        let c = Theme.shared.colors
+        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55), .paragraphStyle: truncate]
+        let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim, .paragraphStyle: truncate]
         if display.hasPrefix("/") { s.append(NSAttributedString(string: "/", attributes: sep)) }
         for part in parts {
             s.append(NSAttributedString(string: part, attributes: seg))
@@ -61,11 +68,21 @@ final class PathBar: NSView {
 
     func applyTheme(_ theme: Theme) {
         field.font = theme.bar
+        wantsLayer = true
+        needsDisplay = true
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = Theme.shared.colors.bar.cgColor
+        }
     }
 
     func setMode(_ mode: Mode) {
         field.placeholderString = mode == .go ? "type to search" : "press / to search"
-        field.textColor = mode == .go ? .labelColor : .secondaryLabelColor
+        field.textColor = mode == .go ? Theme.shared.colors.text : Theme.shared.colors.textDim
     }
 }
 
@@ -121,13 +138,22 @@ final class AlwaysEmphasizedRowView: NSTableRowView {
         get { true }
         set {}
     }
+
+    /// The theme's selection colour instead of the system accent.
+    override func drawSelection(in dirtyRect: NSRect) {
+        Theme.shared.colors.selection.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
 }
 
 final class RowCellView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("RowCell")
 
+    private let shelfDot = NSTextField(labelWithString: "●")
     private let badge = Badge()
     private let name = NSTextField(labelWithString: "")
+    /// Where an Everywhere result lives; trimmed from the start so the nearest folders stay.
+    private let location = NSTextField(labelWithString: "")
     private let meta = NSTextField(labelWithString: "")
     private let age = NSTextField(labelWithString: "")
     private var row: RowView?
@@ -139,24 +165,38 @@ final class RowCellView: NSTableCellView {
         name.maximumNumberOfLines = 1
         name.cell?.wraps = false
         name.cell?.truncatesLastVisibleLine = true
-        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The name gives way only after the location has.
+        name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
+        location.lineBreakMode = .byTruncatingHead
+        location.maximumNumberOfLines = 1
+        location.cell?.wraps = false
+        location.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
+        location.setContentHuggingPriority(.defaultLow, for: .horizontal)
         for f in [meta, age] {
             f.textColor = .secondaryLabelColor
             f.alignment = .right
             f.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        for v in [badge, name, meta, age] as [NSView] {
+        shelfDot.textColor = Theme.shared.colors.shelf
+        shelfDot.font = .systemFont(ofSize: 8)
+        shelfDot.alignment = .center
+        for v in [shelfDot, badge, name, location, meta, age] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
         NSLayoutConstraint.activate([
-            badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            shelfDot.leadingAnchor.constraint(equalTo: leadingAnchor),
+            shelfDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            shelfDot.widthAnchor.constraint(equalToConstant: 12),
+            badge.leadingAnchor.constraint(equalTo: shelfDot.trailingAnchor, constant: 2),
             badge.centerYAnchor.constraint(equalTo: centerYAnchor),
             badge.widthAnchor.constraint(equalToConstant: 40),
             badge.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.62),
             name.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
             name.centerYAnchor.constraint(equalTo: centerYAnchor),
-            meta.leadingAnchor.constraint(greaterThanOrEqualTo: name.trailingAnchor, constant: 12),
+            location.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 10),
+            location.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
+            meta.leadingAnchor.constraint(greaterThanOrEqualTo: location.trailingAnchor, constant: 12),
             meta.centerYAnchor.constraint(equalTo: centerYAnchor),
             age.leadingAnchor.constraint(equalTo: meta.trailingAnchor, constant: 12),
             age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
@@ -168,8 +208,9 @@ final class RowCellView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(with row: RowView) {
+    func configure(with row: RowView, onShelf: Bool = false) {
         self.row = row
+        shelfDot.isHidden = !onShelf
         let theme = Theme.shared
         meta.font = theme.small
         age.font = theme.small
@@ -186,45 +227,48 @@ final class RowCellView: NSTableCellView {
     private func renderName() {
         guard let row else { return }
         let selected = backgroundStyle == .emphasized
+        let c = Theme.shared.colors
+        shelfDot.textColor = c.shelf
         // Attributed strings ignore the field's line break mode, so set it here too.
         let oneLine = NSMutableParagraphStyle()
         oneLine.lineBreakMode = .byTruncatingTail
         let base: [NSAttributedString.Key: Any] = [
             .font: Theme.shared.list,
-            .foregroundColor: selected ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor,
+            .foregroundColor: selected ? c.selectionText : c.text,
             .paragraphStyle: oneLine,
         ]
         let s = NSMutableAttributedString(string: row.name + (row.kind == .folder ? "/" : ""), attributes: base)
         let hit: [NSAttributedString.Key: Any] = [
             .font: Theme.shared.listBold,
-            .foregroundColor: selected ? NSColor.systemYellow : NSColor.systemOrange,
+            .foregroundColor: selected ? c.matchSelected : c.match,
         ]
         let length = (row.name as NSString).length
         for r in row.highlights where Int(r.start + r.length) <= length {
             s.addAttributes(hit, range: NSRange(location: Int(r.start), length: Int(r.length)))
         }
+        location.isHidden = row.section != .everywhere
         if row.section == .everywhere {
             // Everywhere rows show where the item lives, dimmed, with matched characters.
+            let truncateHead = NSMutableParagraphStyle()
+            truncateHead.lineBreakMode = .byTruncatingHead
             let dim: [NSAttributedString.Key: Any] = [
                 .font: Theme.shared.small,
-                .foregroundColor: selected ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.7)
-                    : NSColor.secondaryLabelColor,
+                .foregroundColor: selected ? c.selectionText.withAlphaComponent(0.7) : c.textDim,
+                .paragraphStyle: truncateHead,
             ]
             let location = NSMutableAttributedString(string: row.location, attributes: dim)
             let locationHit: [NSAttributedString.Key: Any] = [
                 .font: Theme.shared.small.bold,
-                .foregroundColor: selected ? NSColor.systemYellow : NSColor.systemOrange,
+                .foregroundColor: selected ? c.matchSelected : c.match,
             ]
             let locationLength = (row.location as NSString).length
             for r in row.locationHighlights where Int(r.start + r.length) <= locationLength {
                 location.addAttributes(locationHit, range: NSRange(location: Int(r.start), length: Int(r.length)))
             }
-            s.append(NSAttributedString(string: "   ", attributes: base))
-            s.append(location)
-            s.addAttribute(.paragraphStyle, value: oneLine, range: NSRange(location: 0, length: s.length))
+            self.location.attributedStringValue = location
         }
         name.attributedStringValue = s
-        meta.textColor = selected ? .alternateSelectedControlTextColor : .secondaryLabelColor
+        meta.textColor = selected ? c.selectionText : c.textDim
         age.textColor = meta.textColor
     }
 }
@@ -251,6 +295,7 @@ final class SectionHeaderView: NSTableCellView {
 
     func configure(title: String, count: Int) {
         label.font = Theme.shared.badge
+        label.textColor = Theme.shared.colors.textDim
         label.stringValue = "\(title.uppercased())  \(count.formatted())"
     }
 }
@@ -281,6 +326,7 @@ final class Badge: NSView {
 
     func set(text: String, color: NSColor, font: NSFont) {
         label.font = font
+        label.textColor = Theme.shared.colors.badgeLabel
         label.stringValue = text
         self.color = color
         needsDisplay = true
@@ -296,6 +342,52 @@ final class Badge: NSView {
     }
 }
 
+// MARK: Shelf bar
+
+/// What's collected with `x`, and the actions that apply to it.
+@MainActor
+final class ShelfBar: NSView {
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        label.lineBreakMode = .byTruncatingMiddle
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func update(paths: [String]) {
+        let theme = Theme.shared
+        let names = paths.prefix(4).map { ($0 as NSString).lastPathComponent }.joined(separator: ", ")
+        let more = paths.count > 4 ? " +\(paths.count - 4)" : ""
+        let s = NSMutableAttributedString(
+            string: "SHELF \(paths.count)  ",
+            attributes: [.font: theme.badge, .foregroundColor: theme.colors.shelf])
+        s.append(NSAttributedString(string: names + more, attributes: [.font: theme.small, .foregroundColor: theme.colors.text]))
+        s.append(NSAttributedString(
+            string: "    m move  c copy  d trash  z zip  y paths  esc clear",
+            attributes: [.font: theme.small, .foregroundColor: theme.colors.textDim]))
+        label.attributedStringValue = s
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = Theme.shared.colors.shelf.withAlphaComponent(0.1).cgColor
+        }
+    }
+}
+
 // MARK: Status bar
 
 @MainActor
@@ -305,6 +397,8 @@ final class StatusBar: NSView {
     private let hints = NSTextField(labelWithString: "")
     private let right = NSTextField(labelWithString: "")
     private var flashWork: DispatchWorkItem?
+    /// A running operation ("Copying 2/5 · file.dmg"); shown instead of the summary.
+    private var activity: String?
     private var lastSummary = ""
 
     override init(frame: NSRect) {
@@ -340,7 +434,7 @@ final class StatusBar: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    private var modeColor: NSColor = .systemBlue
+    private var mode: Mode = .go
 
     func applyTheme(_ theme: Theme) {
         modePill.font = theme.badge
@@ -352,28 +446,35 @@ final class StatusBar: NSView {
         switch mode {
         case .go:
             modePill.stringValue = "GO"
-            modeColor = .systemBlue
-            hints.stringValue = "↑↓ move   ⏎ open   tab or / go in   ⌫ up   esc select"
+            hints.stringValue = "↑↓ ⌃j ⌃k move   ⏎ open   tab ⌃l go in   ⌫ ⌃h up   esc select"
         case .select:
             modePill.stringValue = "SELECT"
-            modeColor = .systemGreen
-            hints.stringValue = "j k move   h l out / in   ⏎ open   g G top / bottom   / search   esc clear filter"
+            hints.stringValue = "j k move   h l out / in   x collect   m move   c copy   d trash   r rename   u undo   / search"
         }
+        self.mode = mode
         needsDisplay = true
         lastSummary = summary
-        if flashWork == nil { right.stringValue = lastSummary }
+        if flashWork == nil { right.stringValue = activity ?? lastSummary }
+    }
+
+    func setActivity(_ text: String?) {
+        activity = text
+        if flashWork == nil {
+            right.stringValue = text ?? lastSummary
+            right.textColor = text == nil ? Theme.shared.colors.textDim : Theme.shared.colors.text
+        }
     }
 
     /// Shows a message on the right for a few seconds.
     func flash(_ message: String) {
         flashWork?.cancel()
         right.stringValue = message
-        right.textColor = .labelColor
+        right.textColor = Theme.shared.colors.text
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.flashWork = nil
-            self.right.stringValue = self.lastSummary
-            self.right.textColor = .secondaryLabelColor
+            self.right.stringValue = self.activity ?? self.lastSummary
+            self.right.textColor = self.activity == nil ? Theme.shared.colors.textDim : Theme.shared.colors.text
         }
         flashWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
@@ -383,8 +484,12 @@ final class StatusBar: NSView {
 
     override func updateLayer() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            pillBackground.layer?.backgroundColor = modeColor.cgColor
+            let c = Theme.shared.colors
+            layer?.backgroundColor = c.bar.cgColor
+            pillBackground.layer?.backgroundColor = (mode == .go ? c.go : c.select).cgColor
+            modePill.textColor = c.badgeLabel
+            hints.textColor = c.textDim
+            if flashWork == nil && activity == nil { right.textColor = c.textDim }
         }
     }
 }

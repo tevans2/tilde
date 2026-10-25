@@ -581,6 +581,22 @@ Measured on the developer's home folder: 55,581 items; saved file 5.3 MB written
 
 Still to do for M2: Tilde's own frecency store, compaction of dead items, folder counts and dates in Everywhere rows kept current.
 
+### M3: acting on files (done)
+
+- `tilde-ops`: requests (move, copy, trash, rename, new folder, compress) are planned first: sources must exist and not repeat, destinations must be folders, folders can't go inside themselves, names are validated, clashes get Finder-style "keep both" names, and moving into the current folder is a no-op. Steps run on one background thread with progress and cancellation; every step checks its destination is free (rename(2) would silently replace). Copies use `copyfile` with `COPYFILE_CLONE` (instant on APFS); cross-volume moves copy then remove; compress uses `ditto` (several items via a cloned staging folder); trash uses `NSFileManager` and records where items landed.
+- Undo history: each completed step records how to reverse it (moves back, created items to the Trash, trashed items back from the Trash). Undo runs the reversals newest first; a partial undo keeps the rest undoable. Redo re-plans the original request. History is per session, shared by all windows.
+- Tests run against temporary folders with a stand-in Trash, including randomized sequences of operations that must undo back to the exact starting tree; one opt-in test uses the real Trash.
+- App: shelf (`x`, `space`, `a`, shown as dots and a shelf bar), actions (`m` `c` `d` `r` `n` `z` `y`), a folder picker (fuzzy over indexed folders, zoxide favourites when empty, typed-path completion), rename and new-folder prompts, progress and results in the status bar, `u` / `U` / `⌃R`, and Edit › Undo/Redo naming the operation. Folder views refresh through FSEvents, so results appear without a reload.
+
+Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent undo history, progress for single large copies.
+
+### Navigation, preview and themes (done)
+
+- `⌃j` `⌃k` move and `⌃h` `⌃l` go out / in, in GO, SELECT and the folder picker (a local key monitor, ahead of the search field's text bindings).
+- Preview pane: `tilde-preview` runs bat (true colour) and parses its SGR output into styled spans (UTF-16 offsets); used for code, text and unknown types that look like text, up to 5 MB and `max_lines`. Markdown and everything else use Quick Look. `[preview]` sets visibility, width (default half the window), bat on/off, light and dark bat themes (defaulting to the preset's match) and line count.
+- `[theme]`: appearance (system / light / dark), presets (default, catppuccin, gruvbox, nord, solarized; each with light and dark palettes), 24 colour keys overridable for both appearances or either. Resolved in Rust with validation; Swift builds appearance-aware colours with system colours as fallbacks.
+- Fixed along the way: Everywhere search returned nothing when a matching pass outlasted the 250 ms wait (very large indexes, debug builds); nucleo's completion callback now refreshes results, and dependencies are optimized in debug builds.
+
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
 - NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).

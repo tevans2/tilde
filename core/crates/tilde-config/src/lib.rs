@@ -3,6 +3,10 @@
 //! A missing file means defaults. A broken file also means defaults, plus an error
 //! message for the UI, so a typo never stops Tilde from starting.
 
+mod theme;
+
+pub use theme::{Appearance, COLOR_KEYS, PRESETS, ResolvedTheme, ThemeConfig, parse_hex, preset_bat_themes};
+
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -15,8 +19,57 @@ const FONT_SIZE_RANGE: std::ops::RangeInclusive<f64> = 8.0..=32.0;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub font: FontConfig,
+    pub theme: ThemeConfig,
+    pub preview: PreviewConfig,
     pub index: IndexConfig,
     pub zoxide: ZoxideConfig,
+}
+
+/// The preview pane on the right.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PreviewConfig {
+    pub visible: bool,
+    /// Share of the window's width (0.15–0.85).
+    pub width: f64,
+    /// Render code and other text files with `bat` (if installed). Markdown and
+    /// everything else use Quick Look.
+    pub bat: bool,
+    /// bat themes (`bat --list-themes`) for light and dark appearance. Empty picks one to
+    /// match the theme preset, else (dark) your bat config or (light) "GitHub".
+    pub bat_theme_light: String,
+    pub bat_theme_dark: String,
+    /// Lines rendered by bat.
+    pub max_lines: u32,
+}
+
+const PREVIEW_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 0.15..=0.85;
+
+impl Config {
+    /// The bat themes to use: (light, dark). An empty dark theme means "bat's own config".
+    pub fn bat_themes(&self) -> (String, String) {
+        let preset = preset_bat_themes(&self.theme.preset);
+        let pick = |set: &str, from_preset: Option<&str>, fallback: &str| {
+            if !set.trim().is_empty() { set.trim().to_string() } else { from_preset.unwrap_or(fallback).to_string() }
+        };
+        (
+            pick(&self.preview.bat_theme_light, preset.map(|p| p.0), "GitHub"),
+            pick(&self.preview.bat_theme_dark, preset.map(|p| p.1), ""),
+        )
+    }
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        PreviewConfig {
+            visible: true,
+            width: 0.5,
+            bat: true,
+            bat_theme_light: String::new(),
+            bat_theme_dark: String::new(),
+            max_lines: 1000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -170,6 +223,23 @@ pub fn load(path: &Path) -> Loaded {
             if config.font.family.trim().is_empty() {
                 config.font.family = DEFAULT_FONT_FAMILY.into();
             }
+            if !PREVIEW_WIDTH_RANGE.contains(&config.preview.width) {
+                let msg = format!(
+                    "preview.width {} is outside {}–{}; using {}",
+                    config.preview.width,
+                    PREVIEW_WIDTH_RANGE.start(),
+                    PREVIEW_WIDTH_RANGE.end(),
+                    PreviewConfig::default().width
+                );
+                error = Some(error.map_or(msg.clone(), |e| format!("{e}; {msg}")));
+                config.preview.width = PreviewConfig::default().width;
+            }
+            config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
+            let (_, problems) = config.theme.resolve();
+            if !problems.is_empty() {
+                let msg = problems.join("; ");
+                error = Some(error.map_or(msg.clone(), |e| format!("{e}; {msg}")));
+            }
             Loaded { config, error }
         }
         Err(e) => Loaded {
@@ -180,7 +250,7 @@ pub fn load(path: &Path) -> Loaded {
 }
 
 /// Written when the user asks to open a config file that doesn't exist yet.
-pub const TEMPLATE: &str = r#"# Tilde configuration. Reload with ⌘R after saving.
+pub const TEMPLATE: &str = r##"# Tilde configuration. Reload with ⌘R after saving.
 
 [font]
 # Any installed font family. If there's no exact match, the closest installed family
@@ -188,6 +258,39 @@ pub const TEMPLATE: &str = r#"# Tilde configuration. Reload with ⌘R after savi
 family = "JetBrains Mono"
 # Base size in points for the file list (8–32). Other text is sized relative to it.
 size = 13
+
+[theme]
+# system, light or dark.
+appearance = "system"
+# default (macOS colours), catppuccin, gruvbox, nord or solarized. Each has light and
+# dark variants that follow the appearance.
+preset = "default"
+
+# Override any colour for both appearances (#RRGGBB or #RRGGBBAA):
+#   background bar border text text_dim selection selection_text match match_selected
+#   go select shelf badge_label badge_folder badge_app badge_image badge_video
+#   badge_audio badge_pdf badge_document badge_code badge_text badge_archive badge_other
+[theme.colors]
+# match = "#ff9e64"
+
+# Or for one appearance only.
+[theme.light]
+[theme.dark]
+# background = "#101014"
+
+[preview]
+visible = true
+# Share of the window the preview takes (0.15–0.85).
+width = 0.5
+# Syntax-highlight code and other text files with bat (if installed). Markdown and
+# everything else use Quick Look.
+bat = true
+# bat themes (from `bat --list-themes`) for light and dark appearance. Empty matches
+# the theme preset, else uses your bat config (dark) or "GitHub" (light).
+bat_theme_light = ""
+bat_theme_dark = ""
+# Lines rendered by bat.
+max_lines = 1000
 
 # What searching Everywhere covers. Apply changes with Rebuild in the Index window (⌘⇧I).
 [index]
@@ -211,7 +314,7 @@ max_items = 1000000
 enabled = true
 # Tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
 add_on_visit = true
-"#;
+"##;
 
 /// The two `[index]` lists an entry can be added to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +409,31 @@ mod tests {
         assert_eq!(l.config.font.family, "Menlo");
         assert_eq!(l.config.font.size, DEFAULT_FONT_SIZE);
         assert!(l.error.unwrap().contains("outside"));
+    }
+
+    #[test]
+    fn theme_problems_are_reported_but_the_rest_loads() {
+        let l = load_str("[font]\nsize = 15\n[theme]\npreset = \"nord\"\n[theme.colors]\nmatch = \"orange\"\n");
+        assert_eq!(l.config.font.size, 15.0);
+        assert_eq!(l.config.theme.preset, "nord");
+        assert!(l.error.unwrap().contains("theme.colors.match"));
+    }
+
+    #[test]
+    fn preview_width_is_checked() {
+        let l = load_str("[preview]\nwidth = 0.95\nbat_theme_dark = \"Nord\"\n");
+        assert_eq!(l.config.preview.width, 0.5);
+        assert_eq!(l.config.bat_themes(), ("GitHub".to_string(), "Nord".to_string()));
+        assert!(l.error.unwrap().contains("preview.width"));
+    }
+
+    #[test]
+    fn bat_themes_follow_the_preset_unless_set() {
+        let l = load_str("[theme]\npreset = \"gruvbox\"\n");
+        assert_eq!(l.config.bat_themes(), ("gruvbox-light".to_string(), "gruvbox-dark".to_string()));
+        let l = load_str("[theme]\npreset = \"gruvbox\"\n[preview]\nbat_theme_light = \"OneHalfLight\"\n");
+        assert_eq!(l.config.bat_themes().0, "OneHalfLight");
+        assert_eq!(Config::default().bat_themes(), ("GitHub".to_string(), String::new()));
     }
 
     #[test]

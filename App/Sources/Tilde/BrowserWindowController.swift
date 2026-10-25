@@ -13,12 +13,27 @@ enum Mode {
 final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private let events = EngineEvents()
     private let index: IndexService
+    private let ops: FileOps
+    /// Collected with `x`. Actions apply to these when there are any, otherwise to the
+    /// highlighted row.
+    private var shelf: [String] = []
+    private var shelfSet: Set<String> = []
+    private let shelfBar = ShelfBar()
+    private var shelfHeight: NSLayoutConstraint!
+    /// Operations started from this window: what to say when each finishes.
+    private var myOperations: [UInt64: String] = [:]
+    private var runningLabels: [UInt64: String] = [:]
+    private var overlay: PromptOverlay?
+    private var keyMonitor: Any?
     private let engine: Engine
     private let results: ResultsCache
 
     private let pathBar = PathBar()
     private let tableView = ResultsTableView()
-    private let preview = QLPreviewView(frame: .zero, style: .normal)!
+    private let preview = PreviewPane()
+    private let previewSeparator = NSBox()
+    private let topSeparator = NSBox()
+    private var previewWidth: NSLayoutConstraint?
     private let statusBar = StatusBar()
 
     private var mode: Mode = .go
@@ -39,8 +54,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var indexTimer: Timer?
     private var indexStatus = IndexStatus(state: .scanning, items: 0, capped: false)
 
-    init(index: IndexService) {
+    init(index: IndexService, ops: FileOps) {
         self.index = index
+        self.ops = ops
         engine = Engine(listener: events, index: index)
         results = ResultsCache(engine: engine)
         let window = NSWindow(
@@ -59,9 +75,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(NSSize(width: 1100, height: 680))
         window.center()
         window.setFrameAutosaveName("TildeBrowser")
-        open(folder: engine.homeDir())
+        var start = engine.homeDir()
+        #if DEBUG
+        // Development aid: start somewhere else (used with the snapshot hook).
+        if let dir = ProcessInfo.processInfo.environment["TILDE_START"] { start = dir }
+        #endif
+        open(folder: start)
         setMode(.go)
         startIndexProgress()
+        // ⌃j ⌃k ⌃h ⌃l navigate in every mode. Caught before the search field, whose text
+        // editing would otherwise treat ⌃h as delete and ⌃k as kill-line.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let handled = MainActor.assumeIsolated { self?.handleControlNavigation(event) ?? false }
+            return handled ? nil : event
+        }
     }
 
     @available(*, unavailable)
@@ -90,15 +117,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
 
-        preview.autostarts = true
-        preview.shouldCloseWithWindow = true
+        // Plain boxes filled with the theme's border colour (system separators can't be
+        // recoloured).
+        for box in [previewSeparator, topSeparator] {
+            box.boxType = .custom
+            box.borderWidth = 0
+        }
 
-        let previewSeparator = NSBox()
-        previewSeparator.boxType = .separator
-        let topSeparator = NSBox()
-        topSeparator.boxType = .separator
-
-        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, statusBar] as [NSView] {
+        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -116,31 +142,51 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             topSeparator.topAnchor.constraint(equalTo: pathBar.bottomAnchor),
             topSeparator.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             topSeparator.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            topSeparator.heightAnchor.constraint(equalToConstant: 1),
 
             scroll.topAnchor.constraint(equalTo: topSeparator.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: shelfBar.topAnchor),
             scroll.trailingAnchor.constraint(equalTo: previewSeparator.leadingAnchor),
 
             previewSeparator.topAnchor.constraint(equalTo: topSeparator.bottomAnchor),
-            previewSeparator.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
+            previewSeparator.bottomAnchor.constraint(equalTo: shelfBar.topAnchor),
             previewSeparator.widthAnchor.constraint(equalToConstant: 1),
             previewSeparator.trailingAnchor.constraint(equalTo: preview.leadingAnchor),
 
             preview.topAnchor.constraint(equalTo: topSeparator.bottomAnchor),
             preview.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            preview.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
-            preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: 0.3),
+            preview.bottomAnchor.constraint(equalTo: shelfBar.topAnchor),
+
+            shelfBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            shelfBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            shelfBar.bottomAnchor.constraint(equalTo: statusBar.topAnchor),
 
             statusBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: 28),
         ])
+        shelfHeight = shelfBar.heightAnchor.constraint(equalToConstant: 0)
+        shelfHeight.isActive = true
+        shelfBar.isHidden = true
     }
 
-    /// Applies fonts from the config. Called at startup and on Reload Config.
+    /// Applies fonts and preview settings from the config. Called at startup and on
+    /// Reload Config.
     func applyTheme(_ theme: Theme) {
+        window?.backgroundColor = theme.colors.background
+        previewSeparator.fillColor = theme.colors.border
+        topSeparator.fillColor = theme.colors.border
+        if let content = window?.contentView {
+            // Multipliers can't change, so the width constraint is replaced.
+            previewWidth?.isActive = false
+            let share = theme.previewVisible ? CGFloat(theme.previewWidth) : 0
+            previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
+            previewWidth?.isActive = true
+            preview.isHidden = !theme.previewVisible
+            previewSeparator.isHidden = !theme.previewVisible
+        }
         pathBar.applyTheme(theme)
         statusBar.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
@@ -283,18 +329,25 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func handleSelectKey(_ event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command) { return false }
+        if event.modifierFlags.contains(.control) {
+            if event.charactersIgnoringModifiers == "r" { redo(); return true }
+            return false
+        }
         switch event.keyCode {
         case 125: moveSelection(by: 1); return true // down
         case 126: moveSelection(by: -1); return true // up
         case 123: goUp(); return true // left
         case 124: goIntoOrActivate(); return true // right
         case 36, 76: activateHighlighted(); return true // return, enter
-        case 53: // escape: clear the filter
+        case 53: // escape: clear the filter, then the shelf
             if !pathBar.field.stringValue.isEmpty {
                 pathBar.field.stringValue = ""
                 queryChanged()
+            } else if !shelf.isEmpty {
+                setShelf([])
             }
             return true
+        case 49: toggleShelf(); return true // space
         case 51: goUp(); return true // delete
         default: break
         }
@@ -308,6 +361,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case "/": setMode(.go)
         case "~": open(folder: engine.homeDir())
         case "X": hideHighlightedFromSearch()
+        case "x": toggleShelf()
+        case "a": toggleShelfAll()
+        case "m": pickDestination(copy: false)
+        case "c": pickDestination(copy: true)
+        case "d": trashTargets()
+        case "y": copyPaths()
+        case "z": compressTargets()
+        case "r": renameHighlighted()
+        case "n": newFolder(nil)
+        case "u": undo()
+        case "U": redo()
         case let c where c.count == 1 && c.first!.isLetter:
             statusBar.flash("\(c) does nothing yet in SELECT. Press / to search.")
         default: return false
@@ -380,16 +444,47 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func schedulePreview() {
         previewWork?.cancel()
-        let path = selectedRow?.path
+        let row = selectedRow
         let work = DispatchWorkItem { [weak self] in
-            self?.preview.previewItem = path.map { URL(fileURLWithPath: $0) as NSURL }
+            guard let self, Theme.shared.previewVisible else { return }
+            self.preview.show(row)
         }
         previewWork = work
         // Short delay so holding j doesn't render every file on the way.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
+    /// ⌃j / ⌃k move down / up, ⌃h goes up a folder, ⌃l goes in (like `tab` or `l`).
+    private func handleControlNavigation(_ event: NSEvent) -> Bool {
+        guard event.window === window,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control,
+              let key = event.charactersIgnoringModifiers?.lowercased()
+        else { return false }
+        if let overlay {
+            switch key {
+            case "j": overlay.moveSelection(by: 1)
+            case "k": overlay.moveSelection(by: -1)
+            default: return false
+            }
+            return true
+        }
+        switch key {
+        case "j": moveSelection(by: 1)
+        case "k": moveSelection(by: -1)
+        case "h": goUp()
+        case "l":
+            if mode == .go {
+                whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
+            } else {
+                goIntoOrActivate()
+            }
+        default: return false
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         indexTimer?.invalidate()
         preview.close()
     }
@@ -410,6 +505,7 @@ extension BrowserWindowController: EngineEventsDelegate {
 
         if let name = pendingSelection, let i = engine.indexOf(generation: generation, name: name) {
             select(row: Int(i))
+            pendingSelection = nil
         } else if let keepPath {
             // Refreshes while the index fills in shouldn't move the selection.
             select(row: results.tableRow(forPath: keepPath) ?? min(max(keepRow, 0), results.tableRows - 1))
@@ -484,7 +580,7 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
             return header
         }
         let cell = tableView.makeView(withIdentifier: RowCellView.identifier, owner: nil) as? RowCellView ?? RowCellView()
-        if let r = results.row(row) { cell.configure(with: r) }
+        if let r = results.row(row) { cell.configure(with: r, onShelf: shelfSet.contains(r.path)) }
         return cell
     }
 
@@ -539,5 +635,243 @@ final class ResultsCache {
     /// Table row showing `path`, searching the first few hundred rows.
     func tableRow(forPath path: String) -> Int? {
         (0..<min(tableRows, 400)).first { row($0)?.path == path }
+    }
+}
+
+// MARK: File operations
+
+extension BrowserWindowController: OpsEventsDelegate {
+    /// The shelf if it has anything, otherwise the highlighted row.
+    private var targets: [String] {
+        if !shelf.isEmpty { return shelf }
+        return selectedRow.map { [$0.path] } ?? []
+    }
+
+    private func describe(_ paths: [String]) -> String {
+        paths.count == 1 ? "“\((paths[0] as NSString).lastPathComponent)”" : "\(paths.count) items"
+    }
+
+    private func display(_ path: String) -> String {
+        let home = engine.homeDir()
+        if path == home { return "~" }
+        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+
+    // MARK: Shelf
+
+    private func setShelf(_ paths: [String]) {
+        shelf = paths
+        shelfSet = Set(paths)
+        shelfBar.update(paths: paths)
+        shelfBar.isHidden = paths.isEmpty
+        shelfHeight.constant = paths.isEmpty ? 0 : 26
+        let selected = tableView.selectedRowIndexes
+        tableView.reloadData()
+        tableView.selectRowIndexes(selected, byExtendingSelection: false)
+    }
+
+    private func toggleShelf() {
+        guard let row = selectedRow else { return }
+        if shelfSet.contains(row.path) {
+            setShelf(shelf.filter { $0 != row.path })
+        } else {
+            setShelf(shelf + [row.path])
+        }
+        moveSelection(by: 1)
+    }
+
+    /// Adds every shown row, or removes them if they're all on the shelf already.
+    private func toggleShelfAll() {
+        let shown = (0..<results.tableRows).compactMap { results.row($0)?.path }
+        if shown.allSatisfy(shelfSet.contains) {
+            let remove = Set(shown)
+            setShelf(shelf.filter { !remove.contains($0) })
+        } else {
+            setShelf(shelf + shown.filter { !shelfSet.contains($0) })
+        }
+    }
+
+    // MARK: Actions
+
+    private func submit(_ request: OpRequest, describing message: String) {
+        do {
+            let id = try ops.submit(request: request)
+            myOperations[id] = message
+        } catch {
+            statusBar.flash(error.localizedDescription)
+        }
+    }
+
+    private func pickDestination(copy: Bool) {
+        let sources = targets
+        guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
+        let here = currentFolder
+        let title = "\(copy ? "Copy" : "Move") \(describe(sources)) to…"
+        showOverlay(PromptOverlay(title: title, kind: .destination(
+            search: { [index, weak self] query in
+                var found = index.destinations(query: query, limit: 12)
+                // Copying into the current folder makes a duplicate; offer it first.
+                if copy, query.isEmpty, let self {
+                    found.insert(Destination(path: here, display: "\(self.display(here))  (this folder)", highlights: []), at: 0)
+                }
+                return found
+            },
+            onPick: { [weak self] dest in
+                guard let self else { return }
+                let what = copy ? "Copied" : "Moved"
+                let folder = dest == here ? "this folder" : "“\((dest as NSString).lastPathComponent)”"
+                self.submit(
+                    OpRequest(kind: copy ? .copy : .move, sources: sources, destination: dest, name: nil),
+                    describing: "\(what) \(self.describe(sources)) to \(folder)")
+                self.setShelf([])
+            })))
+    }
+
+    private func trashTargets() {
+        let sources = targets
+        guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
+        submit(OpRequest(kind: .trash, sources: sources, destination: nil, name: nil),
+               describing: "Moved \(describe(sources)) to the Trash")
+        setShelf([])
+    }
+
+    private func compressTargets() {
+        let sources = targets
+        guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
+        submit(OpRequest(kind: .compress, sources: sources, destination: nil, name: nil),
+               describing: "Compressed \(describe(sources))")
+        setShelf([])
+    }
+
+    private func copyPaths() {
+        let paths = targets
+        guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+        statusBar.flash("Copied \(paths.count == 1 ? "path" : "\(paths.count) paths")")
+    }
+
+    private func renameHighlighted() {
+        guard let row = selectedRow else { return }
+        let name = row.name
+        // Select the part before the extension, like the Finder.
+        let stem: Int = {
+            guard row.kind != .folder, let dot = name.lastIndex(of: "."), dot != name.startIndex else {
+                return (name as NSString).length
+            }
+            return (String(name[..<dot]) as NSString).length
+        }()
+        showOverlay(PromptOverlay(
+            title: "Rename “\(name)”",
+            kind: .text(initial: name, selection: NSRange(location: 0, length: stem), onSubmit: { [weak self] newName in
+                guard let self, newName != name else { return }
+                self.submit(OpRequest(kind: .rename, sources: [row.path], destination: nil, name: newName),
+                            describing: "Renamed to “\(newName)”")
+            })))
+    }
+
+    @objc func newFolder(_ sender: Any?) {
+        let parent = currentFolder
+        showOverlay(PromptOverlay(
+            title: "New folder in \(display(parent))",
+            kind: .text(initial: "untitled folder", selection: NSRange(location: 0, length: 15), onSubmit: { [weak self] name in
+                self?.submit(OpRequest(kind: .newFolder, sources: [], destination: parent, name: name),
+                             describing: "Created “\(name)”")
+            })))
+    }
+
+    @objc func moveToTrash(_ sender: Any?) {
+        trashTargets()
+    }
+
+    // Undo and redo pressed here report here (an empty description means "describe it
+    // from the outcome").
+    private func undo() {
+        if let id = ops.undo() { myOperations[id] = "" } else { statusBar.flash("Nothing to undo") }
+    }
+
+    private func redo() {
+        if let id = ops.redo() { myOperations[id] = "" } else { statusBar.flash("Nothing to redo") }
+    }
+
+    private func showOverlay(_ prompt: PromptOverlay) {
+        overlay?.removeFromSuperview()
+        guard let content = window?.contentView else { return }
+        let restore = mode
+        overlay = prompt
+        prompt.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(prompt)
+        NSLayoutConstraint.activate([
+            prompt.topAnchor.constraint(equalTo: content.topAnchor),
+            prompt.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            prompt.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            prompt.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+        ])
+        prompt.focus()
+        prompt.onCloseExtra = { [weak self] in
+            self?.overlay = nil
+            self?.setMode(restore)
+        }
+    }
+
+    // MARK: Operation events (from AppDelegate)
+
+    /// Progress shows in the window that started the operation, or the front window for
+    /// undo and redo.
+    private func reports(_ id: UInt64) -> Bool {
+        myOperations[id] != nil || window?.isKeyWindow == true
+    }
+
+    func operationStarted(id: UInt64, label: String, total: Int) {
+        guard reports(id) else { return }
+        runningLabels[id] = label
+        statusBar.setActivity("\(label)…")
+    }
+
+    func operationProgress(id: UInt64, done: Int, total: Int, current: String) {
+        guard reports(id), let label = runningLabels[id], total > 1, !current.isEmpty else { return }
+        statusBar.setActivity("\(label)… \(min(done + 1, total))/\(total) · \(current)")
+    }
+
+    func operationFinished(id: UInt64, outcome: OpOutcome) {
+        let mine = myOperations.removeValue(forKey: id)
+        if runningLabels.removeValue(forKey: id) != nil { statusBar.setActivity(nil) }
+        guard mine != nil || window?.isKeyWindow == true else { return }
+
+        if let error = outcome.error {
+            if outcome.completed > 0 {
+                statusBar.flash("\(outcome.label) stopped after \(outcome.completed) of \(outcome.total): \(error)")
+            } else {
+                statusBar.flash(error)
+            }
+            return
+        }
+        var message: String
+        switch outcome.phase {
+        case .done: message = mine.flatMap { $0.isEmpty ? nil : $0 } ?? outcome.label
+        case .undone: message = "Undid \(outcome.label)"
+        case .redone: message = "Redid \(outcome.label)"
+        }
+        if outcome.renamed > 0 {
+            message += " (\(outcome.renamed) renamed to keep both)"
+        }
+        if outcome.phase == .done, outcome.completed == 0, outcome.skipped > 0 {
+            message = "Already there, nothing to do"
+        } else if outcome.phase != .undone {
+            message += " · u undo"
+        }
+        statusBar.flash(message)
+
+        // Select what was just renamed or created when it's in this folder; the folder
+        // refresh that follows picks it up.
+        if outcome.phase != .undone, outcome.results.count == 1,
+           let result = outcome.results.first,
+           (result as NSString).deletingLastPathComponent == currentFolder {
+            pendingSelection = (result as NSString).lastPathComponent
+            if let i = engine.indexOf(generation: shownGeneration, name: pendingSelection!) {
+                select(row: Int(i))
+                pendingSelection = nil
+            }
+        }
     }
 }

@@ -10,6 +10,7 @@ use tilde_query::Query;
 
 use crate::config::ConfigError;
 use crate::engine::Command;
+use crate::views::{HighlightRange, utf16_ranges};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum IndexState {
@@ -48,6 +49,16 @@ pub struct FolderInfo {
     /// `~/Developer/vendor`
     pub display: String,
     pub items: u64,
+}
+
+/// A folder to move or copy into.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Destination {
+    pub path: String,
+    /// `~/Documents/Finance`
+    pub display: String,
+    /// Matched characters in `display`.
+    pub highlights: Vec<HighlightRange>,
 }
 
 struct Live {
@@ -127,6 +138,49 @@ impl IndexService {
             .collect()
     }
 
+    /// Folders for the move/copy picker. A typed path (`~/…` or `/…`) to an existing folder
+    /// comes first; an empty query lists zoxide's most-visited folders; anything else is a
+    /// fuzzy search over indexed folders.
+    pub fn destinations(&self, query: String, limit: u32) -> Vec<Destination> {
+        let limit = limit as usize;
+        let q = query.trim();
+        let mut out = Vec::new();
+        if q.starts_with('/') || q.starts_with('~') {
+            out = self.complete_path(q, limit);
+            if !out.is_empty() {
+                return out;
+            }
+        }
+        let mut live = self.live.lock().unwrap();
+        let Some(index) = live.index.as_mut() else { return out };
+        if q.is_empty() {
+            for key in index.top_folders(limit) {
+                let path = index.absolute(&key);
+                out.push(Destination {
+                    display: display_path(&self.home, &path),
+                    path: path.to_string_lossy().into_owned(),
+                    highlights: Vec::new(),
+                });
+            }
+            return out;
+        }
+        let query = Query::parse(&format!("{q} kind:folder"));
+        for hit in index.search(&query, None, None, 0, limit) {
+            let path = index.absolute(&hit.key);
+            let display = display_path(&self.home, &path);
+            // Index keys are relative to home; the display adds "~/".
+            let shift = if hit.key.starts_with('/') { 0 } else { 2 };
+            let indices: Vec<u32> = hit.indices.iter().map(|i| i + shift).collect();
+            let path = path.to_string_lossy().into_owned();
+            if out.iter().any(|d: &Destination| d.path == path) {
+                continue;
+            }
+            out.push(Destination { highlights: utf16_ranges(&display, &indices), display, path });
+        }
+        out.truncate(limit.max(1));
+        out
+    }
+
     /// Re-reads the config and builds the index from scratch.
     pub fn rebuild(&self) {
         self.start(true);
@@ -186,6 +240,52 @@ impl IndexService {
         });
         service.start(false);
         service
+    }
+
+    /// Completes a typed path: the folder itself if it exists, then folders inside the
+    /// parent whose names start with the last part (case-insensitive). A trailing `/` lists
+    /// the folder's subfolders.
+    fn complete_path(&self, typed: &str, limit: usize) -> Vec<Destination> {
+        let path = match typed.strip_prefix('~') {
+            Some(rest) => self.home.join(rest.trim_start_matches('/')),
+            None => PathBuf::from(typed),
+        };
+        let to_dest = |p: &Path| Destination {
+            display: display_path(&self.home, p),
+            path: p.to_string_lossy().into_owned(),
+            highlights: Vec::new(),
+        };
+        let mut out = Vec::new();
+        let (dir, prefix) = if typed.ends_with('/') || typed == "~" {
+            (path.clone(), String::new())
+        } else {
+            if path.is_dir() {
+                out.push(to_dest(&path));
+            }
+            let prefix = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            (path.parent().map(Path::to_path_buf).unwrap_or_default(), prefix)
+        };
+        if dir.is_dir() {
+            if prefix.is_empty() {
+                out.push(to_dest(&dir));
+            }
+            if let Ok(mut entries) = tilde_fs::list_dir(&dir, &tilde_fs::ListOptions::default(), || false) {
+                tilde_fs::sort_entries(&mut entries);
+                for e in entries {
+                    if out.len() >= limit {
+                        break;
+                    }
+                    let child = dir.join(&e.name);
+                    if e.kind == tilde_types::EntryKind::Folder
+                        && e.name.to_lowercase().starts_with(&prefix)
+                        && child != path
+                    {
+                        out.push(to_dest(&child));
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub(crate) fn subscribe(&self, tx: Sender<Command>) {
@@ -316,4 +416,40 @@ fn display_path(home: &Path, path: &Path) -> String {
 
 fn file_size(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| m.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completes_typed_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for d in ["Archive", "Artwork", "Beta"] {
+            std::fs::create_dir(root.join(d)).unwrap();
+        }
+        std::fs::write(root.join("art.txt"), b"").unwrap();
+        let config = IndexConfig {
+            home: PathBuf::from("/nonexistent-home"),
+            scan: ScanConfig::default(),
+            zoxide: false,
+            max_items: 10,
+            cache_path: None,
+        };
+        let service = IndexService::with_config(config, false);
+        let paths = |typed: String| -> Vec<String> {
+            service
+                .destinations(typed, 10)
+                .into_iter()
+                .map(|d| d.path.rsplit('/').next().unwrap().to_string())
+                .collect()
+        };
+        let r = root.to_string_lossy();
+        assert_eq!(paths(format!("{r}/ar")), ["Archive", "Artwork"], "folders only, by prefix");
+        assert_eq!(paths(format!("{r}/Archive")), ["Archive"]);
+        let all = paths(format!("{r}/"));
+        assert_eq!(all[1..], ["Archive", "Artwork", "Beta"]);
+        assert!(paths(format!("{r}/zzz")).is_empty());
+    }
 }

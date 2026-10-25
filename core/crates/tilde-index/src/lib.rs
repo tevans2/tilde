@@ -181,10 +181,13 @@ pub struct GlobalIndex {
 
 impl GlobalIndex {
     /// Loads the saved index or scans, then keeps the index current with FSEvents.
-    /// `on_change` runs when the first load or scan finishes and after each batch of
-    /// changes is applied.
-    pub fn start(config: IndexConfig, on_change: impl Fn() + Send + 'static) -> GlobalIndex {
-        let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(|| {}), None, 1);
+    /// `on_change` runs when the first load or scan finishes, after each batch of changes
+    /// is applied, and when a matching pass that outlasted `search`'s wait completes (so
+    /// slow searches still show up).
+    pub fn start(config: IndexConfig, on_change: impl Fn() + Send + Sync + 'static) -> GlobalIndex {
+        let on_change: Arc<dyn Fn() + Send + Sync> = Arc::new(on_change);
+        let notify = on_change.clone();
+        let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(move || notify()), None, 1);
         let zoxide = config.zoxide.then(Zoxide::find).flatten();
         let fingerprint = config.fingerprint();
         let cache = config.cache_path.clone().map(|p| (p, fingerprint));
@@ -311,6 +314,13 @@ impl GlobalIndex {
     /// Absolute path for a key.
     pub fn absolute(&self, key: &str) -> PathBuf {
         if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
+    }
+
+    /// zoxide's most-visited folders that still exist, best first (keys).
+    pub fn top_folders(&self, limit: usize) -> Vec<String> {
+        let mut folders: Vec<(&String, &f64)> = self.zoxide_scores.iter().filter(|(k, _)| !k.is_empty()).collect();
+        folders.sort_by(|a, b| b.1.total_cmp(a.1));
+        folders.into_iter().map(|(k, _)| k.clone()).filter(|k| self.absolute(k).is_dir()).take(limit).collect()
     }
 
     /// Records a folder visit with zoxide, if enabled.

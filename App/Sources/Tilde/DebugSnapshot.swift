@@ -3,7 +3,8 @@ import AppKit
 
 /// Development aid: `TILDE_SNAPSHOT=/path/out.png` renders the key window to a PNG after
 /// launch and quits. `TILDE_SNAPSHOT_KEYS` replays keystrokes first (`\e` is escape, `\t` tab,
-/// `\r` return, `\b` delete), so flows can be checked without screen-recording access.
+/// `\r` return, `\b` delete, `^j` control-j), so flows can be checked without
+/// screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead.
 @MainActor
 enum DebugSnapshot {
@@ -23,8 +24,15 @@ enum DebugSnapshot {
         }
     }
 
+    /// Control keys are encoded as a private-use character just above U+E000.
+    private static let controlBase: UInt32 = 0xE000
+
     private static func decode(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\e", with: "\u{1b}")
+        var s = s
+        for c in "abcdefghijklmnopqrstuvwxyz" {
+            s = s.replacingOccurrences(of: "^\(c)", with: String(UnicodeScalar(controlBase + UInt32(c.asciiValue!))!))
+        }
+        return s.replacingOccurrences(of: "\\e", with: "\u{1b}")
             .replacingOccurrences(of: "\\t", with: "\t")
             .replacingOccurrences(of: "\\r", with: "\r")
             .replacingOccurrences(of: "\\b", with: "\u{7f}")
@@ -33,7 +41,10 @@ enum DebugSnapshot {
     private static func type(_ chars: [Character], then done: @escaping @MainActor () -> Void) {
         guard let c = chars.first else { return done() }
         if let window = NSApp.keyWindow ?? NSApp.windows.first, let event = keyEvent(for: c, window: window) {
-            window.sendEvent(event)
+            // Through the app (not the window) so local key monitors see it, as they would
+            // a real keystroke.
+            window.makeKey()
+            NSApp.sendEvent(event)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             type(Array(chars.dropFirst()), then: done)
@@ -41,7 +52,12 @@ enum DebugSnapshot {
     }
 
     private static func keyEvent(for c: Character, window: NSWindow) -> NSEvent? {
-        let s = String(c)
+        var s = String(c)
+        var flags: NSEvent.ModifierFlags = []
+        if let v = c.unicodeScalars.first?.value, v > controlBase, v < controlBase + 128 {
+            s = String(UnicodeScalar(UInt8(v - controlBase)))
+            flags = .control
+        }
         let keyCode: UInt16 = switch s {
         case "\u{1b}": 53
         case "\t": 48
@@ -50,7 +66,7 @@ enum DebugSnapshot {
         default: 0
         }
         return NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, characters: s, charactersIgnoringModifiers: s,
             isARepeat: false, keyCode: keyCode
         )
