@@ -555,8 +555,19 @@ Measured (M-series, APFS, release build, best of 20):
 | 10k files | 6.7 ms | 3.5 ms | 22.7 ms (unsorted) |
 | 100k files | 128 ms | 46 ms | 304 ms (unsorted) |
 
+### M2, first cut (done)
+
+- `tilde-index`: parallel scan of the configured roots on launch (rayon + `getattrlistbulk`), skipping excluded folders' contents, hidden files and mount points; items held in nucleo with keys relative to home.
+- Everywhere search: nucleo match, then the top 3,000 re-ranked with a filename score, depth and path-length penalties, a recency bonus and zoxide boosts; filters (`ext:`, `kind:`, `mod:`, `size:`, `in:`, `in:.`) applied per item; top 200 returned. Items directly in the current folder are left to Here.
+- zoxide: scores read at start and every 60 s, folders it knows that the scan misses are added to the index, folders opened in Tilde are recorded with `zoxide add` (`[zoxide]` config).
+- Engine publishes Here + Everywhere rows, re-publishes while the scan runs, and exposes `index_status`. The app shows an Everywhere header, dimmed locations with highlights, reveal on `tab`, scan progress in the status bar, and defers `tab`/`⏎`/`/` until results match the typed text.
+
+Measured on the developer's home folder (release, M-series): 55,560 items scanned in 0.2 s, queries 3–8 ms, 38 MB peak.
+
+Still to do for M2: persist the index and catch up with FSEvents on launch, live updates while running, Tilde's own frecency store.
+
 Remaining M0 spikes:
-- nucleo over 2M synthetic paths (full and incremental) for the Everywhere scope.
+- nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
 - NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).
 - libghostty vs SwiftTerm hosting nvim, with socket RPC.
 - FSEvents `sinceWhen` replay.

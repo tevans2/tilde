@@ -1,24 +1,38 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tilde_fs::{ListOptions, list_dir, sort_entries};
+use tilde_index::{GlobalHit, GlobalIndex, IndexConfig, ScanConfig};
 use tilde_query::{HereMatcher, Hit, Query};
 use tilde_types::Entry;
 
 use crate::views::RowView;
 
+/// Most Everywhere results returned for one query.
+const EVERYWHERE_LIMIT: usize = 200;
+/// How often results refresh while the index is still being built.
+const SCAN_REFRESH: Duration = Duration::from_millis(400);
+
 /// Implemented by the Swift app. Called on a background thread.
 #[uniffi::export(with_foreign)]
 pub trait EngineListener: Send + Sync {
-    /// Results for `generation` are ready to fetch with `Engine::rows`.
-    fn results_ready(&self, generation: u64, folder: String, count: u32);
+    /// Results for `generation` are ready to fetch with `Engine::rows`: `here_count` rows
+    /// from the current folder followed by `everywhere_count` from the index. May be
+    /// called more than once for a generation while the index is still being built.
+    fn results_ready(&self, generation: u64, folder: String, here_count: u32, everywhere_count: u32);
     /// The folder requested in `generation` could not be opened. The previous folder
     /// stays current.
     fn folder_failed(&self, generation: u64, folder: String, message: String);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct IndexStatus {
+    pub items: u64,
+    pub scanning: bool,
 }
 
 enum Command {
@@ -27,47 +41,44 @@ enum Command {
     ShowHidden { show: bool, generation: u64 },
 }
 
-/// What `rows` reads from. Replaced wholesale by the worker after each command batch.
+/// What `rows` reads from. Replaced wholesale by the worker after each update.
 struct Published {
     generation: u64,
     folder: PathBuf,
+    home: PathBuf,
     entries: Arc<Vec<Entry>>,
-    hits: Vec<Hit>,
+    here: Vec<Hit>,
+    everywhere: Vec<GlobalHit>,
 }
 
 #[derive(uniffi::Object)]
 pub struct Engine {
     tx: Sender<Command>,
     published: Arc<Mutex<Published>>,
+    status: Arc<Mutex<IndexStatus>>,
     /// Generation of the newest `open_folder` call, so an in-flight listing can stop early.
     latest_open: Arc<AtomicU64>,
 }
 
 #[uniffi::export]
 impl Engine {
+    /// Starts an engine configured from the user's config file. Indexing starts at once.
     #[uniffi::constructor]
     pub fn new(listener: Arc<dyn EngineListener>) -> Arc<Self> {
-        let (tx, rx) = mpsc::channel();
-        let published = Arc::new(Mutex::new(Published {
-            generation: 0,
-            folder: PathBuf::new(),
-            entries: Arc::new(Vec::new()),
-            hits: Vec::new(),
-        }));
-        let latest_open = Arc::new(AtomicU64::new(0));
-        let worker = Worker {
-            rx,
-            listener,
-            published: published.clone(),
-            latest_open: latest_open.clone(),
-            folder: PathBuf::new(),
-            entries: Arc::new(Vec::new()),
-            query: Query::default(),
-            show_hidden: false,
-            matcher: HereMatcher::default(),
+        let home = home_dir();
+        let config = tilde_config::load(&tilde_config::config_path()).config;
+        let resolved = config.index.resolve(&home);
+        let index = IndexConfig {
+            home: home.clone(),
+            scan: ScanConfig {
+                roots: resolved.roots,
+                exclude_names: resolved.exclude_names.into_iter().collect(),
+                exclude_paths: resolved.exclude_paths,
+                include_hidden: config.index.include_hidden,
+            },
+            zoxide: config.zoxide.enabled,
         };
-        thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
-        Arc::new(Engine { tx, published, latest_open })
+        Engine::start(listener, home, Some(index), config.zoxide.enabled && config.zoxide.add_on_visit)
     }
 
     /// Lists `path` and makes it the current folder. The current query is kept; the UI
@@ -85,42 +96,95 @@ impl Engine {
         let _ = self.tx.send(Command::ShowHidden { show, generation });
     }
 
-    /// Rows `start..start+count` of the results for `generation`. Empty if a newer
-    /// generation has already replaced them.
+    /// Rows `start..start+count` of the results for `generation`: Here rows first, then
+    /// Everywhere rows. Empty if a newer generation has replaced them.
     pub fn rows(&self, generation: u64, start: u32, count: u32) -> Vec<RowView> {
         let p = self.published.lock().unwrap();
         if p.generation != generation {
             return Vec::new();
         }
-        let start = start as usize;
-        let end = (start + count as usize).min(p.hits.len());
-        p.hits
-            .get(start..end)
-            .unwrap_or_default()
-            .iter()
-            .map(|hit| RowView::new(&p.folder, &p.entries[hit.index as usize], hit))
+        let total = p.here.len() + p.everywhere.len();
+        let (start, end) = (start as usize, (start as usize + count as usize).min(total));
+        (start..end)
+            .map(|i| match p.here.get(i) {
+                Some(hit) => RowView::here(&p.folder, &p.entries[hit.index as usize], hit),
+                None => RowView::everywhere(&p.home, &p.everywhere[i - p.here.len()]),
+            })
             .collect()
     }
 
-    /// Position of the entry called `name` in the results for `generation`.
+    /// Position of the Here row called `name` in the results for `generation`.
     pub fn index_of(&self, generation: u64, name: String) -> Option<u32> {
         let p = self.published.lock().unwrap();
         if p.generation != generation {
             return None;
         }
-        p.hits.iter().position(|h| p.entries[h.index as usize].name == name).map(|i| i as u32)
+        p.here.iter().position(|h| p.entries[h.index as usize].name == name).map(|i| i as u32)
+    }
+
+    pub fn index_status(&self) -> IndexStatus {
+        *self.status.lock().unwrap()
     }
 
     pub fn home_dir(&self) -> String {
-        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+        home_dir().to_string_lossy().into_owned()
     }
+}
+
+impl Engine {
+    /// `index: None` disables the Everywhere scope (used by tests).
+    fn start(
+        listener: Arc<dyn EngineListener>,
+        home: PathBuf,
+        index: Option<IndexConfig>,
+        record_visits: bool,
+    ) -> Arc<Self> {
+        let (tx, rx) = mpsc::channel();
+        let published = Arc::new(Mutex::new(Published {
+            generation: 0,
+            folder: PathBuf::new(),
+            home: home.clone(),
+            entries: Arc::new(Vec::new()),
+            here: Vec::new(),
+            everywhere: Vec::new(),
+        }));
+        let status = Arc::new(Mutex::new(IndexStatus { items: 0, scanning: index.is_some() }));
+        let latest_open = Arc::new(AtomicU64::new(0));
+        let worker = Worker {
+            rx,
+            listener,
+            published: published.clone(),
+            status: status.clone(),
+            latest_open: latest_open.clone(),
+            home,
+            index: index.map(GlobalIndex::start),
+            record_visits,
+            generation: 0,
+            folder: PathBuf::new(),
+            entries: Arc::new(Vec::new()),
+            query: Query::default(),
+            show_hidden: false,
+            matcher: HereMatcher::default(),
+        };
+        thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
+        Arc::new(Engine { tx, published, status, latest_open })
+    }
+}
+
+fn home_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()))
 }
 
 struct Worker {
     rx: Receiver<Command>,
     listener: Arc<dyn EngineListener>,
     published: Arc<Mutex<Published>>,
+    status: Arc<Mutex<IndexStatus>>,
     latest_open: Arc<AtomicU64>,
+    home: PathBuf,
+    index: Option<GlobalIndex>,
+    record_visits: bool,
+    generation: u64,
     folder: PathBuf,
     entries: Arc<Vec<Entry>>,
     query: Query,
@@ -130,32 +194,55 @@ struct Worker {
 
 impl Worker {
     fn run(mut self) {
-        while let Ok(first) = self.rx.recv() {
+        loop {
+            // While the index is being built, wake periodically to report progress and
+            // refresh results so Everywhere fills in as the scan goes.
+            let scanning = self.update_status();
+            let first = if scanning {
+                match self.rx.recv_timeout(SCAN_REFRESH) {
+                    Ok(cmd) => Some(cmd),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match self.rx.recv() {
+                    Ok(cmd) => Some(cmd),
+                    Err(_) => return,
+                }
+            };
+            let Some(first) = first else {
+                let still_scanning = self.update_status();
+                if !self.query.is_empty() || !still_scanning {
+                    self.publish();
+                }
+                continue;
+            };
+
             // Coalesce everything queued so fast typing only ranks the latest text.
             let mut open = None;
-            let mut generation = 0;
             let mut relist = false;
             for cmd in std::iter::once(first).chain(self.rx.try_iter()) {
                 match cmd {
-                    Command::Open { path, generation: g } => {
-                        open = Some((path, g));
-                        generation = generation.max(g);
+                    Command::Open { path, generation } => {
+                        open = Some((path, generation));
+                        self.generation = self.generation.max(generation);
                     }
-                    Command::Query { text, generation: g } => {
+                    Command::Query { text, generation } => {
                         self.query = Query::parse(&text);
-                        generation = generation.max(g);
+                        self.generation = self.generation.max(generation);
                     }
-                    Command::ShowHidden { show, generation: g } => {
+                    Command::ShowHidden { show, generation } => {
                         relist |= show != self.show_hidden;
                         self.show_hidden = show;
-                        generation = generation.max(g);
+                        self.generation = self.generation.max(generation);
                     }
                 }
             }
 
+            let explicit_open = open.is_some();
             let target = match open {
-                Some((path, g)) => Some((path, g)),
-                None if relist => Some((self.folder.clone(), generation)),
+                Some(target) => Some(target),
+                None if relist => Some((self.folder.clone(), self.generation)),
                 None => None,
             };
             if let Some((path, open_generation)) = target {
@@ -164,6 +251,15 @@ impl Worker {
                 match list_dir(&path, &opts, || latest.load(Ordering::SeqCst) > open_generation) {
                     Ok(mut entries) => {
                         sort_entries(&mut entries);
+                        // Only folders the user navigated to: not the one opened at launch.
+                        if explicit_open
+                            && self.record_visits
+                            && !self.folder.as_os_str().is_empty()
+                            && path != self.folder
+                            && let Some(index) = &self.index
+                        {
+                            index.record_visit(&path);
+                        }
                         self.folder = path;
                         self.entries = Arc::new(entries);
                     }
@@ -173,16 +269,48 @@ impl Worker {
                     }
                 }
             }
-
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            let hits = self.matcher.rank(&self.entries, &self.query, now);
-            let count = hits.len() as u32;
-            {
-                let mut p = self.published.lock().unwrap();
-                *p = Published { generation, folder: self.folder.clone(), entries: self.entries.clone(), hits };
-            }
-            self.listener.results_ready(generation, self.folder.to_string_lossy().into(), count);
+            self.publish();
         }
+    }
+
+    /// Copies the index status for `Engine::index_status`. Returns whether it's scanning.
+    fn update_status(&self) -> bool {
+        let status = match &self.index {
+            Some(index) => {
+                let s = index.status();
+                IndexStatus { items: s.items, scanning: s.scanning }
+            }
+            None => IndexStatus { items: 0, scanning: false },
+        };
+        *self.status.lock().unwrap() = status;
+        status.scanning
+    }
+
+    fn publish(&mut self) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        let here = self.matcher.rank(&self.entries, &self.query, now);
+        let everywhere = match &mut self.index {
+            Some(index) if !self.query.is_empty() => {
+                let cwd = index.key(&self.folder);
+                index.search(&self.query, Some(&cwd), Some(&cwd), now, EVERYWHERE_LIMIT)
+            }
+            _ => Vec::new(),
+        };
+        let (here_count, everywhere_count) = (here.len() as u32, everywhere.len() as u32);
+        *self.published.lock().unwrap() = Published {
+            generation: self.generation,
+            folder: self.folder.clone(),
+            home: self.home.clone(),
+            entries: self.entries.clone(),
+            here,
+            everywhere,
+        };
+        self.listener.results_ready(
+            self.generation,
+            self.folder.to_string_lossy().into(),
+            here_count,
+            everywhere_count,
+        );
     }
 }
 
@@ -190,18 +318,21 @@ impl Worker {
 mod tests {
     use super::*;
     use std::sync::Condvar;
-    use std::time::Duration;
+    use std::time::Instant;
+
+    /// (generation, folder, here_count, everywhere_count)
+    type Event = (u64, String, u32, u32);
 
     #[derive(Default)]
     struct Recorder {
-        events: Mutex<Vec<(u64, String, u32)>>,
+        events: Mutex<Vec<Event>>,
         failures: Mutex<Vec<(u64, String)>>,
         cv: Condvar,
     }
 
     impl EngineListener for Recorder {
-        fn results_ready(&self, generation: u64, folder: String, count: u32) {
-            self.events.lock().unwrap().push((generation, folder, count));
+        fn results_ready(&self, generation: u64, folder: String, here_count: u32, everywhere_count: u32) {
+            self.events.lock().unwrap().push((generation, folder, here_count, everywhere_count));
             self.cv.notify_all();
         }
         fn folder_failed(&self, generation: u64, _folder: String, message: String) {
@@ -211,17 +342,26 @@ mod tests {
     }
 
     impl Recorder {
-        fn wait_for(&self, generation: u64) -> (u64, String, u32) {
+        /// The latest event for at least `generation` that satisfies `pred`.
+        fn wait_until(&self, generation: u64, pred: impl Fn(&Event) -> bool) -> Event {
             let mut events = self.events.lock().unwrap();
             loop {
-                if let Some(e) = events.iter().find(|e| e.0 >= generation) {
+                if let Some(e) = events.iter().rev().find(|e| e.0 >= generation && pred(e)) {
                     return e.clone();
                 }
                 let (guard, timeout) = self.cv.wait_timeout(events, Duration::from_secs(5)).unwrap();
-                assert!(!timeout.timed_out(), "no results for generation {generation}");
+                assert!(!timeout.timed_out(), "no matching results for generation {generation}");
                 events = guard;
             }
         }
+
+        fn wait_for(&self, generation: u64) -> Event {
+            self.wait_until(generation, |_| true)
+        }
+    }
+
+    fn engine_without_index(rec: Arc<Recorder>) -> Arc<Engine> {
+        Engine::start(rec, home_dir(), None, false)
     }
 
     #[test]
@@ -232,20 +372,19 @@ mod tests {
         std::fs::write(dir.path().join("Package.swift"), b"").unwrap();
 
         let rec = Arc::new(Recorder::default());
-        let engine = Engine::new(rec.clone());
+        let engine = engine_without_index(rec.clone());
         let path = dir.path().to_string_lossy().into_owned();
 
         engine.open_folder(path.clone(), 1);
-        let (_, folder, count) = rec.wait_for(1);
-        assert_eq!(folder, path);
-        assert_eq!(count, 3);
+        let (_, folder, here, everywhere) = rec.wait_for(1);
+        assert_eq!((folder, here, everywhere), (path, 3, 0));
         let rows = engine.rows(1, 0, 10);
         assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Sources", "Package.swift", "README.md"]);
         assert_eq!(rows[0].kind, crate::RowKind::Folder);
 
         engine.set_query("rdm".into(), 2);
-        let (_, _, count) = rec.wait_for(2);
-        assert_eq!(count, 1);
+        let (_, _, here, _) = rec.wait_for(2);
+        assert_eq!(here, 1);
         let rows = engine.rows(2, 0, 10);
         assert_eq!(rows[0].name, "README.md");
         assert!(!rows[0].highlights.is_empty());
@@ -263,13 +402,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a"), b"").unwrap();
         let rec = Arc::new(Recorder::default());
-        let engine = Engine::new(rec.clone());
+        let engine = engine_without_index(rec.clone());
         engine.open_folder(dir.path().to_string_lossy().into(), 1);
         rec.wait_for(1);
         engine.open_folder(dir.path().join("missing").to_string_lossy().into(), 2);
-        let (_, folder, count) = rec.wait_for(2);
+        let (_, folder, here, _) = rec.wait_for(2);
         assert_eq!(folder, dir.path().to_string_lossy());
-        assert_eq!(count, 1);
+        assert_eq!(here, 1);
         assert_eq!(rec.failures.lock().unwrap()[0].0, 2);
+    }
+
+    #[test]
+    fn everywhere_results_follow_here_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("projects/tilde/src")).unwrap();
+        std::fs::write(root.join("projects/tilde/src/main.rs"), b"").unwrap();
+        std::fs::write(root.join("projects/main-notes.md"), b"").unwrap();
+
+        let rec = Arc::new(Recorder::default());
+        let index = IndexConfig {
+            home: root.clone(),
+            scan: ScanConfig {
+                roots: vec![root.clone()],
+                exclude_names: Default::default(),
+                exclude_paths: vec![],
+                include_hidden: false,
+            },
+            zoxide: false,
+        };
+        let engine = Engine::start(rec.clone(), root.clone(), Some(index), false);
+        let t = Instant::now();
+        while engine.index_status().scanning || engine.index_status().items < 5 {
+            assert!(t.elapsed() < Duration::from_secs(5), "scan didn't finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        engine.open_folder(root.join("projects").to_string_lossy().into(), 1);
+        engine.set_query("main".into(), 2);
+        let (_, _, here, everywhere) = rec.wait_until(2, |e| e.3 > 0);
+        assert_eq!((here, everywhere), (1, 1));
+        let rows = engine.rows(2, 0, 10);
+        assert_eq!(rows[0].name, "main-notes.md");
+        assert_eq!(rows[0].section, crate::Section::Here);
+        assert_eq!(rows[1].name, "main.rs");
+        assert_eq!(rows[1].section, crate::Section::Everywhere);
+        assert_eq!(rows[1].location, "~/projects/tilde/src");
+        assert_eq!(rows[1].path, root.join("projects/tilde/src/main.rs").to_string_lossy());
+
+        // An empty query shows only the folder.
+        engine.set_query(String::new(), 3);
+        let (_, _, here, everywhere) = rec.wait_for(3);
+        assert_eq!((here, everywhere), (2, 0));
     }
 }

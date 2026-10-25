@@ -15,6 +15,8 @@ const FONT_SIZE_RANGE: std::ops::RangeInclusive<f64> = 8.0..=32.0;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub font: FontConfig,
+    pub index: IndexConfig,
+    pub zoxide: ZoxideConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -30,6 +32,84 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         FontConfig { family: DEFAULT_FONT_FAMILY.into(), size: DEFAULT_FONT_SIZE }
+    }
+}
+
+/// What the Everywhere search indexes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IndexConfig {
+    /// Folders to index. `~` is the home folder.
+    pub roots: Vec<String>,
+    /// Folder names (any depth) or paths (starting with `~/` or `/`) whose contents are
+    /// skipped. The folders themselves are still indexed.
+    pub exclude: Vec<String>,
+    pub include_hidden: bool,
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        IndexConfig {
+            roots: vec!["~".into()],
+            exclude: [
+                "node_modules",
+                ".git",
+                "target",
+                "build",
+                "DerivedData",
+                "Pods",
+                "__pycache__",
+                ".venv",
+                "venv",
+                "~/Library",
+                "~/.Trash",
+            ]
+            .map(String::from)
+            .to_vec(),
+            include_hidden: false,
+        }
+    }
+}
+
+/// `roots` and `exclude` with `~` expanded and exclusions split into names and paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedIndex {
+    pub roots: Vec<PathBuf>,
+    pub exclude_names: Vec<String>,
+    pub exclude_paths: Vec<PathBuf>,
+}
+
+impl IndexConfig {
+    pub fn resolve(&self, home: &Path) -> ResolvedIndex {
+        let expand = |s: &str| -> PathBuf {
+            match s.strip_prefix('~') {
+                Some("") => home.to_path_buf(),
+                Some(rest) if rest.starts_with('/') => home.join(&rest[1..]),
+                _ => PathBuf::from(s),
+            }
+        };
+        let (paths, names): (Vec<&String>, Vec<&String>) =
+            self.exclude.iter().partition(|e| e.starts_with('/') || e.starts_with("~/"));
+        ResolvedIndex {
+            roots: self.roots.iter().map(|r| expand(r)).collect(),
+            exclude_names: names.into_iter().cloned().collect(),
+            exclude_paths: paths.into_iter().map(|p| expand(p)).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ZoxideConfig {
+    /// Rank folders by zoxide's frecency and include folders it knows about.
+    pub enabled: bool,
+    /// Tell zoxide about folders opened in Tilde, so `z` in the shell learns from Tilde.
+    pub add_on_visit: bool,
+}
+
+impl Default for ZoxideConfig {
+    fn default() -> Self {
+        ZoxideConfig { enabled: true, add_on_visit: true }
     }
 }
 
@@ -92,6 +172,23 @@ pub const TEMPLATE: &str = r#"# Tilde configuration. Reload with ⌘R after savi
 family = "JetBrains Mono"
 # Base size in points for the file list (8–32). Other text is sized relative to it.
 size = 13
+
+# What searching Everywhere covers. Changes apply on the next launch.
+[index]
+roots = ["~"]
+# Folder names (at any depth) or paths (starting with ~/ or /) whose contents are
+# skipped. The folders themselves still show up in results.
+exclude = [
+  "node_modules", ".git", "target", "build", "DerivedData", "Pods",
+  "__pycache__", ".venv", "venv", "~/Library", "~/.Trash",
+]
+include_hidden = false
+
+[zoxide]
+# Rank folders you visit often (per zoxide) higher, and include every folder it knows.
+enabled = true
+# Tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
+add_on_visit = true
 "#;
 
 /// Creates the config file from `TEMPLATE` if it doesn't exist.
@@ -147,6 +244,19 @@ mod tests {
         assert_eq!(l.config.font.family, "Menlo");
         assert_eq!(l.config.font.size, DEFAULT_FONT_SIZE);
         assert!(l.error.unwrap().contains("outside"));
+    }
+
+    #[test]
+    fn index_paths_expand_and_split() {
+        let cfg = IndexConfig {
+            roots: vec!["~".into(), "/Volumes/Work".into()],
+            exclude: vec!["node_modules".into(), "~/Library".into(), "/tmp".into()],
+            include_hidden: false,
+        };
+        let r = cfg.resolve(Path::new("/Users/me"));
+        assert_eq!(r.roots, [PathBuf::from("/Users/me"), PathBuf::from("/Volumes/Work")]);
+        assert_eq!(r.exclude_names, ["node_modules"]);
+        assert_eq!(r.exclude_paths, [PathBuf::from("/Users/me/Library"), PathBuf::from("/tmp")]);
     }
 
     #[test]

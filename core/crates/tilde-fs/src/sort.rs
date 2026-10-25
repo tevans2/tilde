@@ -85,6 +85,7 @@ mod tests {
             file_id: 0,
             hidden: false,
             child_count: None,
+            mount_point: false,
         };
         let mut v = vec![mk("b.txt", EntryKind::File), mk("z", EntryKind::Folder), mk("a.txt", EntryKind::File)];
         sort_entries(&mut v);

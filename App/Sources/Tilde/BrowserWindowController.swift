@@ -23,11 +23,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var mode: Mode = .go
     /// The newest generation sent to the engine. Older results are ignored.
     private var latestGeneration: UInt64 = 0
+    /// The generation currently shown. The engine re-sends a generation while the
+    /// index fills in; those refreshes keep the selection.
+    private var shownGeneration: UInt64 = 0
     private var currentFolder = ""
-    /// Row to select when the next results arrive (the folder we just came up from).
+    /// Row to select when the next results arrive (the folder we came up from, or a
+    /// revealed file).
     private var pendingSelection: String?
     private var showHidden = false
     private var previewWork: DispatchWorkItem?
+    /// A `tab`/`⏎`/`/` pressed before results caught up with the typed text. Runs when
+    /// they arrive, so fast typing acts on the right row.
+    private var pendingAction: (() -> Void)?
+    private var indexTimer: Timer?
+    private var indexStatus = IndexStatus(items: 0, scanning: true)
 
     init() {
         engine = Engine(listener: events)
@@ -50,6 +59,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window.setFrameAutosaveName("TildeBrowser")
         open(folder: engine.homeDir())
         setMode(.go)
+        startIndexProgress()
     }
 
     @available(*, unavailable)
@@ -133,7 +143,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         statusBar.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
         tableView.reloadData()
-        if tableView.selectedRow < 0, results.count > 0 { select(row: 0) }
+        if tableView.selectedRow < 0 { selectFirstResult() }
         updateChrome()
         if !theme.warnings.isEmpty { statusBar.flash(theme.warnings.joined(separator: " ")) }
     }
@@ -179,53 +189,82 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
     }
 
+    private func whenResultsCurrent(_ action: @escaping () -> Void) {
+        if shownGeneration == latestGeneration {
+            action()
+        } else {
+            pendingAction = action
+        }
+    }
+
     private func queryChanged() {
         engine.setQuery(text: pathBar.field.stringValue, generation: nextGeneration())
     }
 
     private var selectedRow: RowView? {
-        let i = tableView.selectedRow
-        return i >= 0 ? results.row(i) : nil
+        results.row(tableView.selectedRow)
     }
 
-    /// Enters the highlighted folder (following symlinks). Returns false for files.
-    @discardableResult
-    private func enterHighlighted() -> Bool {
-        guard let row = selectedRow else { return false }
+    /// The folder a row leads into: itself for folders and symlinks to folders.
+    private func folderPath(of row: RowView) -> String? {
         switch row.kind {
         case .folder:
-            open(folder: row.path)
-            return true
+            return row.path
         case .symlink:
             let resolved = URL(fileURLWithPath: row.path).resolvingSymlinksInPath()
-            if (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
-                open(folder: resolved.path)
-                return true
-            }
-            return false
+            let isDir = (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            return isDir ? resolved.path : nil
         case .file, .package, .other:
-            return false
+            return nil
         }
     }
 
-    /// Enters folders, opens everything else in its default app.
+    /// `tab`, `/`, `l`: enter a folder, or reveal an Everywhere file in its folder.
+    /// Returns false for files in the current folder.
+    @discardableResult
+    private func goIntoHighlighted() -> Bool {
+        guard let row = selectedRow else { return false }
+        if let folder = folderPath(of: row) {
+            open(folder: folder)
+            return true
+        }
+        if row.section == .everywhere {
+            let url = URL(fileURLWithPath: row.path)
+            open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
+            return true
+        }
+        return false
+    }
+
+    /// `⏎`: enter folders, open everything else in its default app.
     private func activateHighlighted() {
         guard let row = selectedRow else { return }
-        if enterHighlighted() { return }
+        if let folder = folderPath(of: row) {
+            open(folder: folder)
+            return
+        }
         NSWorkspace.shared.open(URL(fileURLWithPath: row.path))
         statusBar.flash("Opened \(row.name)")
     }
 
+    /// Moves by `delta` rows, stepping over the Everywhere header.
     private func moveSelection(by delta: Int) {
-        guard results.count > 0 else { return }
-        let current = max(tableView.selectedRow, 0)
-        select(row: min(max(current + delta, 0), results.count - 1))
+        guard results.tableRows > 0 else { return }
+        var row = max(tableView.selectedRow, 0) + delta
+        if results.isHeader(row) { row += delta.signum() }
+        select(row: min(max(row, 0), results.tableRows - 1))
     }
 
     private func select(row: Int) {
-        guard row >= 0, row < results.count else { return }
+        var row = row
+        if results.isHeader(row) { row += row + 1 < results.tableRows ? 1 : -1 }
+        guard row >= 0, row < results.tableRows else { return }
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         tableView.scrollRowToVisible(row)
+    }
+
+    private func selectFirstResult() {
+        if results.tableRows > 0 { select(row: 0) } else { schedulePreview() }
     }
 
     @objc private func doubleClicked() {
@@ -246,7 +285,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case 125: moveSelection(by: 1); return true // down
         case 126: moveSelection(by: -1); return true // up
         case 123: goUp(); return true // left
-        case 124: activateHighlightedFolderOrFile(); return true // right
+        case 124: goIntoOrActivate(); return true // right
         case 36, 76: activateHighlighted(); return true // return, enter
         case 53: // escape: clear the filter
             if !pathBar.field.stringValue.isEmpty {
@@ -261,9 +300,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case "j": moveSelection(by: 1)
         case "k": moveSelection(by: -1)
         case "h": goUp()
-        case "l": activateHighlightedFolderOrFile()
+        case "l": goIntoOrActivate()
         case "g": select(row: 0)
-        case "G": select(row: results.count - 1)
+        case "G": select(row: results.tableRows - 1)
         case "/": setMode(.go)
         case "~": open(folder: engine.homeDir())
         case let c where c.count == 1 && c.first!.isLetter:
@@ -273,8 +312,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         return true
     }
 
-    private func activateHighlightedFolderOrFile() {
-        if !enterHighlighted() { activateHighlighted() }
+    private func goIntoOrActivate() {
+        if !goIntoHighlighted() { activateHighlighted() }
     }
 
     // MARK: Chrome
@@ -282,9 +321,41 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private func updateChrome() {
         pathBar.setFolder(currentFolder, home: engine.homeDir())
         pathBar.setMode(mode)
-        statusBar.update(mode: mode, count: results.count, filter: pathBar.field.stringValue)
+        statusBar.update(mode: mode, summary: summary())
         window?.title = currentFolder.isEmpty ? "Tilde" : FileManager.default.displayName(atPath: currentFolder)
         window?.representedURL = currentFolder.isEmpty ? nil : URL(fileURLWithPath: currentFolder)
+    }
+
+    private func summary() -> String {
+        func n(_ count: Int, _ word: String) -> String { "\(count.formatted()) \(word)\(count == 1 ? "" : "s")" }
+        var parts: [String] = []
+        if pathBar.field.stringValue.isEmpty {
+            parts.append(n(results.hereCount, "item"))
+        } else {
+            parts.append("\(results.hereCount.formatted()) here")
+            parts.append("\(results.everywhereCount.formatted()) everywhere")
+        }
+        if indexStatus.scanning {
+            parts.append("indexing \(Int(indexStatus.items).formatted())…")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Polls index progress for the status bar until the first scan finishes.
+    private func startIndexProgress() {
+        indexTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollIndex() }
+        }
+    }
+
+    private func pollIndex() {
+        indexStatus = engine.indexStatus()
+        updateChrome()
+        if !indexStatus.scanning {
+            indexTimer?.invalidate()
+            indexTimer = nil
+            statusBar.flash("Indexed \(Int(indexStatus.items).formatted()) items")
+        }
     }
 
     private func schedulePreview() {
@@ -299,6 +370,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        indexTimer?.invalidate()
         preview.close()
     }
 }
@@ -306,18 +378,30 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 // MARK: Engine events
 
 extension BrowserWindowController: EngineEventsDelegate {
-    func engineResultsReady(generation: UInt64, folder: String, count: Int) {
+    func engineResultsReady(generation: UInt64, folder: String, hereCount: Int, everywhereCount: Int) {
         guard generation == latestGeneration else { return }
+        let isRefresh = generation == shownGeneration
+        let keepPath = isRefresh ? selectedRow?.path : nil
+        let keepRow = tableView.selectedRow
+        shownGeneration = generation
         currentFolder = folder
-        results.reset(generation: generation, count: count)
+        results.reset(generation: generation, hereCount: hereCount, everywhereCount: everywhereCount)
         tableView.reloadData()
-        var row = 0
+
         if let name = pendingSelection, let i = engine.indexOf(generation: generation, name: name) {
-            row = Int(i)
+            select(row: Int(i))
+        } else if let keepPath {
+            // Refreshes while the index fills in shouldn't move the selection.
+            select(row: results.tableRow(forPath: keepPath) ?? min(max(keepRow, 0), results.tableRows - 1))
+        } else {
+            selectFirstResult()
         }
-        pendingSelection = nil
-        if count > 0 { select(row: row) } else { schedulePreview() }
+        if !isRefresh { pendingSelection = nil }
         updateChrome()
+        if let action = pendingAction {
+            pendingAction = nil
+            action()
+        }
     }
 
     func engineFolderFailed(generation: UInt64, folder: String, message: String) {
@@ -336,9 +420,10 @@ extension BrowserWindowController: NSTextFieldDelegate {
         if text == "~" {
             open(folder: engine.homeDir())
         } else if text.hasSuffix("/") {
-            // "/" goes into the highlighted folder instead of being typed.
+            // "/" goes into the highlighted folder instead of being typed. The query
+            // without it has already been sent.
             field.stringValue = String(text.dropLast())
-            if !enterHighlighted() { queryChanged() }
+            whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
         } else {
             queryChanged()
         }
@@ -352,9 +437,9 @@ extension BrowserWindowController: NSTextFieldDelegate {
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1)
         case #selector(NSResponder.insertNewline(_:)):
-            activateHighlighted()
+            whenResultsCurrent { [weak self] in self?.activateHighlighted() }
         case #selector(NSResponder.insertTab(_:)):
-            enterHighlighted()
+            whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
         case #selector(NSResponder.cancelOperation(_:)):
             setMode(.select)
         case #selector(NSResponder.deleteBackward(_:)) where pathBar.field.stringValue.isEmpty:
@@ -369,16 +454,26 @@ extension BrowserWindowController: NSTextFieldDelegate {
 // MARK: Table
 
 extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { results.tableRows }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if results.isHeader(row) {
+            let header = tableView.makeView(withIdentifier: SectionHeaderView.identifier, owner: nil) as? SectionHeaderView
+                ?? SectionHeaderView()
+            header.configure(title: "Everywhere", count: results.everywhereCount)
+            return header
+        }
         let cell = tableView.makeView(withIdentifier: RowCellView.identifier, owner: nil) as? RowCellView ?? RowCellView()
         if let r = results.row(row) { cell.configure(with: r) }
         return cell
     }
 
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { results.isHeader(row) }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { !results.isHeader(row) }
+
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        AlwaysEmphasizedRowView()
+        results.isHeader(row) ? NSTableRowView() : AlwaysEmphasizedRowView()
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -386,30 +481,43 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
     }
 }
 
-/// Rows of the current results, fetched from the engine in chunks as the table asks.
+/// The current results as table rows: Here rows, then (if any) an Everywhere header
+/// followed by Everywhere rows. Rows are fetched from the engine in chunks on demand.
 @MainActor
 final class ResultsCache {
     private let engine: Engine
     private var generation: UInt64 = 0
     private var rows: [Int: RowView] = [:]
-    private(set) var count = 0
+    private(set) var hereCount = 0
+    private(set) var everywhereCount = 0
     private let chunk = 64
 
     init(engine: Engine) { self.engine = engine }
 
-    func reset(generation: UInt64, count: Int) {
+    var tableRows: Int { hereCount + (everywhereCount > 0 ? everywhereCount + 1 : 0) }
+
+    func isHeader(_ tableRow: Int) -> Bool { everywhereCount > 0 && tableRow == hereCount }
+
+    func reset(generation: UInt64, hereCount: Int, everywhereCount: Int) {
         self.generation = generation
-        self.count = count
+        self.hereCount = hereCount
+        self.everywhereCount = everywhereCount
         rows.removeAll(keepingCapacity: true)
     }
 
-    func row(_ index: Int) -> RowView? {
+    func row(_ tableRow: Int) -> RowView? {
+        guard tableRow >= 0, tableRow < tableRows, !isHeader(tableRow) else { return nil }
+        let index = tableRow < hereCount ? tableRow : tableRow - 1
         if let r = rows[index] { return r }
-        guard index >= 0, index < count else { return nil }
         let start = (index / chunk) * chunk
         for (offset, r) in engine.rows(generation: generation, start: UInt32(start), count: UInt32(chunk)).enumerated() {
             rows[start + offset] = r
         }
         return rows[index]
+    }
+
+    /// Table row showing `path`, searching the first few hundred rows.
+    func tableRow(forPath path: String) -> Int? {
+        (0..<min(tableRows, 400)).first { row($0)?.path == path }
     }
 }

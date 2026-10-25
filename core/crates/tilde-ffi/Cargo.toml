@@ -22,6 +22,7 @@ tilde-types.workspace = true
 tilde-fs.workspace = true
 tilde-query.workspace = true
 tilde-config.workspace = true
+tilde-index.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true
 

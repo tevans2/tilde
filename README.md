@@ -33,6 +33,7 @@ Re-run `scripts/build-core.sh` after changing anything under `core/`.
 cd core && cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run --release -p tilde-fs --example bench_list -- 10000
+cargo run --release -p tilde-index --example bench_index        # scans your home folder
 ```
 
 Debug builds can render their window to a PNG without screen-recording access, optionally
@@ -46,11 +47,22 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 
 | Mode | Keys |
 |---|---|
-| GO (typing searches) | type to filter · `↑` `↓` move · `⏎` open · `tab` or `/` go into folder · `⌫` on empty bar goes up · `~` home · `esc` → SELECT |
+| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` move · `⏎` open · `tab` or `/` go into folder (or reveal an Everywhere file) · `⌫` on empty bar goes up · `~` home · `esc` → SELECT |
 | SELECT | `j` `k` move · `h` `l` out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter |
 | Anywhere | `⌘⇧.` show hidden files · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
-Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`.
+Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
+
+## Search
+
+Typing shows matches in the current folder first, then an **Everywhere** section from an
+index of your home folder. The index is built in the background at launch (the status bar
+shows progress); it skips `~/Library`, hidden files, `node_modules`, `.git` and similar
+folders, and doesn't cross into other disks or mounts. Configure it under `[index]`.
+
+If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, folders you visit often
+rank higher, every folder zoxide knows is searchable, and folders you open in Tilde are
+added to zoxide so `z` in your shell learns from Tilde. Configure it under `[zoxide]`.
 
 ## Config
 
@@ -61,4 +73,14 @@ commented template and opens it; `⌘R` applies changes.
 [font]
 family = "JetBrains Mono"   # closest installed match is used, e.g. "JetBrainsMono Nerd Font"
 size = 13                   # 8–32; other text scales from this
+
+[index]                     # applies on next launch
+roots = ["~"]
+exclude = ["node_modules", ".git", "target", "build", "DerivedData", "Pods",
+           "__pycache__", ".venv", "venv", "~/Library", "~/.Trash"]
+include_hidden = false
+
+[zoxide]
+enabled = true              # rank by zoxide frecency, include its folders
+add_on_visit = true         # tell zoxide about folders opened in Tilde
 ```

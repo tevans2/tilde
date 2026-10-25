@@ -13,6 +13,7 @@ tilde-types = { path = "crates/tilde-types" }
 tilde-fs = { path = "crates/tilde-fs" }
 tilde-query = { path = "crates/tilde-query" }
 tilde-config = { path = "crates/tilde-config" }
+tilde-index = { path = "crates/tilde-index" }
 libc = "0.2"
 nucleo-matcher = "0.3"
 uniffi = "0.32"

@@ -7,8 +7,8 @@
 mod kind;
 mod parse;
 
-pub use kind::{Kind, kind_of};
-pub use parse::{Filter, Query, SizeBound};
+pub use kind::{Kind, kind_for, kind_of};
+pub use parse::{Candidate, Filter, FilterContext, Query, SizeBound};
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -75,7 +75,16 @@ mod tests {
     use tilde_types::EntryKind;
 
     fn file(name: &str, size: u64, modified: i64) -> Entry {
-        Entry { name: name.into(), kind: EntryKind::File, size, modified, file_id: 0, hidden: false, child_count: None }
+        Entry {
+            name: name.into(),
+            kind: EntryKind::File,
+            size,
+            modified,
+            file_id: 0,
+            hidden: false,
+            child_count: None,
+            mount_point: false,
+        }
     }
 
     fn folder(name: &str) -> Entry {

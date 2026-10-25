@@ -33,15 +33,24 @@ pub struct Entry {
     pub hidden: bool,
     /// Number of entries inside, for folders and packages.
     pub child_count: Option<u32>,
+    /// Another filesystem is mounted here (a disk image, network share, container
+    /// filesystem). Recursive scans don't cross into it.
+    pub mount_point: bool,
 }
 
 impl Entry {
     /// Lowercased extension without the dot, or an empty string.
     pub fn extension(&self) -> String {
-        match self.name.rfind('.') {
-            Some(i) if i > 0 && i + 1 < self.name.len() => self.name[i + 1..].to_lowercase(),
-            _ => String::new(),
-        }
+        extension_of(&self.name)
+    }
+}
+
+/// Lowercased extension of a file name without the dot, or an empty string. Dotfiles
+/// like `.zshrc` have no extension.
+pub fn extension_of(name: &str) -> String {
+    match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => name[i + 1..].to_lowercase(),
+        _ => String::new(),
     }
 }
 
@@ -58,6 +67,7 @@ mod tests {
             file_id: 0,
             hidden: false,
             child_count: None,
+            mount_point: false,
         }
     }
 

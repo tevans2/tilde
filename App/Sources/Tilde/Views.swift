@@ -135,7 +135,10 @@ final class RowCellView: NSTableCellView {
     init() {
         super.init(frame: .zero)
         identifier = Self.identifier
-        name.lineBreakMode = .byTruncatingMiddle
+        name.lineBreakMode = .byTruncatingTail
+        name.maximumNumberOfLines = 1
+        name.cell?.wraps = false
+        name.cell?.truncatesLastVisibleLine = true
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for f in [meta, age] {
             f.textColor = .secondaryLabelColor
@@ -183,9 +186,13 @@ final class RowCellView: NSTableCellView {
     private func renderName() {
         guard let row else { return }
         let selected = backgroundStyle == .emphasized
+        // Attributed strings ignore the field's line break mode, so set it here too.
+        let oneLine = NSMutableParagraphStyle()
+        oneLine.lineBreakMode = .byTruncatingTail
         let base: [NSAttributedString.Key: Any] = [
             .font: Theme.shared.list,
             .foregroundColor: selected ? NSColor.alternateSelectedControlTextColor : NSColor.labelColor,
+            .paragraphStyle: oneLine,
         ]
         let s = NSMutableAttributedString(string: row.name + (row.kind == .folder ? "/" : ""), attributes: base)
         let hit: [NSAttributedString.Key: Any] = [
@@ -196,9 +203,55 @@ final class RowCellView: NSTableCellView {
         for r in row.highlights where Int(r.start + r.length) <= length {
             s.addAttributes(hit, range: NSRange(location: Int(r.start), length: Int(r.length)))
         }
+        if row.section == .everywhere {
+            // Everywhere rows show where the item lives, dimmed, with matched characters.
+            let dim: [NSAttributedString.Key: Any] = [
+                .font: Theme.shared.small,
+                .foregroundColor: selected ? NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.7)
+                    : NSColor.secondaryLabelColor,
+            ]
+            let location = NSMutableAttributedString(string: row.location, attributes: dim)
+            let locationHit: [NSAttributedString.Key: Any] = [
+                .font: Theme.shared.small.bold,
+                .foregroundColor: selected ? NSColor.systemYellow : NSColor.systemOrange,
+            ]
+            let locationLength = (row.location as NSString).length
+            for r in row.locationHighlights where Int(r.start + r.length) <= locationLength {
+                location.addAttributes(locationHit, range: NSRange(location: Int(r.start), length: Int(r.length)))
+            }
+            s.append(NSAttributedString(string: "   ", attributes: base))
+            s.append(location)
+            s.addAttribute(.paragraphStyle, value: oneLine, range: NSRange(location: 0, length: s.length))
+        }
         name.attributedStringValue = s
         meta.textColor = selected ? .alternateSelectedControlTextColor : .secondaryLabelColor
         age.textColor = meta.textColor
+    }
+}
+
+/// The "Everywhere" divider between folder results and index results.
+final class SectionHeaderView: NSTableCellView {
+    static let identifier = NSUserInterfaceItemIdentifier("SectionHeader")
+    private let label = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        identifier = Self.identifier
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(title: String, count: Int) {
+        label.font = Theme.shared.badge
+        label.stringValue = "\(title.uppercased())  \(count.formatted())"
     }
 }
 
@@ -295,7 +348,7 @@ final class StatusBar: NSView {
         right.font = theme.small
     }
 
-    func update(mode: Mode, count: Int, filter: String) {
+    func update(mode: Mode, summary: String) {
         switch mode {
         case .go:
             modePill.stringValue = "GO"
@@ -307,8 +360,7 @@ final class StatusBar: NSView {
             hints.stringValue = "j k move   h l out / in   ⏎ open   g G top / bottom   / search   esc clear filter"
         }
         needsDisplay = true
-        let items = "\(count) item\(count == 1 ? "" : "s")"
-        lastSummary = filter.isEmpty ? items : "\(items) matching “\(filter)”"
+        lastSummary = summary
         if flashWork == nil { right.stringValue = lastSummary }
     }
 

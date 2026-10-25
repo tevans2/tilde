@@ -10,7 +10,7 @@ mod engine;
 mod views;
 
 pub use config::{AppConfig, ConfigError, ConfigLoad, ensure_config_file, load_config};
-pub use engine::{Engine, EngineListener};
-pub use views::{Category, HighlightRange, RowKind, RowView};
+pub use engine::{Engine, EngineListener, IndexStatus};
+pub use views::{Category, HighlightRange, RowKind, RowView, Section};
 
 uniffi::setup_scaffolding!();

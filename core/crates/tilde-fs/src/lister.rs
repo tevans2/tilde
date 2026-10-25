@@ -89,7 +89,7 @@ pub fn list_dir(dir: &Path, opts: &ListOptions, should_cancel: impl Fn() -> bool
             | libc::ATTR_CMN_FLAGS
             | libc::ATTR_CMN_FILEID,
         volattr: 0,
-        dirattr: libc::ATTR_DIR_ENTRYCOUNT,
+        dirattr: libc::ATTR_DIR_ENTRYCOUNT | libc::ATTR_DIR_MOUNTSTATUS,
         fileattr: libc::ATTR_FILE_DATALENGTH,
         forkattr: 0,
     };
@@ -177,14 +177,21 @@ fn parse_record(rec: &[u8]) -> Option<Entry> {
     p += 4;
     let file_id = read_u64(rec, p);
     p += 8;
-    // Directory and file groups are only packed for objects of that type, even with
-    // FSOPT_PACK_INVAL_ATTRS, so their presence comes from the returned set.
-    let entry_count = (returned.dirattr & libc::ATTR_DIR_ENTRYCOUNT != 0).then(|| {
-        let v = read_u32(rec, p);
-        p += 4;
-        v
-    });
-    let data_length = (returned.fileattr & libc::ATTR_FILE_DATALENGTH != 0).then(|| read_u64(rec, p));
+    // The directory group is only packed for directories and the file group only for
+    // regular files, even with FSOPT_PACK_INVAL_ATTRS. Within a group every requested
+    // slot is present; the returned set says which values are valid.
+    let mut entry_count = None;
+    let mut mount_point = false;
+    let mut data_length = None;
+    if obj_type == VDIR {
+        let count = read_u32(rec, p);
+        let mount_status = read_u32(rec, p + 4);
+        entry_count = (returned.dirattr & libc::ATTR_DIR_ENTRYCOUNT != 0).then_some(count);
+        mount_point =
+            returned.dirattr & libc::ATTR_DIR_MOUNTSTATUS != 0 && mount_status & libc::DIR_MNTSTATUS_MNTPOINT != 0;
+    } else if obj_type == VREG && returned.fileattr & libc::ATTR_FILE_DATALENGTH != 0 {
+        data_length = Some(read_u64(rec, p));
+    }
 
     let mut entry = Entry {
         hidden: name.starts_with('.') || flags & UF_HIDDEN != 0,
@@ -193,6 +200,7 @@ fn parse_record(rec: &[u8]) -> Option<Entry> {
         modified,
         file_id,
         child_count: None,
+        mount_point,
         name,
     };
     match obj_type {

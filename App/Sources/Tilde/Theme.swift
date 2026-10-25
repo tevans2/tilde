@@ -1,6 +1,11 @@
 import AppKit
 import TildeFFI
 
+extension NSFont {
+    /// The bold face of the same family and size.
+    var bold: NSFont { NSFontManager.shared.convert(self, toHaveTrait: .boldFontMask) }
+}
+
 /// Fonts and sizes derived from the user's config file.
 @MainActor
 final class Theme {

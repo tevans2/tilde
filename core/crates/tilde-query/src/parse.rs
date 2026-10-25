@@ -1,6 +1,6 @@
-use tilde_types::Entry;
+use tilde_types::{Entry, EntryKind, extension_of};
 
-use crate::kind::{Kind, kind_of};
+use crate::kind::{Kind, kind_for};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SizeBound {
@@ -23,17 +23,63 @@ pub enum Filter {
     Size(SizeBound),
 }
 
+/// What a filter looks at. Borrowed, so the index can test items without building an
+/// `Entry` for each.
+#[derive(Debug, Clone, Copy)]
+pub struct Candidate<'a> {
+    pub name: &'a str,
+    pub kind: EntryKind,
+    pub size: u64,
+    pub modified: i64,
+    /// The folder containing the item, in the same form as `FilterContext::cwd`. `None`
+    /// for the Here scope, where `in:` has no effect.
+    pub parent: Option<&'a str>,
+}
+
+impl<'a> From<&'a Entry> for Candidate<'a> {
+    fn from(e: &'a Entry) -> Self {
+        Candidate { name: &e.name, kind: e.kind, size: e.size, modified: e.modified, parent: None }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FilterContext<'a> {
+    /// Current Unix time, for `mod:`.
+    pub now: i64,
+    /// The current folder, for `in:.`.
+    pub cwd: Option<&'a str>,
+}
+
 impl Filter {
     pub fn matches(&self, entry: &Entry, now: i64) -> bool {
+        self.accepts(&Candidate::from(entry), &FilterContext { now, cwd: None })
+    }
+
+    pub fn accepts(&self, c: &Candidate<'_>, ctx: &FilterContext<'_>) -> bool {
         match self {
-            Filter::In(_) => true,
-            Filter::Ext(exts) => exts.contains(&entry.extension()),
-            Filter::Kind(k) => kind_of(entry) == *k,
-            Filter::ModifiedWithin(secs) => now - entry.modified <= *secs,
-            Filter::Size(SizeBound::Larger(n)) => entry.size > *n,
-            Filter::Size(SizeBound::Smaller(n)) => entry.size < *n,
+            Filter::In(v) => match c.parent {
+                None => true,
+                Some(parent) if v == "." => ctx.cwd.is_some_and(|cwd| {
+                    parent == cwd || (parent.starts_with(cwd) && parent[cwd.len()..].starts_with('/'))
+                }),
+                Some(parent) => is_subsequence(v.trim_start_matches("~/"), parent),
+            },
+            Filter::Ext(exts) => {
+                let ext = extension_of(c.name);
+                exts.contains(&ext)
+            }
+            Filter::Kind(k) => kind_for(c.kind, c.name) == *k,
+            Filter::ModifiedWithin(secs) => ctx.now - c.modified <= *secs,
+            Filter::Size(SizeBound::Larger(n)) => c.size > *n,
+            Filter::Size(SizeBound::Smaller(n)) => c.size < *n,
         }
     }
+}
+
+/// Case-insensitive: are all chars of `needle` in `haystack`, in order?
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut it = haystack.chars().flat_map(char::to_lowercase);
+    needle.chars().flat_map(char::to_lowercase).all(|n| it.any(|h| h == n))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -147,6 +193,21 @@ mod tests {
         let q = Query::parse("kind:banana mod:soon size:big note:");
         assert!(q.filters.is_empty());
         assert_eq!(q.text, "kind:banana mod:soon size:big note:");
+    }
+
+    #[test]
+    fn in_filter_uses_parent_and_cwd() {
+        let ctx = FilterContext { now: 0, cwd: Some("Developer/projects") };
+        let c = |parent| Candidate { name: "main.swift", kind: EntryKind::File, size: 1, modified: 0, parent };
+        let f = Filter::In("dev".into());
+        assert!(f.accepts(&c(Some("Developer/projects/tilde")), &ctx));
+        assert!(!f.accepts(&c(Some("Documents")), &ctx));
+        assert!(f.accepts(&c(None), &ctx), "no effect in the Here scope");
+
+        let here = Filter::In(".".into());
+        assert!(here.accepts(&c(Some("Developer/projects")), &ctx));
+        assert!(here.accepts(&c(Some("Developer/projects/tilde/src")), &ctx));
+        assert!(!here.accepts(&c(Some("Developer/projects-old")), &ctx));
     }
 
     #[test]
