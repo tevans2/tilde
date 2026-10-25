@@ -51,7 +51,7 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
-| EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) |
+| EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
 | Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
@@ -98,6 +98,27 @@ Each line carries a hidden ID, so reordering, cut and paste keep track of which 
 which. The side pane lists what will happen as you type, and lines with problems (a name
 that's taken, a bad character) are tinted. `⌘S` applies everything as one operation, and
 `u` undoes all of it.
+
+### In Neovim
+
+Set `editor = "nvim"` under `[edit]` and EDIT runs your Neovim (0.10 or later) inside
+Tilde, with your own config. It starts on the first edit and stays running for the next
+ones.
+
+- `:w` (or `⌘S`) applies, `:q` / `:q!` / `ZQ` discards, `:wq` and `ZZ` apply. `⌘.` cancels
+  from any mode.
+- `r` and `o` start in insert mode (the name's stem selected for `r`); `⏎` applies.
+- The IDs are concealed and the cursor is kept out of them. `yyp`, `dd`, `p` and macros all
+  work, since lines carry their IDs.
+- Lines with problems show as diagnostics; a write with problems is refused with a message
+  and the buffer stays open.
+- The buffer has `filetype=tilde`, so a `FileType tilde` autocommand can turn off
+  format-on-save or anything else that gets in the way. Changing a line with `cc` or `S`
+  drops its ID (it becomes a new file, and the old one is trashed).
+- `nvim_path` picks a specific nvim; otherwise Tilde looks on your login shell's `PATH`, then
+  in Homebrew's folders. `nvim_config = "clean"` skips your config and loads
+  `~/.config/tilde/init.lua` instead, if it exists.
+- If nvim can't be found, EDIT says why and uses the built-in editor.
 
 ## Activity
 

@@ -47,6 +47,8 @@ final class Theme {
     /// Empty uses bat's own config.
     let batThemeDark: String
     let batMaxLines: Int
+    /// EDIT runs in Neovim.
+    let editorNvim: Bool
 
     let colors: Colors
     /// `nil` follows the system.
@@ -85,6 +87,7 @@ final class Theme {
         batThemeLight = load.config.batThemeLight
         batThemeDark = load.config.batThemeDark
         batMaxLines = Int(load.config.batMaxLines)
+        editorNvim = load.config.editorNvim
 
         appearance = switch load.config.appearance {
         case .system: nil

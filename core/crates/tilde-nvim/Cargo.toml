@@ -1,0 +1,13 @@
+[package]
+name = "tilde-nvim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tilde-edit.workspace = true
+rmpv.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

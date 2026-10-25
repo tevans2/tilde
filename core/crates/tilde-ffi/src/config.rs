@@ -23,6 +23,8 @@ pub struct AppConfig {
     /// bat theme for dark appearance; empty uses bat's own config.
     pub bat_theme_dark: String,
     pub bat_max_lines: u32,
+    /// EDIT uses Neovim instead of the built-in editor.
+    pub editor_nvim: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -64,6 +66,7 @@ pub fn load_config() -> ConfigLoad {
             bat_theme_light,
             bat_theme_dark,
             bat_max_lines: loaded.config.preview.max_lines,
+            editor_nvim: loaded.config.edit.editor == tilde_config::EditorKind::Nvim,
         },
         path: path.to_string_lossy().into_owned(),
         error: loaded.error,

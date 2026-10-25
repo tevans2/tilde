@@ -271,7 +271,7 @@ final class ChangesView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func show(_ preview: EditPreview, quick: Bool) {
+    func show(_ preview: EditPreview, footer: String) {
         let theme = Theme.shared
         let c = theme.colors
         let s = NSMutableAttributedString()
@@ -296,7 +296,7 @@ final class ChangesView: NSView {
             add(change.kind.uppercased().padding(toLength: 8, withPad: " ", startingAt: 0), theme.badge, color(change.kind))
             add("\(change.description)\n", theme.small, c.text)
         }
-        add(quick ? "\n⏎ apply   esc cancel" : "\n⌘S apply   esc discard", theme.small, c.textDim)
+        add("\n" + footer, theme.small, c.textDim)
         textView.textStorage?.setAttributedString(s)
     }
 

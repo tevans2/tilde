@@ -1,10 +1,11 @@
 #if DEBUG
 import AppKit
+import SwiftTerm
 
 /// Development aid: `TILDE_SNAPSHOT=/path/out.png` renders the key window to a PNG after
 /// launch and quits. `TILDE_SNAPSHOT_KEYS` replays keystrokes first (`\e` is escape, `\t` tab,
-/// `\r` return, `\b` delete, `^j` control-j), so flows can be checked without
-/// screen-recording access.
+/// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause), so
+/// flows can be checked without screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead.
 @MainActor
 enum DebugSnapshot {
@@ -28,6 +29,8 @@ enum DebugSnapshot {
     private static let controlBase: UInt32 = 0xE000
     /// Command keys (`@s` is ⌘S), likewise.
     private static let commandBase: UInt32 = 0xE100
+    /// `\w`: wait a second (for Neovim to start, say).
+    private static let pause = Character(UnicodeScalar(0xE200)!)
 
     private static func decode(_ s: String) -> String {
         var s = s
@@ -35,7 +38,9 @@ enum DebugSnapshot {
             s = s.replacingOccurrences(of: "^\(c)", with: String(UnicodeScalar(controlBase + UInt32(c.asciiValue!))!))
             s = s.replacingOccurrences(of: "@\(c)", with: String(UnicodeScalar(commandBase + UInt32(c.asciiValue!))!))
         }
+        s = s.replacingOccurrences(of: "@.", with: String(UnicodeScalar(commandBase + 46)!))
         return s.replacingOccurrences(of: "\\e", with: "\u{1b}")
+            .replacingOccurrences(of: "\\w", with: String(pause))
             .replacingOccurrences(of: "\\t", with: "\t")
             .replacingOccurrences(of: "\\r", with: "\r")
             .replacingOccurrences(of: "\\b", with: "\u{7f}")
@@ -43,6 +48,9 @@ enum DebugSnapshot {
 
     private static func type(_ chars: [Character], then done: @escaping @MainActor () -> Void) {
         guard let c = chars.first else { return done() }
+        if c == pause {
+            return DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { type(Array(chars.dropFirst()), then: done) }
+        }
         if let window = NSApp.keyWindow ?? NSApp.windows.first, let event = keyEvent(for: c, window: window) {
             // Through the app (not the window) so local key monitors see it, as they would
             // a real keystroke.
@@ -106,6 +114,18 @@ enum DebugSnapshot {
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        // Terminal views draw through layers the snapshot may miss: save their text too.
+        if let terminal = find(TerminalView.self, in: view), !terminal.isHidden {
+            try? terminal.getTerminal().getBufferAsData().write(to: URL(fileURLWithPath: path + ".txt"))
+        }
+    }
+
+    private static func find<T: NSView>(_ type: T.Type, in view: NSView) -> T? {
+        if let v = view as? T { return v }
+        for sub in view.subviews {
+            if let found = find(type, in: sub) { return found }
+        }
+        return nil
     }
 }
 #endif

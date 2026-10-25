@@ -18,8 +18,10 @@ tilde-ops = { path = "crates/tilde-ops" }
 tilde-edit = { path = "crates/tilde-edit" }
 tilde-preview = { path = "crates/tilde-preview" }
 tilde-activity = { path = "crates/tilde-activity" }
+tilde-nvim = { path = "crates/tilde-nvim" }
 libc = "0.2"
 plist = "1"
+rmpv = "1.3"
 nucleo-matcher = "0.3"
 uniffi = "0.32"
 tempfile = "3"

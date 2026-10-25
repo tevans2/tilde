@@ -24,6 +24,7 @@ pub struct Config {
     pub index: IndexConfig,
     pub zoxide: ZoxideConfig,
     pub activity: ActivityConfig,
+    pub edit: EditConfig,
 }
 
 /// The preview pane on the right.
@@ -209,6 +210,45 @@ impl ActivityConfig {
     }
 }
 
+/// EDIT mode (`e`, `r`, `o`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EditConfig {
+    pub editor: EditorKind,
+    /// Path to nvim. Empty looks on the login shell's PATH, then in Homebrew's folders.
+    pub nvim_path: String,
+    pub nvim_config: NvimConfigMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorKind {
+    #[default]
+    Builtin,
+    Nvim,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NvimConfigMode {
+    /// The user's own nvim config.
+    #[default]
+    User,
+    /// `nvim --clean`, plus `nvim_init_path()` if it exists.
+    Clean,
+}
+
+impl Default for EditConfig {
+    fn default() -> Self {
+        EditConfig { editor: EditorKind::Builtin, nvim_path: String::new(), nvim_config: NvimConfigMode::User }
+    }
+}
+
+/// Tilde's own nvim config for `nvim_config = "clean"`: `init.lua` next to config.toml.
+pub fn nvim_init_path() -> PathBuf {
+    config_path().with_file_name("init.lua")
+}
+
 /// The result of reading the config file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
@@ -350,6 +390,16 @@ days = 30
 # Folders where new things land until you file them (the inbox, i). The screenshot
 # folder is always included.
 inbox = ["~/Downloads", "~/Desktop"]
+
+# Editing a folder as text (e, r, o).
+[edit]
+# "builtin" or "nvim". Neovim runs inside Tilde; :w applies, :q discards.
+editor = "builtin"
+# Path to nvim. Empty looks on your login shell's PATH, then in Homebrew's folders.
+nvim_path = ""
+# "user" loads your nvim config. "clean" skips it and loads init.lua next to this file,
+# if there is one.
+nvim_config = "user"
 "##;
 
 /// The two `[index]` lists an entry can be added to.
@@ -433,6 +483,14 @@ mod tests {
         assert_eq!(l.config.font.size, 15.0);
         assert_eq!(l.config.font.family, DEFAULT_FONT_FAMILY);
         assert!(l.error.is_none());
+    }
+
+    #[test]
+    fn edit_section_picks_the_editor() {
+        let l = load_str("[edit]\neditor = \"nvim\"\nnvim_config = \"clean\"\n");
+        assert_eq!(l.config.edit.editor, EditorKind::Nvim);
+        assert_eq!(l.config.edit.nvim_config, NvimConfigMode::Clean);
+        assert!(load_str("[edit]\neditor = \"emacs\"\n").error.unwrap().contains("emacs"));
     }
 
     #[test]

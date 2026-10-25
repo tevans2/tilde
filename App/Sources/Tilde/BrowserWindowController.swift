@@ -34,6 +34,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var editEscArmed = false
     private var pendingEditOp: UInt64?
     private var editPreviewWork: DispatchWorkItem?
+    /// What the changes pane says about applying and discarding.
+    private var editFooter = ""
+    // EDIT in Neovim (`[edit] editor = "nvim"`): one nvim per window, started on the first
+    // edit and kept running between them.
+    private let nvimEvents = NvimEvents()
+    private lazy var nvim = NvimEditor(listener: nvimEvents)
+    private var terminal: TerminalHost?
+    /// The current edit is in Neovim.
+    private var editInNvim = false
     private var keyMonitor: Any?
     private let engine: Engine
     private let results: ResultsCache
@@ -86,6 +95,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         events.delegate = self
+        nvimEvents.delegate = self
         buildLayout(in: window)
         applyTheme(Theme.shared)
         window.setContentSize(NSSize(width: 1100, height: 680))
@@ -212,6 +222,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         updateSidePane(theme)
         pathBar.applyTheme(theme)
         statusBar.applyTheme(theme)
+        terminal?.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
         tableView.reloadData()
         if tableView.selectedRow < 0 { selectFirstResult() }
@@ -245,7 +256,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .select:
             window?.makeFirstResponder(tableView)
         case .edit:
-            editor.focus()
+            if editInNvim { terminal?.focus() } else { editor.focus() }
         }
         updateChrome()
     }
@@ -527,7 +538,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             try index.addExclusion(path: row.path, hide: true)
             statusBar.flash("Hid \(row.name) from search. Undo in the config (⌘,), then Rebuild (⌘⇧I).")
         } catch {
-            statusBar.flash("Couldn't update the config: \(error.localizedDescription)")
+            statusBar.flash("Couldn't update the config: \(error.message)")
         }
     }
 
@@ -576,6 +587,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         indexTimer?.invalidate()
         preview.close()
+        terminal?.terminate()
     }
 }
 
@@ -826,7 +838,7 @@ extension BrowserWindowController: OpsEventsDelegate {
             let id = try ops.submit(request: request)
             myOperations[id] = message
         } catch {
-            statusBar.flash(error.localizedDescription)
+            statusBar.flash(error.message)
         }
     }
 
@@ -966,7 +978,11 @@ extension BrowserWindowController: OpsEventsDelegate {
         // An applied edit closes the editor; a failed one leaves it open to fix.
         if id == pendingEditOp {
             pendingEditOp = nil
-            if outcome.error == nil { exitEdit() }
+            if outcome.error == nil {
+                finishEdit()
+            } else if editInNvim, let error = outcome.error {
+                nvim.error(message: error)
+            }
         }
         let mine = myOperations.removeValue(forKey: id)
         if runningLabels.removeValue(forKey: id) != nil { statusBar.setActivity(nil) }
@@ -1023,7 +1039,7 @@ extension BrowserWindowController {
         do {
             session = try EditSession(dir: currentFolder, showHidden: showHidden)
         } catch {
-            return statusBar.flash("Can't edit this folder: \(error.localizedDescription)")
+            return statusBar.flash("Can't edit this folder: \(error.message)")
         }
         editSession = session
         editBaseline = session.text()
@@ -1031,12 +1047,58 @@ extension BrowserWindowController {
         editor.quick = quick
         mode = .edit
         listScroll.isHidden = true
-        editor.isHidden = false
         changesView.isHidden = false
         updateSidePane(Theme.shared)
-        let line = focus.flatMap { session.lineOf(name: $0) }.map(Int.init)
-        editor.load(editBaseline, line: line, selectName: selectName, newLineBelow: newLine)
+        let line = focus.flatMap { session.lineOf(name: $0) }
+        if Theme.shared.editorNvim, let host = nvimTerminal() {
+            editInNvim = true
+            host.view.isHidden = false
+            editFooter = quick ? "⏎ or :w apply   :q discard   ⌘. cancel" : ":w apply   :q discard   ⌘. cancel"
+            nvim.edit(session: session, line: line, mode: selectName ? .rename : newLine ? .new : .edit)
+            changesView.show(session.preview(text: editBaseline), footer: editFooter)
+        } else {
+            editFooter = quick ? "⏎ apply   esc cancel" : "⌘S apply   esc discard"
+            editor.isHidden = false
+            editor.load(editBaseline, line: line.map(Int.init), selectName: selectName, newLineBelow: newLine)
+        }
         setMode(.edit)
+    }
+
+    /// The window's Neovim, started if it isn't running. `nil`, after saying why, when it
+    /// can't be (EDIT then uses the built-in editor).
+    private func nvimTerminal() -> TerminalHost? {
+        let host: TerminalHost
+        if let terminal {
+            host = terminal
+        } else {
+            host = SwiftTermHost()
+            let view = host.view
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.isHidden = true
+            window?.contentView?.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: listScroll.topAnchor),
+                view.bottomAnchor.constraint(equalTo: listScroll.bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: listScroll.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: listScroll.trailingAnchor),
+            ])
+            host.applyTheme(Theme.shared)
+            host.onExit = { [weak self] _ in self?.nvimExited() }
+            terminal = host
+        }
+        if host.isRunning { return host }
+        do {
+            let spec = try nvim.launchSpec()
+            // Sized before starting, so nvim draws for the right size from the start.
+            host.view.isHidden = false
+            window?.contentView?.layoutSubtreeIfNeeded()
+            host.start(program: spec.program, args: spec.args, env: spec.env, directory: currentFolder)
+            nvim.processStarted()
+            return host
+        } catch {
+            statusBar.flash("Neovim: \(error.message). Using the built-in editor.")
+            return nil
+        }
     }
 
     /// Debounced live preview of what applying would do.
@@ -1046,7 +1108,7 @@ extension BrowserWindowController {
         let work = DispatchWorkItem { [weak self] in
             guard let self, let session = self.editSession else { return }
             let preview = session.preview(text: self.editor.text)
-            self.changesView.show(preview, quick: self.editor.quick)
+            self.changesView.show(preview, footer: self.editFooter)
             self.editor.markErrors(Set(preview.errors.map { Int($0.line) }))
         }
         editPreviewWork = work
@@ -1055,25 +1117,51 @@ extension BrowserWindowController {
 
     /// File › Apply Edits (⌘S).
     @objc func applyEdits(_ sender: Any?) {
-        applyEdit()
+        if editInNvim { nvim.write() } else { applyEdit() }
+    }
+
+    /// File › Cancel Edit (⌘.): discards the edit, also from the middle of typing in Neovim.
+    @objc func cancelEdits(_ sender: Any?) {
+        guard mode == .edit else { return }
+        if editInNvim {
+            nvim.close()
+            exitEdit()
+        } else {
+            cancelEdit()
+        }
     }
 
     private func applyEdit() {
+        applyEdit(text: editor.text)
+    }
+
+    private func applyEdit(text: String) {
         guard let session = editSession, pendingEditOp == nil else { return }
-        let text = editor.text
         let preview = session.preview(text: text)
         if let e = preview.errors.first {
-            return statusBar.flash("Fix line \(e.line + 1) first: \(e.message)")
+            return failEdit("Fix line \(e.line + 1) first: \(e.message)")
         }
-        if preview.changes.isEmpty { return exitEdit() }
+        if preview.changes.isEmpty { return finishEdit() }
         do {
             let id = try ops.submitEdit(session: session, text: text)
             let n = preview.changes.count
             myOperations[id] = "Applied \(n) change\(n == 1 ? "" : "s")"
             pendingEditOp = id
         } catch {
-            statusBar.flash(error.localizedDescription)
+            failEdit(error.message)
         }
+    }
+
+    /// The edit can't be applied: say why and keep editing.
+    private func failEdit(_ message: String) {
+        statusBar.flash(message)
+        if editInNvim { nvim.error(message: message) }
+    }
+
+    /// Applied, or nothing to apply: close the editor.
+    private func finishEdit() {
+        if editInNvim { nvim.close() }
+        exitEdit()
     }
 
     private func cancelEdit() {
@@ -1089,7 +1177,9 @@ extension BrowserWindowController {
         guard mode == .edit else { return }
         editPreviewWork?.cancel()
         editSession = nil
+        editInNvim = false
         editor.isHidden = true
+        terminal?.view.isHidden = true
         changesView.isHidden = true
         listScroll.isHidden = false
         mode = .select
@@ -1097,11 +1187,52 @@ extension BrowserWindowController {
         setMode(.select)
         schedulePreview()
     }
+
+    /// nvim exited or dropped the connection. The next edit starts a new one.
+    private func nvimExited() {
+        nvim.processExited()
+        guard editInNvim else { return }
+        exitEdit()
+        statusBar.flash("Neovim quit; the edit was discarded")
+    }
+}
+
+extension BrowserWindowController: NvimEventsDelegate {
+    func nvimReady() {
+        if editInNvim { terminal?.focus() }
+    }
+
+    func nvimFailed(_ message: String) {
+        guard editInNvim else { return }
+        exitEdit()
+        statusBar.flash("Neovim: \(message)")
+        // Start clean next time.
+        terminal?.terminate()
+    }
+
+    func nvimPreview(_ preview: EditPreview) {
+        guard editInNvim else { return }
+        changesView.show(preview, footer: editFooter)
+    }
+
+    func nvimApply(_ text: String) {
+        guard editInNvim else { return }
+        applyEdit(text: text)
+    }
+
+    func nvimCancelled() {
+        guard editInNvim else { return }
+        exitEdit()
+    }
+
+    func nvimDisconnected() {
+        nvimExited()
+    }
 }
 
 extension BrowserWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(applyEdits(_:)) { return mode == .edit }
+        if item.action == #selector(applyEdits(_:)) || item.action == #selector(cancelEdits(_:)) { return mode == .edit }
         return true
     }
 }

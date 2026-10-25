@@ -27,6 +27,7 @@ tilde-ops.workspace = true
 tilde-edit.workspace = true
 tilde-preview.workspace = true
 tilde-activity.workspace = true
+tilde-nvim.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true
 

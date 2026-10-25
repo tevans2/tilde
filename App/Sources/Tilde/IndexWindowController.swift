@@ -239,7 +239,7 @@ final class IndexWindowController: NSWindowController, NSWindowDelegate {
             folders.arrangedSubviews.forEach { $0.removeFromSuperview() }
             refreshInfo()
         } catch {
-            summary.stringValue = "Couldn't update the config: \(error.localizedDescription)"
+            summary.stringValue = "Couldn't update the config: \(error.message)"
         }
     }
 

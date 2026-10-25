@@ -603,7 +603,6 @@ Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent und
 - `tilde-ops` `Request::Batch`: planned so every step can succeed in order (trash, new folders shallowest first, moves via temporary names for swaps, copies from where their source ended up, new files), with clashes, missing parents and moves into a renamed folder caught first. One undo reverses the whole edit.
 - App: `FolderEditor` (TextKit 1) hides the ID prefixes by giving them no glyphs, keeps the cursor out of them and refuses edits that cut into them; a pending-changes pane with errors replaces the preview; `e` / `r` / `o`, ⌘S (File › Apply Edits), double-esc discard; a failed apply keeps the editor open.
 
-Not yet: Neovim as the editor (M6).
 
 ### M5: Activity (done)
 
@@ -613,9 +612,17 @@ Not yet: Neovim as the editor (M6).
 - Engine: `open_activity(filter)` makes Activity the location (the previous folder is kept for going back); Here rows are Activity items, searchable, with date headings (Today, Yesterday, This week, This month, Earlier) when not searching; Everywhere searches the whole index. The inbox folders are watched directly; other index changes refresh the feed at most every 2 s.
 - App: `@` in GO (empty bar) and SELECT, back with `@`, `⌫`, `h`; `1`–`5` origin filters, `i` inbox; origin column and source / filed notes on rows; `tab` reveals in the folder; file actions work as anywhere else.
 
+### M6: Neovim EDIT (done)
+
+- Terminal: SwiftTerm (`LocalProcessTerminalView`) behind the `TerminalHost` protocol. libghostty has no packaged embedding API yet (building it means compiling Ghostty with Zig), so it waits; the protocol keeps the swap small. This settles spike ⑥ for now.
+- `tilde-nvim`: discovery (configured path, login shell `PATH`, Homebrew; 0.10+), launch spec (`--listen $TMPDIR/tilde-<pid>-<n>.sock`, `--clean -u ~/.config/tilde/init.lua` in clean mode, login `PATH`, `TERM`), and a small blocking msgpack-rpc client (`rmpv`, a reader thread) instead of nvim-rs on tokio.
+- The plugin (`lua/tilde.lua`) is embedded and loaded over RPC as `package.loaded.tilde`, not via `--cmd "set rtp^=…"`: plugin managers such as lazy.nvim reset `runtimepath`.
+- Buffer: `tilde://<dir>`, `acwrite`, concealed `/<id> ` prefixes via extmarks (redone on each change), cursor clamped, folders highlighted, diagnostics for bad lines. `:w` → `tilde_apply` (refused with a message if the text has errors); `:q`, `:q!`, `ZQ` → `tilde_cancel` through buffer-local abbreviations, so nvim keeps running; `:wq`, `ZZ` write. `r` selects the stem in select mode and `o` opens a line, both with `⏎` to apply.
+- App: `[edit] editor = "nvim"`; one nvim per window, started on the first edit, hidden between edits; the pending-changes pane follows `tilde_preview`; ⌘S writes, ⌘. (File › Cancel Edit) cancels; a failed apply is reported in nvim and keeps the buffer; nvim exiting mid-edit discards it and the next edit starts a new one; if nvim can't be found, EDIT says why and uses the built-in editor.
+- Tests: headless nvim driven over RPC (normal-mode edits, `yyp`, typed `:q!`, rename and new-line modes, cursor clamping, errors, nvim exiting).
+
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
 - NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).
-- libghostty vs SwiftTerm hosting nvim, with socket RPC.
 - FSEvents `sinceWhen` replay.
 - CI workflow.

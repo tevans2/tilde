@@ -84,3 +84,18 @@ enum Format {
         }
     }
 }
+
+extension Error {
+    /// The text to show for an error. UniFFI's errors describe themselves as Swift values
+    /// (`OpError.Invalid(message: …)`), so this unwraps their message.
+    var message: String {
+        switch self {
+        case let e as OpError:
+            switch e { case let .Invalid(message): return message }
+        case let e as ConfigError:
+            switch e { case let .Io(message): return message }
+        default:
+            return localizedDescription
+        }
+    }
+}
