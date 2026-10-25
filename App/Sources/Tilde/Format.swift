@@ -52,4 +52,35 @@ enum Format {
         default: return "\(Int(minutes / 525_600))y"
         }
     }
+
+    static func originName(_ origin: ActivityOrigin) -> String {
+        switch origin {
+        case .download: "Download"
+        case .screenshot: "Screenshot"
+        case .airDrop: "AirDrop"
+        case .created: "Created"
+        case .edited: "Edited"
+        }
+    }
+
+    static func originColor(_ origin: ActivityOrigin) -> NSColor {
+        let c = Theme.shared.colors
+        switch origin {
+        case .download: return c.go
+        case .screenshot: return c.badge(.image)
+        case .airDrop: return c.shelf
+        case .edited: return c.badge(.code)
+        case .created: return c.textDim
+        }
+    }
+
+    static func filterName(_ filter: OriginFilter) -> String {
+        switch filter {
+        case .all: "All"
+        case .downloads: "Downloaded"
+        case .screenshots: "Screenshots"
+        case .edited: "Edited"
+        case .airDrop: "AirDrop"
+        }
+    }
 }

@@ -38,6 +38,28 @@ pub enum Section {
     Everywhere,
 }
 
+/// Where an Activity item came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ActivityOrigin {
+    Download,
+    Screenshot,
+    AirDrop,
+    Created,
+    Edited,
+}
+
+impl From<tilde_activity::Origin> for ActivityOrigin {
+    fn from(o: tilde_activity::Origin) -> Self {
+        match o {
+            tilde_activity::Origin::Download => ActivityOrigin::Download,
+            tilde_activity::Origin::Screenshot => ActivityOrigin::Screenshot,
+            tilde_activity::Origin::AirDrop => ActivityOrigin::AirDrop,
+            tilde_activity::Origin::Created => ActivityOrigin::Created,
+            tilde_activity::Origin::Edited => ActivityOrigin::Edited,
+        }
+    }
+}
+
 /// A highlighted span of text, in UTF-16 code units (what `NSString` uses).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct HighlightRange {
@@ -66,6 +88,13 @@ pub struct RowView {
     pub highlights: Vec<HighlightRange>,
     /// Matched characters in `location`.
     pub location_highlights: Vec<HighlightRange>,
+    /// Activity rows only: where the item came from.
+    pub origin: Option<ActivityOrigin>,
+    /// Activity rows only: the site a download came from, or empty.
+    pub source: String,
+    /// Activity rows only: downloaded, a screenshot or AirDropped, and moved out of the
+    /// inbox since.
+    pub filed: bool,
 }
 
 impl RowView {
@@ -84,6 +113,36 @@ impl RowView {
             child_count: entry.child_count,
             highlights: utf16_ranges(&entry.name, &hit.indices),
             location_highlights: Vec::new(),
+            origin: None,
+            source: String::new(),
+            filed: false,
+        }
+    }
+
+    /// A row in the Activity view. `modified` is the item's feed time.
+    pub(crate) fn activity(home: &Path, item: &tilde_activity::Item, hit: &Hit) -> RowView {
+        let parent = item.path.parent().unwrap_or(Path::new("/"));
+        let location = match parent.strip_prefix(home) {
+            Ok(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+            Ok(rel) => format!("~/{}", rel.to_string_lossy()),
+            Err(_) => parent.to_string_lossy().into_owned(),
+        };
+        RowView {
+            name: item.name.clone(),
+            path: item.path.to_string_lossy().into_owned(),
+            section: Section::Here,
+            location,
+            kind: row_kind(item.kind),
+            category: category(item.kind, &item.name),
+            ext: extension_of(&item.name),
+            size: item.size,
+            modified: item.time,
+            child_count: item.child_count,
+            highlights: utf16_ranges(&item.name, &hit.indices),
+            location_highlights: Vec::new(),
+            origin: Some(item.origin.into()),
+            source: item.source.clone().unwrap_or_default(),
+            filed: item.filed,
         }
     }
 
@@ -121,6 +180,9 @@ impl RowView {
             modified: hit.meta.modified,
             child_count: hit.meta.child_count,
             highlights: utf16_ranges(name, &name_indices),
+            origin: None,
+            source: String::new(),
+            filed: false,
         }
     }
 }

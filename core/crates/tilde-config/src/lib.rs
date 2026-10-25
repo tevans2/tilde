@@ -23,6 +23,7 @@ pub struct Config {
     pub preview: PreviewConfig,
     pub index: IndexConfig,
     pub zoxide: ZoxideConfig,
+    pub activity: ActivityConfig,
 }
 
 /// The preview pane on the right.
@@ -147,13 +148,7 @@ pub struct ResolvedIndex {
 
 impl IndexConfig {
     pub fn resolve(&self, home: &Path) -> ResolvedIndex {
-        let expand = |s: &str| -> PathBuf {
-            match s.strip_prefix('~') {
-                Some("") => home.to_path_buf(),
-                Some(rest) if rest.starts_with('/') => home.join(&rest[1..]),
-                _ => PathBuf::from(s),
-            }
-        };
+        let expand = |s: &str| expand_path(home, s);
         let is_path = |e: &&String| e.starts_with('/') || e.starts_with("~/");
         let (paths, names): (Vec<&String>, Vec<&String>) = self.exclude.iter().partition(is_path);
         let (hide_paths, hide_names): (Vec<&String>, Vec<&String>) = self.hide.iter().partition(is_path);
@@ -164,6 +159,15 @@ impl IndexConfig {
             hide_names: hide_names.into_iter().cloned().collect(),
             hide_paths: hide_paths.into_iter().map(|p| expand(p)).collect(),
         }
+    }
+}
+
+/// `~` and `~/…` against `home`; anything else as written.
+fn expand_path(home: &Path, s: &str) -> PathBuf {
+    match s.strip_prefix('~') {
+        Some("") => home.to_path_buf(),
+        Some(rest) if rest.starts_with('/') => home.join(&rest[1..]),
+        _ => PathBuf::from(s),
     }
 }
 
@@ -179,6 +183,29 @@ pub struct ZoxideConfig {
 impl Default for ZoxideConfig {
     fn default() -> Self {
         ZoxideConfig { enabled: true, add_on_visit: true }
+    }
+}
+
+/// The Activity view (`@`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActivityConfig {
+    /// How far back the feed goes.
+    pub days: u32,
+    /// Folders where new things land until they're filed. The screenshot folder is
+    /// always included.
+    pub inbox: Vec<String>,
+}
+
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        ActivityConfig { days: 30, inbox: vec!["~/Downloads".into(), "~/Desktop".into()] }
+    }
+}
+
+impl ActivityConfig {
+    pub fn inbox_paths(&self, home: &Path) -> Vec<PathBuf> {
+        self.inbox.iter().map(|p| expand_path(home, p)).collect()
     }
 }
 
@@ -235,6 +262,7 @@ pub fn load(path: &Path) -> Loaded {
                 config.preview.width = PreviewConfig::default().width;
             }
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
+            config.activity.days = config.activity.days.clamp(1, 3650);
             let (_, problems) = config.theme.resolve();
             if !problems.is_empty() {
                 let msg = problems.join("; ");
@@ -314,6 +342,14 @@ max_items = 1000000
 enabled = true
 # Tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
 add_on_visit = true
+
+# The Activity view (@): recent downloads, screenshots, AirDrops and edits.
+[activity]
+# How far back the feed goes.
+days = 30
+# Folders where new things land until you file them (the inbox, i). The screenshot
+# folder is always included.
+inbox = ["~/Downloads", "~/Desktop"]
 "##;
 
 /// The two `[index]` lists an entry can be added to.

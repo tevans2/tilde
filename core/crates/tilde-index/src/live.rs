@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use nucleo::{Injector, Utf32String};
-use tilde_fs::{FsEvent, ListOptions, list_dir};
+use tilde_fs::{FsEvent, ListOptions, is_package_name, list_dir};
 use tilde_types::{Entry, EntryKind};
 
 use crate::walk::{ScanConfig, walk_sequential};
@@ -107,6 +107,36 @@ impl Shared {
 
     pub fn dead(&self) -> DeadSet<'_> {
         DeadSet(self.dead.read().unwrap())
+    }
+
+    /// Live files and packages modified at or after `since`, newest first, at most
+    /// `limit`. Skips anything hidden, inside a hidden folder, or inside a package (a
+    /// Photos library's internals aren't activity). Library packages themselves (Photos,
+    /// Music) change constantly and are skipped too.
+    pub fn recent(&self, since: i64, limit: usize) -> Vec<(String, ItemMeta)> {
+        let dead = self.dead();
+        let mut found: Vec<(String, ItemMeta)> = Vec::new();
+        for i in 0..self.injector.injected_items() {
+            let Some(item) = self.injector.get(i) else { continue };
+            let meta = *item.data;
+            if meta.modified < since
+                || !matches!(meta.kind, EntryKind::File | EntryKind::Package)
+                || dead.contains(meta.id)
+            {
+                continue;
+            }
+            let key = item.matcher_columns[0].to_string();
+            let mut folders = key.split('/');
+            folders.next_back();
+            let library = meta.kind == EntryKind::Package && key.ends_with("library");
+            if library || key.split('/').any(|part| part.starts_with('.')) || folders.any(is_package_name) {
+                continue;
+            }
+            found.push((key, meta));
+        }
+        found.sort_by_key(|(_, m)| std::cmp::Reverse(m.modified));
+        found.truncate(limit);
+        found
     }
 
     /// Adds an item and returns its ID, or `None` once the index is full.

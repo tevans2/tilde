@@ -605,6 +605,14 @@ Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent und
 
 Not yet: Neovim as the editor (M6).
 
+### M5: Activity (done)
+
+- Built differently from §6.6: there's no event log. `tilde-activity` works the feed out when it's opened, from the index (visible files modified within `[activity] days`, skipping package internals and library packages, at most 500) and listings of the inbox folders (everything in them, timed by the later of modification and date added, `ATTR_CMN_ADDEDTIME`). History is there from the first launch, nothing can drift out of sync with the disk, and moves made outside Tilde count as filing.
+- Origins from extended attributes: screen capture keys → screenshot; quarantine agent `sharingd` → AirDrop; `kMDItemWhereFroms` (or a quarantine agent) → download, with the site taken from the referring page when recorded; otherwise created (birth time near modification) or edited. The screenshot folder comes from `com.apple.screencapture` preferences.
+- Inbox: `[activity] inbox` (default Downloads and Desktop) plus the screenshot folder. Downloads, screenshots and AirDrops found elsewhere are marked filed.
+- Engine: `open_activity(filter)` makes Activity the location (the previous folder is kept for going back); Here rows are Activity items, searchable, with date headings (Today, Yesterday, This week, This month, Earlier) when not searching; Everywhere searches the whole index. The inbox folders are watched directly; other index changes refresh the feed at most every 2 s.
+- App: `@` in GO (empty bar) and SELECT, back with `@`, `⌫`, `h`; `1`–`5` origin filters, `i` inbox; origin column and source / filed notes on rows; `tab` reveals in the folder; file actions work as anywhere else.
+
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
 - NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).

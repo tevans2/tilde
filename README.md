@@ -47,9 +47,10 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 
 | Mode | Keys |
 |---|---|
-| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `esc` → SELECT |
+| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `esc` → SELECT |
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
+| Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) |
 | Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
@@ -97,6 +98,20 @@ Each line carries a hidden ID, so reordering, cut and paste keep track of which 
 which. The side pane lists what will happen as you type, and lines with problems (a name
 that's taken, a bad character) are tinted. `⌘S` applies everything as one operation, and
 `u` undoes all of it.
+
+## Activity
+
+`@` shows what arrived or changed recently: downloads (with the site they came from),
+screenshots and screen recordings, AirDrops, and files you created or edited, newest first
+under Today / Yesterday / This week / This month / Earlier. It covers everything in your
+**inbox folders** (Downloads, the Desktop and wherever screenshots are saved) plus files
+anywhere in the index changed in the last 30 days. `i` narrows it to what's still in an
+inbox folder; move things out with `m` (or trash them with `d`) and they leave the inbox.
+Downloads that live somewhere else now are marked **filed**.
+
+Nothing is logged: origins come from the attributes macOS attaches to files, so the feed
+has history from the first launch and counts moves made in the Finder too. Configure the
+inbox folders and how far back it goes under `[activity]`.
 
 ## Themes and preview
 

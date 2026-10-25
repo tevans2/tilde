@@ -36,6 +36,9 @@ pub struct Entry {
     /// Another filesystem is mounted here (a disk image, network share, container
     /// filesystem). Recursive scans don't cross into it.
     pub mount_point: bool,
+    /// When the item arrived in this folder (created, downloaded, moved or copied in),
+    /// seconds since the Unix epoch. 0 if unknown.
+    pub added: i64,
 }
 
 impl Entry {
@@ -68,6 +71,7 @@ mod tests {
             hidden: false,
             child_count: None,
             mount_point: false,
+            added: 0,
         }
     }
 

@@ -334,11 +334,28 @@ impl IndexService {
     }
 
     /// Searches the index (empty when disabled or cleared).
-    pub(crate) fn search(&self, query: &Query, folder: &Path, now: i64, limit: usize) -> Vec<GlobalHit> {
+    /// `folder` is left to the Here scope; `None` (Activity) searches everything.
+    pub(crate) fn search(&self, query: &Query, folder: Option<&Path>, now: i64, limit: usize) -> Vec<GlobalHit> {
         let mut live = self.live.lock().unwrap();
         let Some(index) = live.index.as_mut() else { return Vec::new() };
-        let cwd = index.key(folder);
-        index.search(query, Some(&cwd), Some(&cwd), now, limit)
+        let cwd = folder.map(|f| index.key(f));
+        index.search(query, cwd.as_deref(), cwd.as_deref(), now, limit)
+    }
+
+    /// Visible files modified since `since`, newest first, for the Activity feed.
+    pub(crate) fn recent(&self, since: i64, limit: usize) -> Vec<tilde_activity::Candidate> {
+        let Some(handle) = self.live.lock().unwrap().handle.clone() else { return Vec::new() };
+        handle
+            .recent(since, limit)
+            .into_iter()
+            .map(|(path, meta)| tilde_activity::Candidate {
+                path,
+                kind: meta.kind,
+                size: meta.size,
+                modified: meta.modified,
+                child_count: meta.child_count,
+            })
+            .collect()
     }
 
     pub(crate) fn record_visit(&self, path: &Path) {

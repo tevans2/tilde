@@ -3,7 +3,7 @@ import TildeFFI
 
 @MainActor
 protocol EngineEventsDelegate: AnyObject {
-    func engineResultsReady(generation: UInt64, folder: String, hereCount: Int, everywhereCount: Int)
+    func engineResultsReady(_ info: ResultsInfo)
     func engineFolderFailed(generation: UInt64, folder: String, message: String)
 }
 
@@ -13,11 +13,10 @@ final class EngineEvents: EngineListener, @unchecked Sendable {
     // Only read and written on the main thread.
     nonisolated(unsafe) weak var delegate: EngineEventsDelegate?
 
-    func resultsReady(generation: UInt64, folder: String, hereCount: UInt32, everywhereCount: UInt32) {
+    func resultsReady(info: ResultsInfo) {
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                self.delegate?.engineResultsReady(
-                    generation: generation, folder: folder, hereCount: Int(hereCount), everywhereCount: Int(everywhereCount))
+                self.delegate?.engineResultsReady(info)
             }
         }
     }

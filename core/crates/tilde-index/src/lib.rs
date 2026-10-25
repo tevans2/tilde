@@ -161,6 +161,12 @@ impl IndexHandle {
     pub fn absolute(&self, key: &str) -> PathBuf {
         if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
     }
+
+    /// Visible files modified at or after `since` (seconds since the epoch), newest
+    /// first, as (absolute path, metadata). Doesn't wait for the search lock.
+    pub fn recent(&self, since: i64, limit: usize) -> Vec<(PathBuf, ItemMeta)> {
+        self.shared.recent(since, limit).into_iter().map(|(key, meta)| (self.absolute(&key), meta)).collect()
+    }
 }
 
 pub struct GlobalIndex {
@@ -531,6 +537,41 @@ mod tests {
         // Excluded folder contents aren't indexed, the folder is.
         assert!(index.search(&Query::parse("left-pad"), None, None, 0, 10).is_empty());
         assert_eq!(keys(&index.search(&Query::parse("node_modules"), None, None, 0, 10)), ["node_modules"]);
+    }
+
+    #[test]
+    fn recent_lists_new_visible_files_newest_first() {
+        let (_dir, root) = tree();
+        fs::create_dir(root.join(".config")).unwrap();
+        fs::write(root.join(".config/settings"), b"x").unwrap();
+        fs::write(root.join(".zshrc"), b"x").unwrap();
+        fs::create_dir_all(root.join("Pictures/Photos Library.photoslibrary/resources")).unwrap();
+        fs::write(root.join("Pictures/Photos Library.photoslibrary/resources/sync.plist"), b"x").unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(90 * 86_400);
+        fs::File::options().write(true).open(root.join("Documents/notes.md")).unwrap().set_modified(old).unwrap();
+        let newest = std::time::SystemTime::now() + Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(root.join("Documents/Finance/2026/invoice-oct.pdf"))
+            .unwrap()
+            .set_modified(newest)
+            .unwrap();
+        let mut config = config(&root);
+        config.scan.include_hidden = true;
+        let index = start_and_wait(config);
+
+        let since = (std::time::SystemTime::now() - Duration::from_secs(86_400))
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let recent = index.handle().recent(since, 10);
+        let paths: Vec<String> =
+            recent.iter().map(|(p, _)| p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect();
+        // Folders, hidden files, files in hidden folders and old files are left out.
+        assert_eq!(paths.len(), 4, "{paths:?}");
+        assert_eq!(paths[0], "Documents/Finance/2026/invoice-oct.pdf");
+        assert!(!paths.iter().any(|p| p.contains("notes.md") || p.contains('.') && p.starts_with('.')));
+        assert_eq!(index.handle().recent(since, 2).len(), 2);
     }
 
     #[test]

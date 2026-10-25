@@ -1,0 +1,15 @@
+[package]
+name = "tilde-activity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tilde-types.workspace = true
+tilde-fs.workspace = true
+libc.workspace = true
+plist.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

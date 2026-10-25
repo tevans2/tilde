@@ -84,6 +84,7 @@ mod tests {
             hidden: false,
             child_count: None,
             mount_point: false,
+            added: 0,
         }
     }
 

@@ -13,6 +13,8 @@ use tilde_types::{Entry, EntryKind};
 const ATTR_CMN_ERROR: u32 = 0x2000_0000;
 /// `chflags` hidden flag (what `chflags hidden` and the Finder set).
 const UF_HIDDEN: u32 = 0x0000_8000;
+/// Not exported by the `libc` crate.
+const ATTR_CMN_ADDEDTIME: u32 = 0x1000_0000;
 
 // `fsobj_type_t` values (`enum vtype` in <sys/vnode.h>).
 const VREG: u32 = 1;
@@ -54,6 +56,11 @@ const PACKAGE_EXTENSIONS: &[&str] = &[
     "workflow",
 ];
 
+/// A folder with this name is a package (shown and opened as one document).
+pub fn is_package_name(name: &str) -> bool {
+    PACKAGE_EXTENSIONS.contains(&tilde_types::extension_of(name).as_str())
+}
+
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub include_hidden: bool,
@@ -87,7 +94,8 @@ pub fn list_dir(dir: &Path, opts: &ListOptions, should_cancel: impl Fn() -> bool
             | libc::ATTR_CMN_OBJTYPE
             | libc::ATTR_CMN_MODTIME
             | libc::ATTR_CMN_FLAGS
-            | libc::ATTR_CMN_FILEID,
+            | libc::ATTR_CMN_FILEID
+            | ATTR_CMN_ADDEDTIME,
         volattr: 0,
         dirattr: libc::ATTR_DIR_ENTRYCOUNT | libc::ATTR_DIR_MOUNTSTATUS,
         fileattr: libc::ATTR_FILE_DATALENGTH,
@@ -177,6 +185,8 @@ fn parse_record(rec: &[u8]) -> Option<Entry> {
     p += 4;
     let file_id = read_u64(rec, p);
     p += 8;
+    let added = if returned.commonattr & ATTR_CMN_ADDEDTIME != 0 { read_i64(rec, p) } else { 0 };
+    p += size_of::<libc::timespec>();
     // The directory group is only packed for directories and the file group only for
     // regular files, even with FSOPT_PACK_INVAL_ATTRS. Within a group every requested
     // slot is present; the returned set says which values are valid.
@@ -201,6 +211,7 @@ fn parse_record(rec: &[u8]) -> Option<Entry> {
         file_id,
         child_count: None,
         mount_point,
+        added,
         name,
     };
     match obj_type {
@@ -209,7 +220,7 @@ fn parse_record(rec: &[u8]) -> Option<Entry> {
             entry.size = data_length.unwrap_or(0);
         }
         VDIR => {
-            let is_package = PACKAGE_EXTENSIONS.contains(&entry.extension().as_str());
+            let is_package = is_package_name(&entry.name);
             entry.kind = if is_package { EntryKind::Package } else { EntryKind::Folder };
             entry.child_count = entry_count;
         }
@@ -272,6 +283,10 @@ mod tests {
         assert_eq!(get("notes.txt").size, 11);
         assert!(get("notes.txt").modified > 1_600_000_000);
         assert!(get("notes.txt").file_id > 0);
+        // Fields after the date added are still read correctly.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert!((get("notes.txt").added - now).abs() < 60, "added {}", get("notes.txt").added);
+        assert!((get("src").added - now).abs() < 60);
         assert_eq!(get("src").kind, EntryKind::Folder);
         assert_eq!(get("src").child_count, Some(2));
         assert_eq!(get("Thing.app").kind, EntryKind::Package);

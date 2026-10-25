@@ -66,6 +66,24 @@ final class PathBar: NSView {
         crumbs.attributedStringValue = s
     }
 
+    /// `@ Activity`, then the filter (`/ Downloaded`, `/ Inbox`).
+    func setActivity(_ filter: ActivityFilter) {
+        let font = Theme.shared.bar
+        let c = Theme.shared.colors
+        let s = NSMutableAttributedString(string: "@ Activity", attributes: [.font: font, .foregroundColor: c.text])
+        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55)]
+        let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim]
+        var parts: [String] = []
+        if filter.origin != .all { parts.append(Format.filterName(filter.origin)) }
+        if filter.inbox { parts.append("Inbox") }
+        for part in parts {
+            s.append(NSAttributedString(string: " / ", attributes: sep))
+            s.append(NSAttributedString(string: part, attributes: seg))
+        }
+        s.append(NSAttributedString(string: " / ", attributes: sep))
+        crumbs.attributedStringValue = s
+    }
+
     func applyTheme(_ theme: Theme) {
         field.font = theme.bar
         wantsLayer = true
@@ -120,6 +138,7 @@ final class ResultsTableView: NSTableView {
         allowsEmptySelection = true
         focusRingType = .none
         columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        floatsGroupRows = false
     }
 
     @available(*, unavailable)
@@ -154,6 +173,9 @@ final class RowCellView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("RowCell")
 
     private let shelfDot = NSTextField(labelWithString: "●")
+    /// Activity rows: where the item came from.
+    private let origin = NSTextField(labelWithString: "")
+    private var originWidth: NSLayoutConstraint!
     private let badge = Badge()
     private let name = NSTextField(labelWithString: "")
     /// Where an Everywhere result lives; trimmed from the start so the nearest folders stay.
@@ -184,7 +206,8 @@ final class RowCellView: NSTableCellView {
         shelfDot.textColor = Theme.shared.colors.shelf
         shelfDot.font = .systemFont(ofSize: 8)
         shelfDot.alignment = .center
-        for v in [shelfDot, badge, name, location, meta, age] as [NSView] {
+        origin.lineBreakMode = .byClipping
+        for v in [shelfDot, origin, badge, name, location, meta, age] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -192,7 +215,9 @@ final class RowCellView: NSTableCellView {
             shelfDot.leadingAnchor.constraint(equalTo: leadingAnchor),
             shelfDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             shelfDot.widthAnchor.constraint(equalToConstant: 12),
-            badge.leadingAnchor.constraint(equalTo: shelfDot.trailingAnchor, constant: 2),
+            origin.leadingAnchor.constraint(equalTo: shelfDot.trailingAnchor, constant: 2),
+            origin.centerYAnchor.constraint(equalTo: centerYAnchor),
+            badge.leadingAnchor.constraint(equalTo: origin.trailingAnchor, constant: 2),
             badge.centerYAnchor.constraint(equalTo: centerYAnchor),
             badge.widthAnchor.constraint(equalToConstant: 40),
             badge.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.62),
@@ -207,6 +232,8 @@ final class RowCellView: NSTableCellView {
             age.centerYAnchor.constraint(equalTo: centerYAnchor),
             age.widthAnchor.constraint(greaterThanOrEqualToConstant: 34),
         ])
+        originWidth = origin.widthAnchor.constraint(equalToConstant: 0)
+        originWidth.isActive = true
     }
 
     @available(*, unavailable)
@@ -218,6 +245,15 @@ final class RowCellView: NSTableCellView {
         let theme = Theme.shared
         meta.font = theme.small
         age.font = theme.small
+        origin.font = theme.small
+        if let o = row.origin {
+            origin.stringValue = Format.originName(o)
+            // Wide enough for the longest label, so names line up.
+            originWidth.constant = ("Screenshot " as NSString).size(withAttributes: [.font: theme.small]).width.rounded(.up)
+        } else {
+            origin.stringValue = ""
+            originWidth.constant = 0
+        }
         badge.set(text: Format.badgeText(row), color: Format.badgeColor(row.category), font: theme.badge)
         meta.stringValue = Format.meta(row)
         age.stringValue = Format.age(row.modified)
@@ -250,9 +286,11 @@ final class RowCellView: NSTableCellView {
         for r in row.highlights where Int(r.start + r.length) <= length {
             s.addAttributes(hit, range: NSRange(location: Int(r.start), length: Int(r.length)))
         }
-        location.isHidden = row.section != .everywhere
-        if row.section == .everywhere {
-            // Everywhere rows show where the item lives, dimmed, with matched characters.
+        if let o = row.origin { origin.textColor = selected ? c.selectionText : Format.originColor(o) }
+        location.isHidden = row.location.isEmpty
+        if !row.location.isEmpty {
+            // Everywhere and Activity rows show where the item lives, dimmed, with matched
+            // characters.
             let truncateHead = NSMutableParagraphStyle()
             truncateHead.lineBreakMode = .byTruncatingHead
             let dim: [NSAttributedString.Key: Any] = [
@@ -268,6 +306,14 @@ final class RowCellView: NSTableCellView {
             let locationLength = (row.location as NSString).length
             for r in row.locationHighlights where Int(r.start + r.length) <= locationLength {
                 location.addAttributes(locationHit, range: NSRange(location: Int(r.start), length: Int(r.length)))
+            }
+            if !row.source.isEmpty {
+                location.append(NSAttributedString(string: " · \(row.source)", attributes: dim))
+            }
+            if row.filed {
+                var filed = dim
+                filed[.foregroundColor] = selected ? c.selectionText : c.select
+                location.append(NSAttributedString(string: " · filed", attributes: filed))
             }
             self.location.attributedStringValue = location
         }
@@ -446,8 +492,11 @@ final class StatusBar: NSView {
         right.font = theme.small
     }
 
-    func update(mode: Mode, summary: String) {
+    func update(mode: Mode, summary: String, inActivity: Bool = false) {
         switch mode {
+        case .select where inActivity:
+            modePill.stringValue = "SELECT"
+            hints.stringValue = "1 all  2 downloads  3 screenshots  4 edited  5 airdrop  i inbox   tab reveal   m move   d trash   @ back"
         case .go:
             modePill.stringValue = "GO"
             hints.stringValue = "↑↓ ⌃j ⌃k move   ⏎ open   tab ⌃l go in   ⌫ ⌃h up   esc select"
