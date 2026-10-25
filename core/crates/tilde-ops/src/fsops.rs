@@ -99,6 +99,12 @@ pub fn copy_item(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates an empty file (failing if anything is already there).
+pub fn create_file(path: &Path) -> io::Result<()> {
+    ensure_free(None, path)?;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path).map(|_| ())
+}
+
 pub fn make_dir(path: &Path) -> io::Result<()> {
     ensure_free(None, path)?;
     std::fs::create_dir(path)

@@ -127,6 +127,7 @@ enum MainMenu {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
         let newFolder = fileMenu.addItem(withTitle: "New Folder…", action: #selector(BrowserWindowController.newFolder(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Apply Edits", action: #selector(BrowserWindowController.applyEdits(_:)), keyEquivalent: "s")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(.separator())
         let trash = fileMenu.addItem(withTitle: "Move to Trash", action: #selector(BrowserWindowController.moveToTrash(_:)),

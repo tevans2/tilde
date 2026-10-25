@@ -24,6 +24,7 @@ tilde-query.workspace = true
 tilde-config.workspace = true
 tilde-index.workspace = true
 tilde-ops.workspace = true
+tilde-edit.workspace = true
 tilde-preview.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true

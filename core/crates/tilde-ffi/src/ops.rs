@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use tilde_ops::{Listener, Operations, Outcome, OutcomeKind, Request, SystemTrash};
 
+use crate::edit::EditSession;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum OpKind {
     Move,
@@ -107,6 +109,22 @@ impl FileOps {
     /// that's taken, a folder moved into itself) arrive in `finished`.
     pub fn submit(&self, request: OpRequest) -> Result<u64, OpError> {
         Ok(self.inner.submit(to_request(request)?))
+    }
+
+    /// Applies an edited folder text as one undoable operation. Fails without changing
+    /// anything if a line has a problem or there's nothing to change.
+    pub fn submit_edit(&self, session: Arc<EditSession>, text: String) -> Result<u64, OpError> {
+        let diff = session.inner.diff(&text);
+        if let Some(e) = diff.errors.first() {
+            return Err(OpError::Invalid { message: format!("Line {}: {}", e.line + 1, e.message) });
+        }
+        if diff.changes.is_empty() {
+            return Err(OpError::Invalid { message: "Nothing to change".into() });
+        }
+        let folder = session.dir().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let n = diff.changes.len();
+        let label = format!("Edit “{folder}” ({n} change{})", if n == 1 { "" } else { "s" });
+        Ok(self.inner.submit(Request::Batch { label, items: diff.batch_items() }))
     }
 
     /// Undoes the latest operation; `None` if there's nothing to undo.

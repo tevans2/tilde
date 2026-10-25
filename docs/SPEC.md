@@ -597,6 +597,14 @@ Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent und
 - `[theme]`: appearance (system / light / dark), presets (default, catppuccin, gruvbox, nord, solarized; each with light and dark palettes), 24 colour keys overridable for both appearances or either. Resolved in Rust with validation; Swift builds appearance-aware colours with system colours as fallbacks.
 - Fixed along the way: Everywhere search returned nothing when a matching pass outlasted the 250 ms wait (very large indexes, debug builds); nucleo's completion callback now refreshes results, and dependencies are optimized in debug builds.
 
+### M4: built-in text mode (done)
+
+- `tilde-edit`: sessions render a folder as `/<id> name` lines and diff edited text into renames, moves, copies (repeated IDs), trash (missing IDs), new files and folders, with per-line errors (unknown IDs, clashing names, invalid names).
+- `tilde-ops` `Request::Batch`: planned so every step can succeed in order (trash, new folders shallowest first, moves via temporary names for swaps, copies from where their source ended up, new files), with clashes, missing parents and moves into a renamed folder caught first. One undo reverses the whole edit.
+- App: `FolderEditor` (TextKit 1) hides the ID prefixes by giving them no glyphs, keeps the cursor out of them and refuses edits that cut into them; a pending-changes pane with errors replaces the preview; `e` / `r` / `o`, ⌘S (File › Apply Edits), double-esc discard; a failed apply keeps the editor open.
+
+Not yet: Neovim as the editor (M6).
+
 Remaining M0 spikes:
 - nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
 - NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).

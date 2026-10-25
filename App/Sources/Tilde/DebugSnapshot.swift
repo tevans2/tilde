@@ -26,11 +26,14 @@ enum DebugSnapshot {
 
     /// Control keys are encoded as a private-use character just above U+E000.
     private static let controlBase: UInt32 = 0xE000
+    /// Command keys (`@s` is ⌘S), likewise.
+    private static let commandBase: UInt32 = 0xE100
 
     private static func decode(_ s: String) -> String {
         var s = s
         for c in "abcdefghijklmnopqrstuvwxyz" {
             s = s.replacingOccurrences(of: "^\(c)", with: String(UnicodeScalar(controlBase + UInt32(c.asciiValue!))!))
+            s = s.replacingOccurrences(of: "@\(c)", with: String(UnicodeScalar(commandBase + UInt32(c.asciiValue!))!))
         }
         return s.replacingOccurrences(of: "\\e", with: "\u{1b}")
             .replacingOccurrences(of: "\\t", with: "\t")
@@ -44,11 +47,31 @@ enum DebugSnapshot {
             // Through the app (not the window) so local key monitors see it, as they would
             // a real keystroke.
             window.makeKey()
-            NSApp.sendEvent(event)
+            // A scripted launch may never become the active app, and then menus have no key
+            // window to send actions to. Find the menu item for a command key and send its
+            // action down this window's responder chain, as a real keystroke would.
+            if event.modifierFlags.contains(.command),
+               let item = menuItem(for: event, in: NSApp.mainMenu),
+               let action = item.action {
+                _ = (window.firstResponder ?? window).tryToPerform(action, with: item)
+            } else {
+                NSApp.sendEvent(event)
+            }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             type(Array(chars.dropFirst()), then: done)
         }
+    }
+
+    private static func menuItem(for event: NSEvent, in menu: NSMenu?) -> NSMenuItem? {
+        for item in menu?.items ?? [] {
+            if let found = menuItem(for: event, in: item.submenu) { return found }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if item.keyEquivalent == event.charactersIgnoringModifiers, item.keyEquivalentModifierMask == flags {
+                return item
+            }
+        }
+        return nil
     }
 
     private static func keyEvent(for c: Character, window: NSWindow) -> NSEvent? {
@@ -57,6 +80,9 @@ enum DebugSnapshot {
         if let v = c.unicodeScalars.first?.value, v > controlBase, v < controlBase + 128 {
             s = String(UnicodeScalar(UInt8(v - controlBase)))
             flags = .control
+        } else if let v = c.unicodeScalars.first?.value, v > commandBase, v < commandBase + 128 {
+            s = String(UnicodeScalar(UInt8(v - commandBase)))
+            flags = .command
         }
         let keyCode: UInt16 = switch s {
         case "\u{1b}": 53

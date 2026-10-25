@@ -295,3 +295,96 @@ fn system_trash_reports_where_items_go() {
     assert!(in_trash.to_string_lossy().contains(".Trash"), "{in_trash:?}");
     fs::remove_file(in_trash).unwrap();
 }
+
+fn batch(items: Vec<BatchItem>) -> Request {
+    Request::Batch { label: "Edit".into(), items }
+}
+
+#[test]
+fn batch_swaps_names_and_undoes() {
+    let env = Env::new();
+    env.file("a.txt", "A");
+    env.file("b.txt", "B");
+    let before = env.tree();
+    let out = env.run(batch(vec![
+        BatchItem::Move { from: env.p("a.txt"), to: env.p("b.txt") },
+        BatchItem::Move { from: env.p("b.txt"), to: env.p("a.txt") },
+    ]));
+    assert_eq!(out.error, None);
+    assert_eq!(fs::read_to_string(env.p("a.txt")).unwrap(), "B");
+    assert_eq!(fs::read_to_string(env.p("b.txt")).unwrap(), "A");
+    assert!(!env.tree().keys().any(|k| k.starts_with(".tilde-moving")));
+    env.undo();
+    assert_eq!(env.tree(), before);
+}
+
+#[test]
+fn batch_creates_folders_before_moving_into_them() {
+    let env = Env::new();
+    env.file("photo.jpg", "p");
+    env.file("notes.txt", "n");
+    let before = env.tree();
+    let out = env.run(batch(vec![
+        BatchItem::Move { from: env.p("photo.jpg"), to: env.p("photos/2026/photo.jpg") },
+        BatchItem::CreateDir { path: env.p("photos/2026") },
+        BatchItem::CreateDir { path: env.p("photos") },
+        BatchItem::Copy { from: env.p("notes.txt"), to: env.p("photos/notes copy.txt") },
+        BatchItem::Move { from: env.p("notes.txt"), to: env.p("todo.txt") },
+        BatchItem::CreateFile { path: env.p("photos/README") },
+    ]));
+    assert_eq!(out.error, None);
+    assert_eq!(fs::read_to_string(env.p("photos/2026/photo.jpg")).unwrap(), "p");
+    assert_eq!(fs::read_to_string(env.p("photos/notes copy.txt")).unwrap(), "n", "copied from its new place");
+    assert!(env.p("todo.txt").exists() && env.p("photos/README").exists());
+    while env.ops.undo_label().is_some() {
+        env.undo();
+    }
+    assert_eq!(env.tree(), before);
+}
+
+#[test]
+fn batch_trash_frees_the_name_for_a_new_item() {
+    let env = Env::new();
+    env.file("draft.md", "old");
+    let out = env.run(batch(vec![
+        BatchItem::Trash { path: env.p("draft.md") },
+        BatchItem::CreateFile { path: env.p("draft.md") },
+    ]));
+    assert_eq!(out.error, None);
+    assert_eq!(fs::read_to_string(env.p("draft.md")).unwrap(), "");
+    assert_eq!(fs::read_to_string(env.trash.join("draft.md")).unwrap(), "old");
+}
+
+#[test]
+fn batch_problems_are_caught_before_anything_changes() {
+    let env = Env::new();
+    env.file("a.txt", "a");
+    env.file("b.txt", "b");
+    env.file("docs/x.txt", "x");
+    let before = env.tree();
+    let cases = [
+        (vec![BatchItem::Move { from: env.p("a.txt"), to: env.p("b.txt") }], "already exists"),
+        (
+            vec![
+                BatchItem::Move { from: env.p("a.txt"), to: env.p("c.txt") },
+                BatchItem::CreateFile { path: env.p("C.txt") },
+            ],
+            "both be called",
+        ),
+        (vec![BatchItem::CreateFile { path: env.p("nope/new.txt") }], "doesn't exist"),
+        (
+            vec![
+                BatchItem::Move { from: env.p("docs"), to: env.p("documents") },
+                BatchItem::Move { from: env.p("a.txt"), to: env.p("docs/a.txt") },
+            ],
+            "same edit",
+        ),
+        (vec![BatchItem::Trash { path: env.p("gone.txt") }], "no longer exists"),
+    ];
+    for (items, expected) in cases {
+        let out = env.run(batch(items));
+        let error = out.error.unwrap_or_default();
+        assert!(error.contains(expected), "expected “{expected}”, got “{error}”");
+        assert_eq!(env.tree(), before);
+    }
+}

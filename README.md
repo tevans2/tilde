@@ -50,6 +50,7 @@ TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/d
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `esc` → SELECT |
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
+| EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) |
 | Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
@@ -81,6 +82,21 @@ there.
 If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, folders you visit often
 rank higher, every folder zoxide knows is searchable, and folders you open in Tilde are
 added to zoxide so `z` in your shell learns from Tilde. Configure it under `[zoxide]`.
+
+## Editing a folder as text
+
+`e` turns the folder into text, one line per item (folders end with `/`):
+
+- edit a name to **rename**
+- delete a line to **trash** it
+- change a line to a path (`archive/x.pdf`, `~/Documents/x.pdf`) to **move** it
+- duplicate a line to **copy** it
+- add a line to **create** a file, or a folder if it ends with `/`
+
+Each line carries a hidden ID, so reordering, cut and paste keep track of which item is
+which. The side pane lists what will happen as you type, and lines with problems (a name
+that's taken, a bad character) are tinted. `⌘S` applies everything as one operation, and
+`u` undoes all of it.
 
 ## Themes and preview
 

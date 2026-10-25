@@ -21,12 +21,56 @@ use crate::plan::name;
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    Move { sources: Vec<PathBuf>, into: PathBuf },
-    Copy { sources: Vec<PathBuf>, into: PathBuf },
-    Trash { sources: Vec<PathBuf> },
-    Rename { source: PathBuf, name: String },
-    NewFolder { parent: PathBuf, name: String },
-    Compress { sources: Vec<PathBuf> },
+    Move {
+        sources: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Copy {
+        sources: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Trash {
+        sources: Vec<PathBuf>,
+    },
+    Rename {
+        source: PathBuf,
+        name: String,
+    },
+    NewFolder {
+        parent: PathBuf,
+        name: String,
+    },
+    Compress {
+        sources: Vec<PathBuf>,
+    },
+    /// A mix of changes applied together and undone together (text editing a folder).
+    Batch {
+        label: String,
+        items: Vec<BatchItem>,
+    },
+}
+
+/// One change in a `Request::Batch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchItem {
+    /// Rename or move.
+    Move {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Copy {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Trash {
+        path: PathBuf,
+    },
+    CreateFile {
+        path: PathBuf,
+    },
+    CreateDir {
+        path: PathBuf,
+    },
 }
 
 impl Request {
@@ -45,6 +89,7 @@ impl Request {
             Request::Rename { source, .. } => format!("Rename “{}”", name(source)),
             Request::NewFolder { name, .. } => format!("New Folder “{name}”"),
             Request::Compress { sources } => format!("Compress {}", items(sources)),
+            Request::Batch { label, .. } => label.clone(),
         }
     }
 }
@@ -56,6 +101,7 @@ pub enum Step {
     Copy { from: PathBuf, to: PathBuf },
     Trash { path: PathBuf },
     MakeDir { path: PathBuf },
+    CreateFile { path: PathBuf },
     Compress { sources: Vec<PathBuf>, to: PathBuf },
 }
 
@@ -279,6 +325,7 @@ impl Runner {
                 }
                 Step::Copy { from, to } => fsops::copy_item(from, to).map(|_| Done::Created { path: to.clone() }),
                 Step::MakeDir { path } => fsops::make_dir(path).map(|_| Done::Created { path: path.clone() }),
+                Step::CreateFile { path } => fsops::create_file(path).map(|_| Done::Created { path: path.clone() }),
                 Step::Compress { sources, to } => {
                     fsops::compress(sources, to).map(|_| Done::Created { path: to.clone() })
                 }
@@ -312,7 +359,7 @@ fn nothing(kind: OutcomeKind, label: &str) -> Outcome {
 fn step_name(step: &Step) -> String {
     match step {
         Step::Move { from, .. } | Step::Copy { from, .. } => name(from),
-        Step::Trash { path } | Step::MakeDir { path } => name(path),
+        Step::Trash { path } | Step::MakeDir { path } | Step::CreateFile { path } => name(path),
         Step::Compress { to, .. } => name(to),
     }
 }

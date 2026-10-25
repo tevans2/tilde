@@ -6,6 +6,7 @@
 //! dropped.
 
 mod config;
+mod edit;
 mod engine;
 mod index;
 mod ops;
@@ -13,6 +14,7 @@ mod preview;
 mod views;
 
 pub use config::{AppConfig, ConfigError, ConfigLoad, ThemeAppearance, ensure_config_file, load_config};
+pub use edit::{EditLineError, EditPreview, EditSession, PendingChange};
 pub use engine::{Engine, EngineListener};
 pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
 pub use ops::{FileOps, OpError, OpKind, OpOutcome, OpPhase, OpRequest, OpsListener};

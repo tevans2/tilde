@@ -81,7 +81,11 @@ final class PathBar: NSView {
     }
 
     func setMode(_ mode: Mode) {
-        field.placeholderString = mode == .go ? "type to search" : "press / to search"
+        field.placeholderString = switch mode {
+        case .go: "type to search"
+        case .select: "press / to search"
+        case .edit: "editing this folder as text"
+        }
         field.textColor = mode == .go ? Theme.shared.colors.text : Theme.shared.colors.textDim
     }
 }
@@ -449,7 +453,10 @@ final class StatusBar: NSView {
             hints.stringValue = "↑↓ ⌃j ⌃k move   ⏎ open   tab ⌃l go in   ⌫ ⌃h up   esc select"
         case .select:
             modePill.stringValue = "SELECT"
-            hints.stringValue = "j k move   h l out / in   x collect   m move   c copy   d trash   r rename   u undo   / search"
+            hints.stringValue = "j k move   h l out / in   x collect   m move   c copy   d trash   r rename   e edit   u undo   / search"
+        case .edit:
+            modePill.stringValue = "EDIT"
+            hints.stringValue = "rename: edit a name   trash: delete the line   move: type a path   copy: duplicate a line   new: add a line (end with / for a folder)"
         }
         self.mode = mode
         needsDisplay = true
@@ -486,7 +493,12 @@ final class StatusBar: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let c = Theme.shared.colors
             layer?.backgroundColor = c.bar.cgColor
-            pillBackground.layer?.backgroundColor = (mode == .go ? c.go : c.select).cgColor
+            let pill = switch mode {
+            case .go: c.go
+            case .select: c.select
+            case .edit: c.match
+            }
+            pillBackground.layer?.backgroundColor = pill.cgColor
             modePill.textColor = c.badgeLabel
             hints.textColor = c.textDim
             if flashWork == nil && activity == nil { right.textColor = c.textDim }

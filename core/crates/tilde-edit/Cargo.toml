@@ -1,0 +1,9 @@
+[package]
+name = "tilde-edit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tilde-ops.workspace = true

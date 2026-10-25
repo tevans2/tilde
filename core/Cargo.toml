@@ -15,6 +15,7 @@ tilde-query = { path = "crates/tilde-query" }
 tilde-config = { path = "crates/tilde-config" }
 tilde-index = { path = "crates/tilde-index" }
 tilde-ops = { path = "crates/tilde-ops" }
+tilde-edit = { path = "crates/tilde-edit" }
 tilde-preview = { path = "crates/tilde-preview" }
 libc = "0.2"
 nucleo-matcher = "0.3"

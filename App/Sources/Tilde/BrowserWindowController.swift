@@ -2,10 +2,11 @@ import AppKit
 import Quartz
 import TildeFFI
 
-/// GO: typing searches. SELECT: letters are actions. (EDIT arrives in M4.)
+/// GO: typing searches. SELECT: letters are actions. EDIT: the folder is text.
 enum Mode {
     case go
     case select
+    case edit
 }
 
 /// One browser window: path bar, results, preview, status bar.
@@ -24,6 +25,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var myOperations: [UInt64: String] = [:]
     private var runningLabels: [UInt64: String] = [:]
     private var overlay: PromptOverlay?
+    private let listScroll = NSScrollView()
+    // EDIT mode
+    private let editor = FolderEditor()
+    private let changesView = ChangesView()
+    private var editSession: EditSession?
+    private var editBaseline = ""
+    private var editEscArmed = false
+    private var pendingEditOp: UInt64?
+    private var editPreviewWork: DispatchWorkItem?
     private var keyMonitor: Any?
     private let engine: Engine
     private let results: ResultsCache
@@ -110,7 +120,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         tableView.onFocus = { [weak self] in self?.modeDidFocus(.select) }
         tableView.onKey = { [weak self] event in self?.handleSelectKey(event) ?? false }
 
-        let scroll = NSScrollView()
+        let scroll = listScroll
         scroll.documentView = tableView
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -124,7 +134,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             box.borderWidth = 0
         }
 
-        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar] as [NSView] {
+        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar, editor, changesView] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -166,7 +176,22 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             statusBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             statusBar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: 28),
+
+            // EDIT mode swaps these in over the list and the preview.
+            editor.topAnchor.constraint(equalTo: scroll.topAnchor),
+            editor.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            editor.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            editor.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            changesView.topAnchor.constraint(equalTo: preview.topAnchor),
+            changesView.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
+            changesView.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            changesView.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
         ])
+        editor.isHidden = true
+        changesView.isHidden = true
+        editor.onChange = { [weak self] in self?.editChanged() }
+        editor.onApply = { [weak self] in self?.applyEdit() }
+        editor.onCancel = { [weak self] in self?.cancelEdit() }
         shelfHeight = shelfBar.heightAnchor.constraint(equalToConstant: 0)
         shelfHeight.isActive = true
         shelfBar.isHidden = true
@@ -178,15 +203,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window?.backgroundColor = theme.colors.background
         previewSeparator.fillColor = theme.colors.border
         topSeparator.fillColor = theme.colors.border
-        if let content = window?.contentView {
-            // Multipliers can't change, so the width constraint is replaced.
-            previewWidth?.isActive = false
-            let share = theme.previewVisible ? CGFloat(theme.previewWidth) : 0
-            previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
-            previewWidth?.isActive = true
-            preview.isHidden = !theme.previewVisible
-            previewSeparator.isHidden = !theme.previewVisible
-        }
+        updateSidePane(theme)
         pathBar.applyTheme(theme)
         statusBar.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
@@ -194,6 +211,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         if tableView.selectedRow < 0 { selectFirstResult() }
         updateChrome()
         if !theme.warnings.isEmpty { statusBar.flash(theme.warnings.joined(separator: " ")) }
+    }
+
+    /// Preview width and visibility from the config. While editing, the side pane always
+    /// shows (it lists the pending changes).
+    private func updateSidePane(_ theme: Theme) {
+        guard let content = window?.contentView else { return }
+        // Multipliers can't change, so the width constraint is replaced.
+        previewWidth?.isActive = false
+        let editing = mode == .edit
+        let visible = theme.previewVisible || editing
+        let share = theme.previewVisible ? CGFloat(theme.previewWidth) : (editing ? 0.4 : 0)
+        previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
+        previewWidth?.isActive = true
+        preview.isHidden = !theme.previewVisible || editing
+        previewSeparator.isHidden = !visible
     }
 
     // MARK: Modes
@@ -206,6 +238,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             pathBar.field.currentEditor()?.selectedRange = NSRange(location: pathBar.field.stringValue.utf16.count, length: 0)
         case .select:
             window?.makeFirstResponder(tableView)
+        case .edit:
+            editor.focus()
         }
         updateChrome()
     }
@@ -368,7 +402,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case "d": trashTargets()
         case "y": copyPaths()
         case "z": compressTargets()
-        case "r": renameHighlighted()
+        case "r":
+            // Everywhere results live in other folders: rename those with a prompt.
+            if selectedRow?.section == .everywhere {
+                renameHighlighted()
+            } else {
+                enterEdit(focus: selectedRow?.name, selectName: true, newLine: false, quick: true)
+            }
+        case "e": enterEdit(focus: selectedRow?.name, selectName: false, newLine: false, quick: false)
+        case "o": enterEdit(focus: selectedRow?.name, selectName: false, newLine: true, quick: true)
         case "n": newFolder(nil)
         case "u": undo()
         case "U": redo()
@@ -456,7 +498,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// ⌃j / ⌃k move down / up, ⌃h goes up a folder, ⌃l goes in (like `tab` or `l`).
     private func handleControlNavigation(_ event: NSEvent) -> Bool {
-        guard event.window === window,
+        guard event.window === window, mode != .edit,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control,
               let key = event.charactersIgnoringModifiers?.lowercased()
         else { return false }
@@ -834,6 +876,11 @@ extension BrowserWindowController: OpsEventsDelegate {
     }
 
     func operationFinished(id: UInt64, outcome: OpOutcome) {
+        // An applied edit closes the editor; a failed one leaves it open to fix.
+        if id == pendingEditOp {
+            pendingEditOp = nil
+            if outcome.error == nil { exitEdit() }
+        }
         let mine = myOperations.removeValue(forKey: id)
         if runningLabels.removeValue(forKey: id) != nil { statusBar.setActivity(nil) }
         guard mine != nil || window?.isKeyWindow == true else { return }
@@ -873,5 +920,100 @@ extension BrowserWindowController: OpsEventsDelegate {
                 pendingSelection = nil
             }
         }
+    }
+}
+
+// MARK: EDIT mode
+
+extension BrowserWindowController {
+    /// Opens the current folder as text. `focus` names the line to start on; `selectName`
+    /// selects its name (rename); `newLine` opens an empty line below it. In quick mode `⏎`
+    /// applies.
+    private func enterEdit(focus: String?, selectName: Bool, newLine: Bool, quick: Bool) {
+        guard !currentFolder.isEmpty, overlay == nil else { return }
+        let session: EditSession
+        do {
+            session = try EditSession(dir: currentFolder, showHidden: showHidden)
+        } catch {
+            return statusBar.flash("Can't edit this folder: \(error.localizedDescription)")
+        }
+        editSession = session
+        editBaseline = session.text()
+        editEscArmed = false
+        editor.quick = quick
+        mode = .edit
+        listScroll.isHidden = true
+        editor.isHidden = false
+        changesView.isHidden = false
+        updateSidePane(Theme.shared)
+        let line = focus.flatMap { session.lineOf(name: $0) }.map(Int.init)
+        editor.load(editBaseline, line: line, selectName: selectName, newLineBelow: newLine)
+        setMode(.edit)
+    }
+
+    /// Debounced live preview of what applying would do.
+    private func editChanged() {
+        editEscArmed = false
+        editPreviewWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let session = self.editSession else { return }
+            let preview = session.preview(text: self.editor.text)
+            self.changesView.show(preview, quick: self.editor.quick)
+            self.editor.markErrors(Set(preview.errors.map { Int($0.line) }))
+        }
+        editPreviewWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    /// File › Apply Edits (⌘S).
+    @objc func applyEdits(_ sender: Any?) {
+        applyEdit()
+    }
+
+    private func applyEdit() {
+        guard let session = editSession, pendingEditOp == nil else { return }
+        let text = editor.text
+        let preview = session.preview(text: text)
+        if let e = preview.errors.first {
+            return statusBar.flash("Fix line \(e.line + 1) first: \(e.message)")
+        }
+        if preview.changes.isEmpty { return exitEdit() }
+        do {
+            let id = try ops.submitEdit(session: session, text: text)
+            let n = preview.changes.count
+            myOperations[id] = "Applied \(n) change\(n == 1 ? "" : "s")"
+            pendingEditOp = id
+        } catch {
+            statusBar.flash(error.localizedDescription)
+        }
+    }
+
+    private func cancelEdit() {
+        let changed = editSession.map { $0.preview(text: editor.text).changes.count } ?? 0
+        if changed > 0 && !editEscArmed {
+            editEscArmed = true
+            return statusBar.flash("Press esc again to discard \(changed) change\(changed == 1 ? "" : "s")")
+        }
+        exitEdit()
+    }
+
+    private func exitEdit() {
+        guard mode == .edit else { return }
+        editPreviewWork?.cancel()
+        editSession = nil
+        editor.isHidden = true
+        changesView.isHidden = true
+        listScroll.isHidden = false
+        mode = .select
+        updateSidePane(Theme.shared)
+        setMode(.select)
+        schedulePreview()
+    }
+}
+
+extension BrowserWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(applyEdits(_:)) { return mode == .edit }
+        return true
     }
 }

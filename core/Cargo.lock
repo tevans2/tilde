@@ -743,12 +743,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-edit"
+version = "0.1.0"
+dependencies = [
+ "tilde-ops",
+]
+
+[[package]]
 name = "tilde-ffi"
 version = "0.1.0"
 dependencies = [
  "tempfile",
  "thiserror",
  "tilde-config",
+ "tilde-edit",
  "tilde-fs",
  "tilde-index",
  "tilde-ops",
