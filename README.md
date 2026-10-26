@@ -15,13 +15,20 @@ A fast, keyboard-first file navigator for macOS. Rust core, Swift/AppKit UI.
 
 ```sh
 scripts/install.sh        # optimized build → ~/Applications/Tilde.app (or pass a folder)
+scripts/update.sh         # rebuild the installed copy in place; reopens it if it was running
+scripts/uninstall.sh      # remove it, with its permissions and preferences
 ```
 
-`scripts/uninstall.sh` removes it again, with its permissions and preferences; `--purge`
-also deletes the index, undo history and sort orders (the dev build shares them). Your
-config is kept. The icon (`App/Icon/`, drawn by `scripts/make-icon.swift`) has light and dark variants; the
-Dock icon follows the appearance while Tilde runs. Run it again to update. Without a signing identity (`TILDE_SIGN_IDENTITY`) the app is
-signed ad hoc, so macOS may ask for Full Disk Access again after an update.
+Builds are signed with a local certificate made the first time (in its own keychain,
+`~/Library/Keychains/tilde-signing.keychain-db`), so macOS sees every build as the same app
+and permissions (Full Disk Access, Accessibility, folders) carry over between updates. A
+copy installed before that was signed ad hoc and needs them granting once more after its
+first update. `TILDE_SIGN_IDENTITY=…` signs with your own identity instead.
+
+`uninstall.sh --purge` also deletes the index, undo history and sort orders (the dev build
+shares them); your config is kept. The icon (`App/Icon/`, drawn by
+`scripts/make-icon.swift`) has light and dark variants; the Dock icon follows the
+appearance while Tilde runs.
 
 ## Run
 

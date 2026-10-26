@@ -4,14 +4,14 @@
 #   scripts/install.sh                 install into ~/Applications
 #   scripts/install.sh /Applications   or somewhere else
 #
-# Signs with $TILDE_SIGN_IDENTITY if set (a codesigning identity from
-# `security find-identity -p codesigning`), otherwise ad hoc. macOS ties privacy
-# permissions such as Full Disk Access to the signature, and an ad-hoc signature
-# changes with every build, so with ad-hoc signing they may need granting again after
-# reinstalling.
+# Signs with a local certificate made on first use (see scripts/signing.sh), so
+# permissions such as Full Disk Access carry over to later installs and updates.
+# scripts/update.sh rebuilds an installed copy in place.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=signing.sh
+source "$ROOT/scripts/signing.sh"
 DEST="${1:-$HOME/Applications}"
 BUNDLE_ID="io.github.tevans2.tilde"
 
@@ -69,7 +69,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign "${TILDE_SIGN_IDENTITY:--}" --identifier "$BUNDLE_ID" "$APP"
+sign_app "$APP" "$BUNDLE_ID"
 
 # Replace the installed copy, quitting it first if it's running.
 if pgrep -f "$DEST/Tilde.app/Contents/MacOS/Tilde" >/dev/null; then
