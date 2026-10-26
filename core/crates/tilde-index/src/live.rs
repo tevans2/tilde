@@ -319,7 +319,7 @@ impl Shared {
         Some(crate::persist::save(path, *fingerprint, last_event_id, &self.snapshot()))
     }
 
-    /// Every live item scanned from the roots (not zoxide extras), for saving.
+    /// Every live item scanned from the roots (not frecency extras), for saving.
     pub fn snapshot(&self) -> Vec<(String, ItemMeta)> {
         let dead = self.dead();
         (0..self.injector.injected_items())

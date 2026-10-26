@@ -88,8 +88,8 @@ the new key) or in the config file (see below).
 | Anywhere | `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
-Move and copy open a folder picker: type to fuzzy-search folders (your most-visited zoxide
-folders show first), or type a path like `~/Documents/`. If something with the same name is
+Move and copy open a folder picker: type to fuzzy-search folders (the folders you use most
+show first), or type a path like `~/Documents/`. If something with the same name is
 already there, Tilde asks: `k` keep both (`report 2.pdf`, like the Finder), `r` replace (the
 old one goes to the Trash, and undo brings it back) or `s` skip. Copies on the same disk
 are instant APFS clones; copies to another disk show progress in bytes and can be stopped
@@ -221,9 +221,15 @@ inside) and **Hide** (leave it out). **Rebuild** re-reads the config and indexes
 `X` hides the highlighted item. Exclusions are written to the config, so you can undo them
 there.
 
-If [zoxide](https://github.com/ajeetdsouza/zoxide) is installed, folders you visit often
-rank higher, every folder zoxide knows is searchable, and folders you open in Tilde are
-added to zoxide so `z` in your shell learns from Tilde. Configure it under `[zoxide]`.
+Results you use rank higher. Tilde keeps its own frecency: each folder you open and each
+file you open from Tilde (`⏎`, Open With, a file-dialog pick) or pick as a move or copy
+destination earns a score, which halves every 10 days without use, so what you use now
+beats a habit you've dropped. A folder you only pass through on the way somewhere (left
+within two seconds) barely counts. Folders you use that the index doesn't cover (hidden
+or excluded ones) become searchable too. If [zoxide](https://github.com/ajeetdsouza/zoxide)
+is installed, its scores count as well (re-read every minute), so folders you use in the
+terminal rank high too; `tell_zoxide` also sends Tilde's folder visits to zoxide. Scores
+live in `~/Library/Application Support/Tilde/frecency.json`; configure under `[frecency]`.
 
 ## Editing a folder as text
 
@@ -325,9 +331,10 @@ hide = []                   # leave out entirely: names, *.log-style patterns, o
 include_hidden = false
 max_items = 1000000         # indexing stops here; ⌘⇧I shows what to exclude
 
-[zoxide]
-enabled = true              # rank by zoxide frecency, include its folders
-add_on_visit = true         # tell zoxide about folders opened in Tilde
+[frecency]
+enabled = true              # rank by the folders and files you use
+zoxide = true               # also count zoxide's scores (terminal use), if installed
+tell_zoxide = false         # also tell zoxide about folders opened in Tilde
 
 [sort]                      # unless a folder has its own order (s)
 by = "name"                 # name, modified, added, size, kind

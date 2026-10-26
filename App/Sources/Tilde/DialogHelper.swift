@@ -147,6 +147,7 @@ final class DialogHelper {
         // A Save dialog keeps its typed name: a file picks its folder.
         let target = dialog.isSave && !isFolder ? (path as NSString).deletingLastPathComponent : path
         let press = confirm && !dialog.isSave && !isFolder
+        index?.recordOpen(path: path)
         let gKey = Self.keyCode(for: "g") ?? 5
         Task.detached {
             let error = DialogDriver.go(pid: dialog.pid, to: target, confirm: press, gKey: gKey)

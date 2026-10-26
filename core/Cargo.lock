@@ -889,6 +889,8 @@ dependencies = [
  "libc",
  "nucleo",
  "rayon",
+ "serde",
+ "serde_json",
  "tempfile",
  "tilde-fs",
  "tilde-query",

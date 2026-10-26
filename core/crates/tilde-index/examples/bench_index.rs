@@ -29,6 +29,7 @@ fn main() {
             ..Default::default()
         },
         home,
+        frecency: None,
         zoxide: true,
         max_items: 5_000_000,
         cache_path: Some(std::env::temp_dir().join(format!("tilde-bench-{}.bin", std::process::id()))),

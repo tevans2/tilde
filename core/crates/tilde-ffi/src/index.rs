@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use tilde_config::IndexList;
-use tilde_index::{GlobalHit, GlobalIndex, IndexConfig, IndexHandle, ScanConfig};
+use tilde_index::{Frecency, GlobalHit, GlobalIndex, IndexConfig, IndexHandle, ScanConfig, Use, Zoxide};
 use tilde_query::Query;
 
 use crate::config::ConfigError;
@@ -65,7 +65,10 @@ struct Live {
     index: Option<GlobalIndex>,
     handle: Option<IndexHandle>,
     state: IndexState,
-    record_visits: bool,
+    /// `[frecency] enabled`: uses are recorded and ranked by.
+    record_uses: bool,
+    /// Folder visits go to zoxide too (`[frecency] tell_zoxide`).
+    zoxide: Option<Zoxide>,
     roots: Vec<PathBuf>,
 }
 
@@ -78,6 +81,9 @@ pub struct IndexService {
     subscribers: Arc<Mutex<Vec<Sender<Command>>>>,
     /// `None` in tests: settings come from the given config instead of the file.
     fixed_config: Option<(IndexConfig, bool)>,
+    /// How often and how recently folders and files are used, kept across rebuilds.
+    frecency: Arc<Mutex<Frecency>>,
+    last_frecency_save: Mutex<std::time::Instant>,
 }
 
 #[uniffi::export]
@@ -91,11 +97,14 @@ impl IndexService {
                 index: None,
                 handle: None,
                 state: IndexState::Disabled,
-                record_visits: false,
+                record_uses: false,
+                zoxide: None,
                 roots: Vec::new(),
             }),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             fixed_config: None,
+            frecency: Arc::new(Mutex::new(load_frecency())),
+            last_frecency_save: Mutex::new(std::time::Instant::now()),
         });
         service.start(false);
         service
@@ -139,7 +148,7 @@ impl IndexService {
     }
 
     /// Folders for the move/copy picker. A typed path (`~/…` or `/…`) to an existing folder
-    /// comes first; an empty query lists zoxide's most-visited folders; anything else is a
+    /// comes first; an empty query lists the most-used folders (frecency); anything else is a
     /// fuzzy search over indexed folders.
     pub fn destinations(&self, query: String, limit: u32) -> Vec<Destination> {
         self.lookup(&query, limit as usize, true)
@@ -221,6 +230,26 @@ impl IndexService {
         if let Some(h) = handle {
             let _ = h.save();
         }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let mut f = self.frecency.lock().unwrap();
+        f.settle(now);
+        let _ = f.save(now as i64);
+    }
+
+    /// A file opened from Tilde (in its app, with Open With, or picked for a dialog).
+    pub fn record_open(&self, path: String) {
+        if self.live.lock().unwrap().record_uses {
+            let path = PathBuf::from(path);
+            let dir = path.is_dir();
+            self.record(&path, Use::Open, dir);
+        }
+    }
+
+    /// A folder picked to move or copy into.
+    pub fn record_destination(&self, path: String) {
+        if self.live.lock().unwrap().record_uses {
+            self.record(Path::new(&path), Use::Destination, true);
+        }
     }
 
     /// Adds `path` to the config and rebuilds. `hide`: leave the item out entirely;
@@ -238,18 +267,22 @@ impl IndexService {
 impl IndexService {
     /// A service with fixed settings (tests).
     #[cfg(test)]
-    pub(crate) fn with_config(config: IndexConfig, record_visits: bool) -> Arc<Self> {
+    pub(crate) fn with_config(config: IndexConfig, record_uses: bool) -> Arc<Self> {
+        let frecency = config.frecency.clone().unwrap_or_else(|| Arc::new(Mutex::new(Frecency::in_memory())));
         let service = Arc::new(IndexService {
             home: config.home.clone(),
             live: Mutex::new(Live {
                 index: None,
                 handle: None,
                 state: IndexState::Disabled,
-                record_visits: false,
+                record_uses: false,
+                zoxide: None,
                 roots: Vec::new(),
             }),
             subscribers: Arc::new(Mutex::new(Vec::new())),
-            fixed_config: Some((config, record_visits)),
+            fixed_config: Some((config, record_uses)),
+            frecency,
+            last_frecency_save: Mutex::new(std::time::Instant::now()),
         });
         service.start(false);
         service
@@ -311,9 +344,9 @@ impl IndexService {
 
     /// (Re)starts the index. `fresh` discards the saved index first.
     fn start(&self, fresh: bool) {
-        let (config, record_visits) = match &self.fixed_config {
-            Some((c, r)) => (Some(c.clone()), *r),
-            None => config_from_file(&self.home),
+        let (config, uses) = match &self.fixed_config {
+            Some((c, r)) => (Some(c.clone()), Uses { record: *r, zoxide: None }),
+            None => config_from_file(&self.home, &self.frecency),
         };
         // Drop the old index outside the lock (its threads wind down on their own).
         let old = self.live.lock().unwrap().index.take();
@@ -326,7 +359,8 @@ impl IndexService {
         }
 
         let mut live = self.live.lock().unwrap();
-        live.record_visits = record_visits;
+        live.record_uses = uses.record;
+        live.zoxide = uses.zoxide;
         match config {
             Some(config) => {
                 live.roots = config.scan.roots.clone();
@@ -371,12 +405,29 @@ impl IndexService {
             .collect()
     }
 
+    /// A folder opened in a window (weighed by how long it stays open).
     pub(crate) fn record_visit(&self, path: &Path) {
         let live = self.live.lock().unwrap();
-        if live.record_visits
-            && let Some(index) = &live.index
-        {
-            index.record_visit(path);
+        if let Some(z) = &live.zoxide {
+            z.add(path);
+        }
+        let record = live.record_uses;
+        drop(live);
+        if record {
+            self.record(path, Use::Visit, true);
+        }
+    }
+
+    fn record(&self, path: &Path, how: Use, dir: bool) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let mut f = self.frecency.lock().unwrap();
+        f.record(path, how, now, dir);
+        // Small file: saved at most every half minute, and on quit.
+        let mut last = self.last_frecency_save.lock().unwrap();
+        if last.elapsed() > std::time::Duration::from_secs(30) {
+            *last = std::time::Instant::now();
+            f.settle(now);
+            let _ = f.save(now as i64);
         }
     }
 
@@ -406,13 +457,19 @@ fn notify(subscribers: &Mutex<Vec<Sender<Command>>>) {
     subscribers.lock().unwrap().retain(|tx| tx.send(Command::IndexChanged).is_ok());
 }
 
-/// Index settings from the config file, or `None` if indexing is disabled. Also returns
-/// whether visits should be recorded with zoxide.
-fn config_from_file(home: &Path) -> (Option<IndexConfig>, bool) {
+/// What to do with uses of folders and files.
+struct Uses {
+    record: bool,
+    zoxide: Option<Zoxide>,
+}
+
+/// Index settings from the config file (`None` if indexing is disabled), and what to do
+/// with uses.
+fn config_from_file(home: &Path, frecency: &Arc<Mutex<Frecency>>) -> (Option<IndexConfig>, Uses) {
     let config = tilde_config::load(&tilde_config::config_path()).config;
-    let record_visits = config.zoxide.enabled && config.zoxide.add_on_visit;
+    let uses = Uses { record: config.frecency.enabled, zoxide: config.tell_zoxide().then(Zoxide::find).flatten() };
     if !config.index.enabled {
-        return (None, record_visits);
+        return (None, uses);
     }
     let r = config.index.resolve(home);
     let index = IndexConfig {
@@ -425,11 +482,17 @@ fn config_from_file(home: &Path) -> (Option<IndexConfig>, bool) {
             hide_paths: r.hide_paths,
             include_hidden: config.index.include_hidden,
         },
-        zoxide: config.zoxide.enabled,
+        frecency: config.frecency.enabled.then(|| frecency.clone()),
+        zoxide: config.frecency.enabled && config.use_zoxide(),
         max_items: config.index.max_items,
         cache_path: Some(cache_path()),
     };
-    (Some(index), record_visits)
+    (Some(index), uses)
+}
+
+/// `~/Library/Application Support/Tilde/frecency.json`.
+fn load_frecency() -> Frecency {
+    Frecency::load(&home_dir().join("Library/Application Support/Tilde/frecency.json"))
 }
 
 /// `~/Library/Caches/Tilde/index.bin`. Inside `~/Library`, which isn't indexed, so saving
@@ -469,6 +532,7 @@ mod tests {
         let config = IndexConfig {
             home: PathBuf::from("/nonexistent-home"),
             scan: ScanConfig::default(),
+            frecency: None,
             zoxide: false,
             max_items: 10,
             cache_path: None,

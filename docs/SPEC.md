@@ -130,7 +130,7 @@ The side pane shows a live list of pending changes for both editors.
 | Concern | Lives in | Notes |
 |---|---|---|
 | Folder listing, watching, metadata | Rust `tilde-fs` | `getattrlistbulk` via libc; FSEvents via `fsevent-sys` |
-| Global index, frecency | Rust `tilde-index` | memmap2 binary index; SQLite for frecency |
+| Global index, frecency | Rust `tilde-index` | memmap2 binary index; JSON for frecency |
 | Query parsing and ranking | Rust `tilde-query` | nucleo |
 | File operations, undo history | Rust `tilde-ops` | `copyfile`, `rename`, trash via objc2 NSFileManager |
 | Edit text format, diff to batch | Rust `tilde-edit` | Shared by both editors |
@@ -302,7 +302,7 @@ tilde/
 - **Persistence**: index file and a header containing the last processed FSEvents event ID and volume UUID.
 - **Catch-up**: on launch, start an FSEvents stream with `sinceWhen = last_event_id`. On `kFSEventStreamEventFlagMustScanSubDirs` or history-dropped flags, rescan the affected subtree. On volume UUID change, rebuild.
 - **Default scope**: the home folder. Contents of `~/Library`, `.git`, `node_modules`, `.cache`, `DerivedData`, `target`, `build` and `.Trash` are excluded, but the folders themselves are indexed. Configurable roots and exclusions.
-- **Frecency**: SQLite table of opens and visits per path, with exponential decay. Feeds a ranking boost.
+- **Frecency**: a score per path for opens and visits, with exponential decay (JSON file). Feeds a ranking boost.
 
 ### 6.3 tilde-query
 
@@ -558,7 +558,7 @@ Measured (M-series, APFS, release build, best of 20):
 ### M2, first cut (done)
 
 - `tilde-index`: parallel scan of the configured roots on launch (rayon + `getattrlistbulk`), skipping excluded folders' contents, hidden files and mount points; items held in nucleo with keys relative to home.
-- Everywhere search: nucleo match, then the top 3,000 re-ranked with a filename score, depth and path-length penalties, a recency bonus and zoxide boosts; filters (`ext:`, `kind:`, `mod:`, `size:`, `in:`, `in:.`) applied per item; top 200 returned. Items directly in the current folder are left to Here.
+- Everywhere search: nucleo match, then the top 3,000 re-ranked with a filename score, depth and path-length penalties, a recency bonus and frecency boosts (zoxide's at first; Tilde's own since the frecency store below); filters (`ext:`, `kind:`, `mod:`, `size:`, `in:`, `in:.`) applied per item; top 200 returned. Items directly in the current folder are left to Here.
 - zoxide: scores read at start and every 60 s, folders it knows that the scan misses are added to the index, folders opened in Tilde are recorded with `zoxide add` (`[zoxide]` config).
 - Engine publishes Here + Everywhere rows, re-publishes while the scan runs, and exposes `index_status`. The app shows an Everywhere header, dimmed locations with highlights, reveal on `tab`, scan progress in the status bar, and defers `tab`/`⏎`/`/` until results match the typed text.
 
@@ -579,7 +579,7 @@ Measured on the developer's home folder (release, M-series): 55,560 items scanne
 
 Measured on the developer's home folder: 55,581 items; saved file 5.3 MB written in 73 ms; loading it takes 37 ms instead of a 0.2–0.45 s scan.
 
-Still to do for M2: Tilde's own frecency store, compaction of dead items, folder counts and dates in Everywhere rows kept current.
+Still to do for M2: compaction of dead items, folder counts and dates in Everywhere rows kept current.
 
 ### M3: acting on files (done)
 
@@ -716,3 +716,10 @@ Finished later (see "M3, finished" below): tags, conflict prompts, persistent un
 - Duplicates in stages: group the index's files ≥ `duplicates_min` by size; hash 3 × 16 KB samples (start, middle, end) in parallel (6 threads, `F_NOCACHE`), and publish those groups as "likely"; then hash in full (xxh3-128), biggest groups first, in batches of 8 groups, publishing as they're confirmed. Hashes are cached in `~/Library/Caches/Tilde/hashes.json` by device, inode, size and modification time. On the author's home folder (8,339 files ≥ 1 MB): likely after 1.3 s, all confirmed after 4.7 s cold (6.2 GB read); 0.36 s with the cache. The copy kept is outside Downloads, the Desktop and caches if possible, then the oldest, then the shortest path.
 - The page (`C`, `cleanup` in `[keys.select]`; View › Clean Up…) replaces the list, the preview following the highlighted item (`row_for_path`). Acting uses the window's shelf and operations, so everything is undoable, except emptying the Trash (`d` in the Trash category, with a confirmation). Before trashing, items are re-checked off the main thread: unchanged size and modification time (`unchanged`), and for a duplicate a byte-for-byte comparison with the kept copy (`same_contents`); the kept copy, and caches of running apps (folder name = bundle ID), can't be collected or trashed. After each operation, `forget_missing` drops suggestions that are gone. `X` adds to `[cleanup] ignore` (`add_to_list`). Low Power Mode skips duplicates until `r`.
 - `[cleanup]` thresholds (`big_file`, `big_file_age`, `download_age`, `project_idle`, `duplicates_min`, `build_folders`, `ignore`) parse sizes as decimal K/M/G/T and ages as h/d/w/mo/y; Settings › Clean Up edits them.
+
+### Own frecency (done)
+
+- Tilde's own scores, combined with zoxide's when it's installed. `tilde-index::Frecency` keeps one score per absolute path (folder or file) with the time it was last brought up to date; reading decays it by a 10-day half-life (`score · 2^(−Δt / 10 d)`), and a use adds to the decayed value: 1 for a file opened (`⏎`, Open With, a file-dialog pick: `record_open`), 0.5 for a folder picked as a move/copy destination (`record_destination`), and for a folder opened in a window 1, or 0.15 if the next folder came within 2 s (pass-through; the visit is held until the next one, or a save, settles it). No aging passes are needed; entries under 0.02 are dropped on save, at most 5,000 kept.
+- Stored in `~/Library/Application Support/Tilde/frecency.json` (written atomically at most every 30 s while in use, and on quit), owned by `IndexService` so rebuilds keep it. zoxide's scores (`zoxide query --list --score`, re-read every 60 s) are added as √score, which keeps their order but puts them on the scale of a few weeks' use in Tilde; so terminal use and Tilde use both count, without importing (and double-counting) zoxide's history.
+- Search derives scores by key once a minute or after a new use; the boost is unchanged (15·ln(1+s) for the item, 5·ln(1+s) for its folder), now applying to files too. The folder picker's empty list is the top folders (combined) that still exist. Folders either knows that the scan misses are added to the index as before.
+- `[frecency] enabled`, `zoxide` (count its scores), `tell_zoxide` (also `zoxide add` on visits). The old `[zoxide] enabled` / `add_on_visit` are still read and win if set. Settings › Search › Ranking.

@@ -450,10 +450,30 @@ private struct SearchSettings: View {
                     Button("Index…") { model.showIndex() }
                 }
             }
-            Section("zoxide") {
-                Toggle("Rank folders by zoxide's frecency", isOn: model.bool("zoxide.enabled") { $0.zoxideEnabled })
-                Toggle("Tell zoxide about folders opened in Tilde",
-                       isOn: model.bool("zoxide.add_on_visit") { $0.zoxideAddOnVisit })
+            Section("Ranking") {
+                Toggle("Rank by the folders and files you use most", isOn: model.bool("frecency.enabled") { $0.frecencyEnabled })
+                Toggle("Include zoxide's scores (folders you use in the terminal)", isOn: Binding(
+                    get: { model.settings.frecencyZoxide },
+                    set: { on in
+                        // The old [zoxide] setting would win over the new one.
+                        try? resetSetting(key: "zoxide.enabled")
+                        model.write("frecency.zoxide", .bool(value: on))
+                    }))
+                    .disabled(!model.settings.frecencyEnabled)
+                if !model.settings.zoxideFound {
+                    Text("zoxide isn't installed, so only use in Tilde counts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("Tell zoxide about folders opened in Tilde (so `z` learns from Tilde)", isOn: Binding(
+                    get: { model.settings.frecencyTellZoxide },
+                    set: { on in
+                        // The old [zoxide] setting would win over the new one.
+                        try? resetSetting(key: "zoxide.add_on_visit")
+                        model.write("frecency.tell_zoxide", .bool(value: on))
+                    }))
+                Text("Frequent and recent use counts; a folder you only pass through barely does. Scores halve every 10 days without use.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)

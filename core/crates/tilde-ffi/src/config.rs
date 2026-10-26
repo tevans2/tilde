@@ -134,8 +134,11 @@ pub struct Settings {
     pub nvim_path: String,
     /// `nvim_config = "clean"`.
     pub nvim_clean: bool,
-    pub zoxide_enabled: bool,
-    pub zoxide_add_on_visit: bool,
+    pub frecency_enabled: bool,
+    pub frecency_zoxide: bool,
+    /// zoxide is installed.
+    pub zoxide_found: bool,
+    pub frecency_tell_zoxide: bool,
     pub activity_days: u32,
     pub index_enabled: bool,
     pub index_include_hidden: bool,
@@ -157,6 +160,8 @@ pub struct Settings {
 #[uniffi::export]
 pub fn load_settings() -> Settings {
     let c = tilde_config::load(&tilde_config::config_path()).config;
+    let tell_zoxide = c.tell_zoxide();
+    let use_zoxide = c.use_zoxide();
     Settings {
         appearance: match c.theme.appearance.as_str() {
             "light" => ThemeAppearance::Light,
@@ -174,8 +179,10 @@ pub fn load_settings() -> Settings {
         editor_nvim: c.edit.editor == tilde_config::EditorKind::Nvim,
         nvim_path: c.edit.nvim_path,
         nvim_clean: c.edit.nvim_config == tilde_config::NvimConfigMode::Clean,
-        zoxide_enabled: c.zoxide.enabled,
-        zoxide_add_on_visit: c.zoxide.add_on_visit,
+        frecency_enabled: c.frecency.enabled,
+        frecency_zoxide: use_zoxide,
+        zoxide_found: tilde_index::Zoxide::find().is_some(),
+        frecency_tell_zoxide: tell_zoxide,
         activity_days: c.activity.days,
         index_enabled: c.index.enabled,
         index_include_hidden: c.index.include_hidden,

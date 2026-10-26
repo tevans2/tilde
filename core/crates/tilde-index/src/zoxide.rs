@@ -1,5 +1,5 @@
-//! zoxide integration: read its frecency scores to rank folders, and tell it about
-//! folders visited in Tilde so the shell's `z` learns from Tilde too.
+//! zoxide: its scores (folders used in the terminal) add to Tilde's frecency, and
+//! (optionally) it hears about folders visited in Tilde so the shell's `z` learns too.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

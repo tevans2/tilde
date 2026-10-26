@@ -27,6 +27,8 @@ pub struct Config {
     pub theme: ThemeConfig,
     pub preview: PreviewConfig,
     pub index: IndexConfig,
+    pub frecency: FrecencyConfig,
+    /// Before Tilde kept its own frecency. Still read: `add_on_visit` means `tell_zoxide`.
     pub zoxide: ZoxideConfig,
     pub activity: ActivityConfig,
     pub edit: EditConfig,
@@ -358,18 +360,42 @@ fn expand_path(home: &Path, s: &str) -> PathBuf {
     }
 }
 
+/// Ranking by use: how often and how recently folders and files are used in Tilde.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ZoxideConfig {
-    /// Rank folders by zoxide's frecency and include folders it knows about.
+pub struct FrecencyConfig {
+    /// Rank search results and the folder picker by use.
     pub enabled: bool,
-    /// Tell zoxide about folders opened in Tilde, so `z` in the shell learns from Tilde.
-    pub add_on_visit: bool,
+    /// Add zoxide's scores (folders used in the terminal), if it's installed.
+    pub zoxide: bool,
+    /// Also record folder visits with zoxide, so `z` in the shell learns from Tilde.
+    pub tell_zoxide: bool,
 }
 
-impl Default for ZoxideConfig {
+impl Default for FrecencyConfig {
     fn default() -> Self {
-        ZoxideConfig { enabled: true, add_on_visit: true }
+        FrecencyConfig { enabled: true, zoxide: true, tell_zoxide: false }
+    }
+}
+
+/// The old `[zoxide]` section, still accepted.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ZoxideConfig {
+    /// Now `[frecency] zoxide`.
+    pub enabled: Option<bool>,
+    pub add_on_visit: Option<bool>,
+}
+
+impl Config {
+    /// Whether zoxide's scores count in the ranking.
+    pub fn use_zoxide(&self) -> bool {
+        self.zoxide.enabled.unwrap_or(self.frecency.zoxide)
+    }
+
+    /// Whether folder visits are also recorded with zoxide.
+    pub fn tell_zoxide(&self) -> bool {
+        self.zoxide.add_on_visit.unwrap_or(self.frecency.tell_zoxide)
     }
 }
 
@@ -587,11 +613,14 @@ include_hidden = false
 # Indexing stops at this many items; the Index window shows what to exclude.
 max_items = 1000000
 
-[zoxide]
-# Rank folders you visit often (per zoxide) higher, and include every folder it knows.
+[frecency]
+# Rank search results and the folder picker by how often and how recently you use
+# folders and files in Tilde (scores halve every 10 days without use).
 enabled = true
-# Tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
-add_on_visit = true
+# Also count zoxide's scores (folders you use in the terminal), if it's installed.
+zoxide = true
+# Also tell zoxide about folders you open in Tilde, so `z` in your shell learns from Tilde.
+tell_zoxide = false
 
 # The Activity view (@): recent downloads, screenshots, AirDrops and edits.
 [activity]
@@ -981,10 +1010,10 @@ mod tests {
         std::fs::write(&p, "[edit]\neditor = \"builtin\" # or nvim\n").unwrap();
         set_value(&p, &["edit", "editor"], Value::Text("nvim".into())).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "[edit]\neditor = \"nvim\" # or nvim\n");
-        set_value(&p, &["zoxide", "enabled"], Value::Bool(false)).unwrap();
-        assert!(!load(&p).config.zoxide.enabled);
-        remove_value(&p, &["zoxide", "enabled"]).unwrap();
-        assert!(load(&p).config.zoxide.enabled, "back to the default");
+        set_value(&p, &["frecency", "enabled"], Value::Bool(false)).unwrap();
+        assert!(!load(&p).config.frecency.enabled);
+        remove_value(&p, &["frecency", "enabled"]).unwrap();
+        assert!(load(&p).config.frecency.enabled, "back to the default");
         remove_value(&p, &["nope", "nothing"]).unwrap();
     }
 

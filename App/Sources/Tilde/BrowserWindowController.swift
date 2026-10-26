@@ -542,6 +542,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         NSWorkspace.shared.open(URL(fileURLWithPath: row.path))
+        index.recordOpen(path: row.path)
         statusBar.flash("Opened \(row.name)")
     }
 
@@ -902,6 +903,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func open(_ urls: [URL], with app: URL) {
         NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        for url in urls { index.recordOpen(path: url.path) }
         statusBar.flash("Opened \(describe(urls.map(\.path))) with \(FileManager.default.displayName(atPath: app.path))")
     }
 
@@ -1529,6 +1531,7 @@ extension BrowserWindowController: OpsEventsDelegate {
             },
             onPick: { [weak self] dest in
                 guard let self else { return }
+                self.index.recordDestination(path: dest)
                 let what = copy ? "Copied" : "Moved"
                 let folder = dest == here ? "this folder" : "“\((dest as NSString).lastPathComponent)”"
                 let request = OpRequest(kind: copy ? .copy : .move, sources: sources, destination: dest, clash: .keepBoth)

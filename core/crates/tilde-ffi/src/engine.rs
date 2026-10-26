@@ -875,6 +875,7 @@ mod tests {
         let config = tilde_index::IndexConfig {
             home: root.clone(),
             scan: tilde_index::ScanConfig { roots: vec![root.clone()], ..Default::default() },
+            frecency: None,
             zoxide: false,
             max_items: 1_000_000,
             cache_path: None,

@@ -75,6 +75,7 @@ fn config(dir: &std::path::Path) -> IndexConfig {
     IndexConfig {
         home: dir.to_path_buf(),
         scan: ScanConfig { roots: vec![dir.to_path_buf()], ..Default::default() },
+        frecency: None,
         zoxide: false,
         max_items: 10_000_000,
         cache_path: Some(dir.join("index.bin")),

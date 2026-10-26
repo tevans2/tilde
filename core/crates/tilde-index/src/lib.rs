@@ -3,17 +3,19 @@
 //! Built by a background scan, kept current with FSEvents, and saved between launches
 //! (see docs/SPEC.md §6.2). On launch a saved index is loaded and FSEvents replays only
 //! what changed since. Matching is nucleo, re-ranked with filename, depth, recency and
-//! zoxide boosts.
+//! frecency boosts (Tilde's own, plus zoxide's when it's installed).
 //!
 //! Paths are stored as keys relative to the home folder (`Developer/tilde/README.md`), or
 //! absolute for anything outside it. Relative keys keep memory down and stop every query
 //! from matching the home folder's own name.
 
+mod frecency;
 mod live;
 mod persist;
 mod walk;
 mod zoxide;
 
+pub use frecency::{Frecency, HALF_LIFE, Use};
 pub use live::FolderSize;
 pub use walk::{ScanConfig, glob_match, scan, walk_parallel, walk_sequential};
 pub use zoxide::{Zoxide, parse_scores};
@@ -21,9 +23,9 @@ pub use zoxide::{Zoxide, parse_scores};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
@@ -36,6 +38,9 @@ use crate::live::Shared;
 
 /// How many top matches are re-ranked with boosts.
 const RERANK_CANDIDATES: usize = 3000;
+/// Scores decay slowly: derived ones are refreshed this often even without new uses.
+const FRECENCY_REFRESH: Duration = Duration::from_secs(60);
+/// zoxide's scores are re-read this often (a process launch).
 const ZOXIDE_REFRESH: Duration = Duration::from_secs(60);
 /// FSEvents coalescing window.
 const WATCH_LATENCY: Duration = Duration::from_millis(200);
@@ -46,6 +51,9 @@ const AUTOSAVE: Duration = Duration::from_secs(300);
 pub struct IndexConfig {
     pub home: PathBuf,
     pub scan: ScanConfig,
+    /// Ranks by these uses, and indexes the folders in it the scan doesn't reach.
+    pub frecency: Option<Arc<Mutex<Frecency>>>,
+    /// Adds zoxide's scores (folders used in the terminal), if it's installed.
     pub zoxide: bool,
     pub max_items: u64,
     /// Where the index is saved between launches. `None` keeps it in memory only.
@@ -88,7 +96,7 @@ pub struct ItemMeta {
     pub size: u64,
     pub modified: i64,
     pub child_count: Option<u32>,
-    /// Added from zoxide rather than scanned; not saved.
+    /// Added because you use it (frecency) rather than scanned; not saved.
     pub extra: bool,
 }
 
@@ -195,10 +203,15 @@ pub struct GlobalIndex {
     scanning: Arc<AtomicBool>,
     /// Dropping it ends the stream, which ends the update thread.
     _watcher: Option<Watcher>,
+    frecency: Option<Arc<Mutex<Frecency>>>,
     zoxide: Option<Zoxide>,
-    /// zoxide scores by key.
+    /// √ of zoxide's scores, by key.
     zoxide_scores: HashMap<String, f64>,
-    zoxide_loaded: Instant,
+    zoxide_at: Instant,
+    /// Frecency scores (Tilde's plus zoxide's) by key, as of `scores_at`.
+    scores: HashMap<String, f64>,
+    scores_version: u64,
+    scores_at: Instant,
     pattern_text: String,
     matcher: Matcher,
     name_matcher: Matcher,
@@ -214,7 +227,6 @@ impl GlobalIndex {
         let on_change: Arc<dyn Fn() + Send + Sync> = Arc::new(on_change);
         let notify = on_change.clone();
         let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(move || notify()), None, 1);
-        let zoxide = config.zoxide.then(Zoxide::find).flatten();
         let fingerprint = config.fingerprint();
         let cache = config.cache_path.clone().map(|p| (p, fingerprint));
         let shared =
@@ -252,15 +264,20 @@ impl GlobalIndex {
             shared: shared.clone(),
             scanning: Arc::new(AtomicBool::new(resume_from.is_none())),
             _watcher: watcher,
-            zoxide,
+            frecency: config.frecency.clone(),
+            zoxide: config.zoxide.then(Zoxide::find).flatten(),
             zoxide_scores: HashMap::new(),
-            zoxide_loaded: Instant::now(),
+            zoxide_at: Instant::now(),
+            scores: HashMap::new(),
+            scores_version: u64::MAX,
+            scores_at: Instant::now(),
             pattern_text: String::new(),
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
             name_matcher: Matcher::new(Config::DEFAULT),
             buf: Vec::new(),
         };
-        let zoxide_dirs = index.reload_zoxide();
+        let mut known_dirs = index.reload_zoxide();
+        known_dirs.extend(config.frecency.as_ref().map(|f| f.lock().unwrap().folders()).unwrap_or_default());
 
         let scanning = index.scanning.clone();
         std::thread::Builder::new()
@@ -272,8 +289,8 @@ impl GlobalIndex {
                         shared.sync_dir(dir, &entries, false)
                     });
                 }
-                // zoxide folders the scan can't reach (hidden, excluded, outside home).
-                for dir in zoxide_dirs.iter().filter(|d| !config.scan.covers(d)) {
+                // Folders you use that the scan can't reach (hidden, excluded, outside home).
+                for dir in known_dirs.iter().filter(|d| !config.scan.covers(d)) {
                     if let Ok(md) = std::fs::metadata(dir)
                         && md.is_dir()
                     {
@@ -342,18 +359,13 @@ impl GlobalIndex {
         if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
     }
 
-    /// zoxide's most-visited folders that still exist, best first (keys).
-    pub fn top_folders(&self, limit: usize) -> Vec<String> {
-        let mut folders: Vec<(&String, &f64)> = self.zoxide_scores.iter().filter(|(k, _)| !k.is_empty()).collect();
-        folders.sort_by(|a, b| b.1.total_cmp(a.1));
-        folders.into_iter().map(|(k, _)| k.clone()).filter(|k| self.absolute(k).is_dir()).take(limit).collect()
-    }
-
-    /// Records a folder visit with zoxide, if enabled.
-    pub fn record_visit(&self, path: &Path) {
-        if let Some(z) = &self.zoxide {
-            z.add(path);
-        }
+    /// The most-used folders that still exist, best first (keys).
+    pub fn top_folders(&mut self, limit: usize) -> Vec<String> {
+        self.refresh_scores();
+        let mut best: Vec<(&String, f64)> =
+            self.scores.iter().filter(|(k, _)| !k.is_empty()).map(|(k, s)| (k, *s)).collect();
+        best.sort_by(|a, b| b.1.total_cmp(&a.1));
+        best.into_iter().map(|(k, _)| k).filter(|k| self.absolute(k).is_dir()).take(limit).cloned().collect()
     }
 
     /// Searches the whole index. `cwd` (a key) supports `in:.`; items directly inside
@@ -369,9 +381,7 @@ impl GlobalIndex {
         if query.is_empty() {
             return Vec::new();
         }
-        if self.zoxide.is_some() && self.zoxide_loaded.elapsed() > ZOXIDE_REFRESH {
-            self.reload_zoxide();
-        }
+        self.refresh_scores();
         if query.text != self.pattern_text {
             let append = !self.pattern_text.is_empty()
                 && query.text.starts_with(&self.pattern_text)
@@ -420,8 +430,8 @@ impl GlobalIndex {
                 let depth = key.matches('/').count() as i64;
                 let length_penalty = key.len() as i64 / 10;
                 let fresh = if now - meta.modified < 7 * 86_400 { 4 } else { 0 };
-                let own = self.zoxide_scores.get(key).map_or(0.0, |z| 15.0 * (1.0 + z).ln());
-                let inside = self.zoxide_scores.get(parent).map_or(0.0, |z| 5.0 * (1.0 + z).ln());
+                let own = self.scores.get(key).map_or(0.0, |s| 15.0 * (1.0 + s).ln());
+                let inside = self.scores.get(parent).map_or(0.0, |s| 5.0 * (1.0 + s).ln());
                 Some(path_score + name_score + fresh + (own + inside) as i64 - 2 * depth - length_penalty)
             });
             if let Some(score) = score {
@@ -454,14 +464,43 @@ impl GlobalIndex {
             .collect()
     }
 
-    /// Loads zoxide scores. Returns the folders it knows about.
+    /// Re-derives the scores by key after new uses, or once a minute as they decay (and
+    /// zoxide's change).
+    fn refresh_scores(&mut self) {
+        let zoxide_changed = self.zoxide.is_some() && self.zoxide_at.elapsed() > ZOXIDE_REFRESH;
+        if zoxide_changed {
+            self.reload_zoxide();
+        }
+        let version = self.frecency.as_ref().map_or(0, |f| f.lock().unwrap().version());
+        if !zoxide_changed && version == self.scores_version && self.scores_at.elapsed() < FRECENCY_REFRESH {
+            return;
+        }
+        let mut scores = self.zoxide_scores.clone();
+        if let Some(f) = &self.frecency {
+            let now = now();
+            for (path, s) in f.lock().unwrap().scores(now) {
+                *scores.entry(self.shared.key(Path::new(path))).or_default() += s;
+            }
+        }
+        self.scores = scores;
+        self.scores_version = version;
+        self.scores_at = Instant::now();
+    }
+
+    /// Re-reads zoxide's scores. Returns the folders it knows.
     fn reload_zoxide(&mut self) -> Vec<PathBuf> {
-        self.zoxide_loaded = Instant::now();
+        self.zoxide_at = Instant::now();
         let Some(z) = &self.zoxide else { return Vec::new() };
         let scores = z.scores();
-        self.zoxide_scores = scores.iter().map(|(p, s)| (self.shared.key(p), *s)).collect();
+        // zoxide's scores run into the hundreds: compressed, keeping their order, to about
+        // what a few weeks of use in Tilde gives.
+        self.zoxide_scores = scores.iter().map(|(p, s)| (self.shared.key(p), s.max(0.0).sqrt())).collect();
         scores.into_iter().map(|(p, _)| p).collect()
     }
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 impl Drop for GlobalIndex {
@@ -528,6 +567,7 @@ mod tests {
                 exclude_names: ["node_modules".to_string()].into(),
                 ..Default::default()
             },
+            frecency: None,
             zoxide: false,
             max_items: 1_000_000,
             cache_path: None,

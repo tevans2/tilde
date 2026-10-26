@@ -41,7 +41,7 @@ impl ScanConfig {
         self.covers(dir) && self.descends_into(dir, &name)
     }
 
-    /// Whether a scan reaches `path`. Used to add zoxide folders the scan would miss.
+    /// Whether a scan reaches `path`. Used to add folders you use that the scan would miss.
     pub fn covers(&self, path: &Path) -> bool {
         let Some(root) = self.roots.iter().find(|r| path.starts_with(r)) else { return false };
         let Ok(rel) = path.strip_prefix(root) else { return false };
