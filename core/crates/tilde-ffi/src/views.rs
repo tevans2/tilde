@@ -99,7 +99,8 @@ pub struct RowView {
 
 impl RowView {
     /// A row from the current folder.
-    pub(crate) fn here(folder: &Path, entry: &Entry, hit: &Hit) -> RowView {
+    /// `show_added`: the date shown is when the item arrived, not when it changed.
+    pub(crate) fn here(folder: &Path, entry: &Entry, hit: &Hit, show_added: bool) -> RowView {
         RowView {
             name: entry.name.clone(),
             path: folder.join(&entry.name).to_string_lossy().into_owned(),
@@ -109,7 +110,7 @@ impl RowView {
             category: category(entry.kind, &entry.name),
             ext: entry.extension(),
             size: entry.size,
-            modified: entry.modified,
+            modified: if show_added && entry.added > 0 { entry.added } else { entry.modified },
             child_count: entry.child_count,
             highlights: utf16_ranges(&entry.name, &hit.indices),
             location_highlights: Vec::new(),

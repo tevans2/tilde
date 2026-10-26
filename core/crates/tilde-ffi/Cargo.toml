@@ -30,6 +30,7 @@ tilde-activity.workspace = true
 tilde-nvim.workspace = true
 uniffi.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

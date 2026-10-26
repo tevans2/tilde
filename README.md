@@ -11,6 +11,18 @@ A fast, keyboard-first file navigator for macOS. Rust core, Swift/AppKit UI.
 - Rust (stable) via rustup
 - Swift 6 toolchain (Xcode Command Line Tools are enough for development)
 
+## Install
+
+```sh
+scripts/install.sh        # optimized build → ~/Applications/Tilde.app (or pass a folder)
+```
+
+`scripts/uninstall.sh` removes it again, with its permissions and preferences; `--purge`
+also deletes the index, undo history and sort orders (the dev build shares them). Your
+config is kept. The icon (`App/Icon/`, drawn by `scripts/make-icon.swift`) has light and dark variants; the
+Dock icon follows the appearance while Tilde runs. Run it again to update. Without a signing identity (`TILDE_SIGN_IDENTITY`) the app is
+signed ad hoc, so macOS may ask for Full Disk Access again after an update.
+
 ## Run
 
 ```sh
@@ -60,12 +72,12 @@ the new key) or in the config file (see below).
 
 | Mode | Keys |
 |---|---|
-| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `esc` → SELECT |
-| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter, then shelf |
+| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
+| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
-| Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
+| Anywhere | `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (your most-visited zoxide
@@ -85,6 +97,20 @@ Undo history is shared by all windows and kept across restarts (the last 100 ope
 from the past 30 days, in `~/Library/Application Support/Tilde/undo.json`). Undoing
 something old works as long as the items are still where Tilde left them; if not, it says
 what's missing and changes nothing else.
+
+`⌃o` goes back to where you were before, like Vim's jump list or a browser's Back:
+the folder you came from (not necessarily the parent) with the item you had highlighted,
+or Activity. `⌃i` goes forward again. Every move counts (into a folder, up, `~`, a reveal
+from Everywhere, `@`), and a new move after going back drops the forward history. Each
+window keeps its own list.
+
+`s` sorts the folder: then `n` name, `m` date modified, `a` date added, `s` size or `k`
+kind (by extension); picking the current order again reverses it. Also View › Sort By
+(`⌃⌘1`–`⌃⌘5`). Each folder remembers its order (Downloads by date added, a project by
+name), and the status bar shows it when it isn't the default. Folders stay on top; a size
+sort orders folders by how many items they hold. Typing a search ranks by match, while
+filters like `ext:pdf` keep the folder's order. Sorting by date added shows when items
+arrived instead of when they changed.
 
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
 
@@ -211,6 +237,12 @@ max_items = 1000000         # indexing stops here; ⌘⇧I shows what to exclude
 [zoxide]
 enabled = true              # rank by zoxide frecency, include its folders
 add_on_visit = true         # tell zoxide about folders opened in Tilde
+
+[sort]                      # unless a folder has its own order (s)
+by = "name"                 # name, modified, added, size, kind
+reverse = false             # Z→A, oldest first, smallest first
+folders_first = true
+remember = true             # remember the order chosen for each folder
 
 [keys.go]                   # while typing in the bar: needs ctrl+/alt+ unless a named key
 down = ["down", "ctrl+j"]

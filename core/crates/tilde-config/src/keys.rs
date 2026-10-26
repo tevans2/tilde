@@ -62,6 +62,8 @@ pub const GO_ACTIONS: &[ActionSpec] = &[
     a("parent", "Up to the parent folder (⌫ on an empty bar also does)", &["ctrl+h"]),
     a("enter", "Into the highlighted folder, or reveal a result in its folder", &["tab", "ctrl+l"]),
     a("open", "Open the highlighted item", &["return"]),
+    a("back", "Back to where you were (jump list)", &["ctrl+o"]),
+    a("forward", "Forward again (jump list)", &["ctrl+i"]),
     a("select_mode", "Switch to SELECT", &["esc"]),
 ];
 
@@ -71,6 +73,8 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("parent", "Up to the parent folder", &["h", "left", "backspace", "ctrl+h"]),
     a("enter", "Into a folder, or open a file", &["l", "right", "ctrl+l"]),
     a("open", "Open the highlighted item", &["return"]),
+    a("back", "Back to where you were (jump list)", &["ctrl+o"]),
+    a("forward", "Forward again (jump list)", &["ctrl+i"]),
     a("top", "First item", &["g"]),
     a("bottom", "Last item", &["G"]),
     a("search", "Back to GO (search)", &["/"]),
@@ -89,6 +93,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("new_folder", "New folder", &["n"]),
     a("compress", "Compress to zip", &["z"]),
     a("copy_path", "Copy the path", &["y"]),
+    a("sort", "Sort the folder (again to reverse)", &["s"]),
     a("hide", "Leave out of search", &["X"]),
     a("undo", "Undo", &["u"]),
     a("redo", "Redo", &["U", "ctrl+r"]),

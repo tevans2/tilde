@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showIndex: { [weak self] in self?.showIndex(nil) })
     private lazy var welcomeWindow = WelcomeWindowController(onChange: { [weak self] in self?.reloadConfig(nil) })
 
+    private var appearanceObservation: NSKeyValueObservation?
+
     /// The key that stops a running operation (File › Stop Operation).
     static let stopKey = "⌘."
 
@@ -22,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         opsEvents.delegate = self
         NSApp.appearance = Theme.shared.appearance
         NSApp.mainMenu = MainMenu.build()
+        // The Dock icon follows light and dark mode (the icon file can't on macOS 15).
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.initial]) { _, _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { Self.updateDockIcon() } }
+        }
         newWindow(nil)
         NSApp.activate()
         #if DEBUG
@@ -35,6 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // So the next launch loads instead of scanning.
         index.save()
+    }
+
+    /// Uses the PNGs that scripts/install.sh puts in the app bundle; development builds
+    /// keep the default icon.
+    private static func updateDockIcon() {
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        guard let url = Bundle.main.url(forResource: dark ? "Tilde-dark" : "Tilde-light", withExtension: "png"),
+              let image = NSImage(contentsOf: url)
+        else { return }
+        NSApp.applicationIconImage = image
     }
 
     @objc func newWindow(_ sender: Any?) {
@@ -185,11 +201,30 @@ enum MainMenu {
         let viewMenu = NSMenu(title: "View")
         let hidden = viewMenu.addItem(withTitle: "Show Hidden Files", action: #selector(BrowserWindowController.toggleHidden(_:)), keyEquivalent: ".")
         hidden.keyEquivalentModifierMask = [.command, .shift]
+        let sortItem = viewMenu.addItem(withTitle: "Sort By", action: nil, keyEquivalent: "")
+        let sortMenu = NSMenu(title: "Sort By")
+        for (i, title) in ["Name", "Date Modified", "Date Added", "Size", "Kind"].enumerated() {
+            let item = sortMenu.addItem(withTitle: title, action: #selector(BrowserWindowController.sortByMenu(_:)),
+                                        keyEquivalent: "\(i + 1)")
+            item.keyEquivalentModifierMask = [.command, .control]
+            item.tag = i
+        }
+        sortMenu.addItem(.separator())
+        sortMenu.addItem(withTitle: "Reverse Order", action: #selector(BrowserWindowController.sortByMenu(_:)), keyEquivalent: "")
+            .tag = -1
+        sortItem.submenu = sortMenu
         viewMenu.addItem(.separator())
         let indexItem = viewMenu.addItem(withTitle: "Search Index…", action: #selector(AppDelegate.showIndex(_:)), keyEquivalent: "i")
         indexItem.keyEquivalentModifierMask = [.command, .shift]
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
+
+        let goItem = NSMenuItem()
+        let goMenu = NSMenu(title: "Go")
+        goMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
+        goMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
+        goItem.submenu = goMenu
+        main.addItem(goItem)
 
         let helpItem = NSMenuItem()
         let helpMenu = NSMenu(title: "Help")

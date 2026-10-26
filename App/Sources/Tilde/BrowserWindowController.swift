@@ -9,6 +9,18 @@ enum Mode {
     case edit
 }
 
+/// Somewhere the window can show.
+enum Place: Equatable {
+    case folder(String)
+    case activity
+}
+
+/// A jump list entry: where the window was, and the item highlighted there.
+struct Jump {
+    let place: Place
+    let select: String?
+}
+
 /// One browser window: path bar, results, preview, status bar.
 @MainActor
 final class BrowserWindowController: NSWindowController, NSWindowDelegate {
@@ -55,6 +67,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private let previewSeparator = NSBox()
     private let topSeparator = NSBox()
     private var previewWidth: NSLayoutConstraint?
+    private var pathBarHeight: NSLayoutConstraint!
     private let statusBar = StatusBar()
 
     private var mode: Mode = .go
@@ -73,7 +86,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Row to select when the next results arrive (the folder we came up from, or a
     /// revealed file).
     private var pendingSelection: String?
+    /// Where the window is (or is going: set when navigation starts, before results).
+    private var place: Place?
+    /// `⌃o` / `⌃i`: places left, newest last, and places backed out of.
+    private var backJumps: [Jump] = []
+    private var forwardJumps: [Jump] = []
+    private static let maxJumps = 100
     private var showHidden = false
+    /// The open folder's order, from the latest results.
+    private var sort = FolderSort(by: .name, reverse: false, custom: false)
     private var previewWork: DispatchWorkItem?
     /// A `tab`/`⏎`/`/` pressed before results caught up with the typed text. Runs when
     /// they arrive, so fast typing acts on the right row.
@@ -94,6 +115,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         )
         window.minSize = NSSize(width: 640, height: 360)
         window.tabbingMode = .disallowed
+        // No system title bar: the path bar takes its place, with the window buttons in it.
+        // An empty compact toolbar sets the bar's height and keeps the buttons centred.
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+        window.toolbar = NSToolbar(identifier: "TildeBrowser")
+        window.toolbarStyle = .unifiedCompact
         super.init(window: window)
         window.delegate = self
         events.delegate = self
@@ -165,7 +194,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             pathBar.topAnchor.constraint(equalTo: content.topAnchor),
             pathBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             pathBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            pathBar.heightAnchor.constraint(equalToConstant: 46),
 
             topSeparator.topAnchor.constraint(equalTo: pathBar.bottomAnchor),
             topSeparator.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -205,6 +233,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             changesView.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
             changesView.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
         ])
+        pathBarHeight = pathBar.heightAnchor.constraint(equalToConstant: 46)
+        pathBarHeight.isActive = true
+        fitTitleBar()
         editor.isHidden = true
         changesView.isHidden = true
         editor.onChange = { [weak self] in self?.editChanged() }
@@ -214,6 +245,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         shelfHeight.isActive = true
         shelfBar.isHidden = true
     }
+
+    /// Makes the path bar exactly the title bar's height, starting after the window
+    /// buttons. In full screen the buttons are hidden, so the bar starts at the edge.
+    private func fitTitleBar() {
+        guard let window else { return }
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        pathBarHeight.constant = max(titleBar, 38)
+        let fullScreen = window.styleMask.contains(.fullScreen)
+        let buttons = window.standardWindowButton(.zoomButton)?.frame.maxX ?? 70
+        pathBar.leadingInset = fullScreen ? 0 : buttons + 6
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) { fitTitleBar() }
+    func windowDidExitFullScreen(_ notification: Notification) { fitTitleBar() }
 
     /// Applies fonts and preview settings from the config. Called at startup and on
     /// Reload Config.
@@ -277,7 +322,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         return latestGeneration
     }
 
-    private func open(folder: String, select: String? = nil) {
+    /// Shows `folder`, highlighting `select`. Recorded in the jump list unless it's a jump.
+    private func open(folder: String, select: String? = nil, record: Bool = true) {
+        if record { recordJump(to: .folder(folder)) }
+        place = .folder(folder)
         inActivity = false
         pendingSelection = select
         pathBar.field.stringValue = ""
@@ -288,12 +336,55 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// `@`: show Activity, or go back to the folder it was opened from.
     private func toggleActivity() {
         if inActivity { return open(folder: currentFolder) }
+        showActivity(record: true)
+    }
+
+    private func showActivity(record: Bool) {
+        if record { recordJump(to: .activity) }
+        place = .activity
         inActivity = true
         pendingSelection = nil
         pathBar.field.stringValue = ""
         engine.openActivity(filter: activityFilter, generation: nextGeneration())
         engine.setQuery(text: "", generation: nextGeneration())
         updateChrome()
+    }
+
+    // MARK: Jump list
+
+    /// Leaving the current place for `target`: remember where we were. A new move drops
+    /// the places backed out of, as in a browser.
+    private func recordJump(to target: Place) {
+        guard let place, place != target else { return }
+        backJumps.append(Jump(place: place, select: selectedRow?.name))
+        if backJumps.count > Self.maxJumps { backJumps.removeFirst() }
+        forwardJumps.removeAll()
+    }
+
+    /// `⌃o` (back) and `⌃i` (forward). Folders that no longer exist are skipped.
+    private func jump(back: Bool) {
+        guard let place else { return }
+        while let target = back ? backJumps.popLast() : forwardJumps.popLast() {
+            if case let .folder(path) = target.place, !FileManager.default.fileExists(atPath: path) { continue }
+            let here = Jump(place: place, select: selectedRow?.name)
+            if back { forwardJumps.append(here) } else { backJumps.append(here) }
+            switch target.place {
+            case let .folder(path): open(folder: path, select: target.select, record: false)
+            case .activity: showActivity(record: false)
+            }
+            return
+        }
+        statusBar.flash(back ? "Nothing to go back to" : "Nothing to go forward to")
+    }
+
+    /// Go › Back (⌘[).
+    @objc func goBack(_ sender: Any?) {
+        jump(back: true)
+    }
+
+    /// Go › Forward (⌘]).
+    @objc func goForward(_ sender: Any?) {
+        jump(back: false)
     }
 
     /// `1`–`5` and `i` in Activity.
@@ -422,6 +513,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .parent: goUp()
         case .enter: goIntoOrActivate()
         case .open: activateHighlighted()
+        case .back: jump(back: true)
+        case .forward: jump(back: false)
         case .top: select(row: 0)
         case .bottom: select(row: results.tableRows - 1)
         case .search, .selectMode: setMode(.go)
@@ -444,6 +537,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .copyPath: copyPaths()
         case .compress: compressTargets()
         case .hide: hideHighlightedFromSearch()
+        case .sort: chooseSort()
         case .undo: undo()
         case .redo: redo()
         case .rename:
@@ -474,6 +568,57 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         if !goIntoHighlighted() { activateHighlighted() }
     }
 
+    // MARK: Sorting
+
+    private static let sortKeys: [(SortBy, key: String, label: String)] = [
+        (.name, "n", "Name"), (.modified, "m", "Modified"), (.added, "a", "Added"), (.size, "s", "Size"), (.kind, "k", "Kind"),
+    ]
+
+    /// "date modified, newest first".
+    static func describe(_ sort: FolderSort) -> String {
+        switch (sort.by, sort.reverse) {
+        case (.name, false): "name, A–Z"
+        case (.name, true): "name, Z–A"
+        case (.modified, false): "date modified, newest first"
+        case (.modified, true): "date modified, oldest first"
+        case (.added, false): "date added, newest first"
+        case (.added, true): "date added, oldest first"
+        case (.size, false): "size, largest first"
+        case (.size, true): "size, smallest first"
+        case (.kind, false): "kind, A–Z"
+        case (.kind, true): "kind, Z–A"
+        }
+    }
+
+    /// `s`: pick the folder's order by key; the current one again reverses it.
+    private func chooseSort() {
+        guard !inActivity else { return statusBar.flash("Activity is in time order, newest first.") }
+        let options = Self.sortKeys.map { by, key, label in
+            (key: key, label: by == sort.by ? "\(label) (reverse)" : label)
+        }
+        showOverlay(PromptOverlay(
+            title: "Sort “\(FileManager.default.displayName(atPath: currentFolder))” by… now \(Self.describe(sort))",
+            kind: .choice(options: options, onChoose: { [weak self] i in self?.setSort(Self.sortKeys[i].0) }),
+            hint: "press a key   the current one reverses   esc cancel"))
+    }
+
+    /// Sorts by `by`, reversing if it's already the order.
+    private func setSort(_ by: SortBy) {
+        let reverse = by == sort.by ? !sort.reverse : false
+        engine.setSort(by: by, reverse: reverse, generation: nextGeneration())
+        statusBar.flash("Sorted by \(Self.describe(FolderSort(by: by, reverse: reverse, custom: true)))")
+    }
+
+    /// View › Sort By.
+    @objc func sortByMenu(_ sender: NSMenuItem) {
+        guard !inActivity else { return chooseSort() }
+        if sender.tag < 0 {
+            engine.setSort(by: sort.by, reverse: !sort.reverse, generation: nextGeneration())
+        } else {
+            setSort(Self.sortKeys[sender.tag].0)
+        }
+    }
+
     // MARK: Chrome
 
     private func updateChrome() {
@@ -498,6 +643,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         var parts: [String] = []
         if pathBar.field.stringValue.isEmpty {
             parts.append(n(results.hereCount, "item"))
+            if !inActivity, sort.custom || sort.by != .name || sort.reverse {
+                parts.append("by \(Self.describe(sort))")
+            }
             if inActivity, let activity {
                 parts.append(activity.inboxCount == 0 ? "inbox zero" : "\(activity.inboxCount.formatted()) in inbox")
             }
@@ -580,6 +728,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         // Acting on the highlighted row waits for results to catch up with fast typing.
         case .enter: whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
         case .open: whenResultsCurrent { [weak self] in self?.activateHighlighted() }
+        case .back: jump(back: true)
+        case .forward: jump(back: false)
         case .selectMode: setMode(.select)
         default: return false
         }
@@ -606,6 +756,7 @@ extension BrowserWindowController: EngineEventsDelegate {
         shownGeneration = generation
         currentFolder = info.folder
         activity = info.activity
+        sort = info.sort
         results.reset(
             generation: generation, hereCount: Int(info.hereCount), everywhereCount: Int(info.everywhereCount),
             groups: info.activity?.groups ?? [])
@@ -632,6 +783,11 @@ extension BrowserWindowController: EngineEventsDelegate {
     }
 
     func engineFolderFailed(generation: UInt64, folder: String, message: String) {
+        // Still in the folder we were in: undo the jump list entry for the failed move.
+        if place == .folder(folder) {
+            place = .folder(currentFolder)
+            if backJumps.last?.place == place { backJumps.removeLast() }
+        }
         let name = (folder as NSString).lastPathComponent
         let hint = message.contains("ermission") ? " Tilde may need Full Disk Access." : ""
         statusBar.flash("Can't open \(name): \(message).\(hint)")
@@ -1310,6 +1466,17 @@ extension BrowserWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(applyEdits(_:)):
             return mode == .edit
+        case #selector(goBack(_:)):
+            return mode != .edit && !backJumps.isEmpty
+        case #selector(goForward(_:)):
+            return mode != .edit && !forwardJumps.isEmpty
+        case #selector(sortByMenu(_:)):
+            if item.tag >= 0 {
+                item.state = Self.sortKeys[item.tag].0 == sort.by ? .on : .off
+            } else {
+                item.state = sort.reverse ? .on : .off
+            }
+            return !inActivity && mode != .edit
         case #selector(cancelEdits(_:)):
             item.title = mode == .edit ? "Cancel Edit" : "Stop Operation"
             return mode == .edit || !ops.running().isEmpty

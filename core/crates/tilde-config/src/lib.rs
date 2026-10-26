@@ -31,6 +31,37 @@ pub struct Config {
     pub activity: ActivityConfig,
     pub edit: EditConfig,
     pub keys: KeysConfig,
+    pub sort: SortConfig,
+}
+
+/// How folders are sorted unless one has its own order (`s` in SELECT).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SortConfig {
+    /// `name`, `modified`, `added`, `size` or `kind`.
+    pub by: String,
+    /// Against the natural direction (Z→A, oldest first, smallest first).
+    pub reverse: bool,
+    pub folders_first: bool,
+    /// Remember the order chosen for each folder.
+    pub remember: bool,
+}
+
+impl Default for SortConfig {
+    fn default() -> Self {
+        SortConfig { by: "name".into(), reverse: false, folders_first: true, remember: true }
+    }
+}
+
+impl SortConfig {
+    /// The default order (an unknown `by` is reported by `load` and means name).
+    pub fn order(&self) -> tilde_types::SortOrder {
+        tilde_types::SortOrder {
+            key: tilde_types::SortKey::parse(&self.by).unwrap_or_default(),
+            reverse: self.reverse,
+            folders_first: self.folders_first,
+        }
+    }
 }
 
 /// The preview pane on the right.
@@ -310,6 +341,12 @@ pub fn load(path: &Path) -> Loaded {
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
             config.activity.days = config.activity.days.clamp(1, 3650);
             let (_, mut problems) = config.theme.resolve();
+            if tilde_types::SortKey::parse(&config.sort.by).is_none() {
+                problems.push(format!(
+                    "sort.by “{}” isn't one of name, modified, added, size, kind; using name",
+                    config.sort.by
+                ));
+            }
             problems.extend(config.keys.resolve().warnings);
             if !problems.is_empty() {
                 let msg = problems.join("; ");
@@ -407,6 +444,17 @@ nvim_path = ""
 # "user" loads your nvim config. "clean" skips it and loads init.lua next to this file,
 # if there is one.
 nvim_config = "user"
+
+# How folders are sorted. `s` in SELECT picks another order for the folder you're in,
+# which is remembered for that folder.
+[sort]
+# name, modified, added (when it arrived in the folder), size or kind (by extension).
+by = "name"
+# Against the natural direction: Z→A, oldest first, smallest first.
+reverse = false
+folders_first = true
+# Remember the order chosen for each folder.
+remember = true
 
 # Keys for GO (typing in the bar) and SELECT (the list). Give an action a key or a list
 # of keys; [] unbinds it. A key is the character it types (j, G, @) or a name (down, up,
@@ -688,6 +736,17 @@ mod tests {
         remove_value(&p, &["zoxide", "enabled"]).unwrap();
         assert!(load(&p).config.zoxide.enabled, "back to the default");
         remove_value(&p, &["nope", "nothing"]).unwrap();
+    }
+
+    #[test]
+    fn sort_section() {
+        let l = load_str("[sort]\nby = \"Added\"\nreverse = true\n");
+        assert!(l.error.is_none());
+        let o = l.config.sort.order();
+        assert_eq!((o.key, o.reverse, o.folders_first), (tilde_types::SortKey::Added, true, true));
+        let l = load_str("[sort]\nby = \"colour\"\n");
+        assert!(l.error.unwrap().contains("sort.by"));
+        assert_eq!(l.config.sort.order().key, tilde_types::SortKey::Name);
     }
 
     #[test]

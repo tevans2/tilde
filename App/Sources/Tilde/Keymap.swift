@@ -3,7 +3,7 @@ import TildeFFI
 
 /// Actions bound in `[keys.go]` and `[keys.select]`. Raw values are the config names.
 enum KeyAction: String {
-    case down, up, parent, enter, open
+    case down, up, parent, enter, open, back, forward
     case selectMode = "select_mode"
     case top, bottom, search, activity, home, clear
     case shelf
@@ -13,7 +13,7 @@ enum KeyAction: String {
     case newFolder = "new_folder"
     case compress
     case copyPath = "copy_path"
-    case hide, undo, redo
+    case hide, undo, redo, sort
     case filterAll = "filter_all"
     case filterDownloads = "filter_downloads"
     case filterScreenshots = "filter_screenshots"

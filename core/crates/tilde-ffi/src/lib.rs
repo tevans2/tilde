@@ -12,6 +12,7 @@ mod index;
 mod nvim;
 mod ops;
 mod preview;
+mod sorts;
 mod views;
 
 pub use config::{
@@ -19,7 +20,9 @@ pub use config::{
     ensure_config_file, load_config, load_keymap, load_settings, reset_setting, set_setting,
 };
 pub use edit::{EditLineError, EditPreview, EditSession, PendingChange};
-pub use engine::{ActivityFilter, ActivityInfo, Engine, EngineListener, OriginFilter, ResultsInfo, RowGroup};
+pub use engine::{
+    ActivityFilter, ActivityInfo, Engine, EngineListener, FolderSort, OriginFilter, ResultsInfo, RowGroup, SortBy,
+};
 pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
 pub use nvim::{NvimEditor, NvimLaunch, NvimListener, NvimOpenMode, NvimStatus, find_nvim};
 pub use ops::{ClashPolicy, FileOps, OpError, OpKind, OpOutcome, OpPhase, OpRequest, OpsListener, common_tags};

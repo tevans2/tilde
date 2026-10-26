@@ -113,3 +113,51 @@ mod tests {
         assert_eq!(entry("odd.").extension(), "");
     }
 }
+
+/// What a folder is sorted by. Each has a natural direction (A→Z, newest first, largest
+/// first); `SortOrder::reverse` flips it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Modified,
+    /// When the item arrived in the folder (created, downloaded, moved in).
+    Added,
+    Size,
+    /// By extension, then name: groups files of a type together.
+    Kind,
+}
+
+impl SortKey {
+    pub const ALL: [SortKey; 5] = [SortKey::Name, SortKey::Modified, SortKey::Added, SortKey::Size, SortKey::Kind];
+
+    /// The config spelling: `name`, `modified`, `added`, `size`, `kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SortKey::Name => "name",
+            SortKey::Modified => "modified",
+            SortKey::Added => "added",
+            SortKey::Size => "size",
+            SortKey::Kind => "kind",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<SortKey> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s.trim().to_lowercase())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SortOrder {
+    pub key: SortKey,
+    /// Against the key's natural direction (Z→A, oldest first, smallest first).
+    pub reverse: bool,
+    /// Folders before files whatever the key and direction.
+    pub folders_first: bool,
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        SortOrder { key: SortKey::Name, reverse: false, folders_first: true }
+    }
+}

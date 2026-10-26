@@ -6,12 +6,14 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tilde_activity::{FEED_LIMIT, Group, Item, Settings, local_midnight};
-use tilde_fs::{ListOptions, SINCE_NOW, Watcher, list_dir, sort_entries, watch};
+use tilde_config::SortConfig;
+use tilde_fs::{ListOptions, SINCE_NOW, Watcher, list_dir, sort_entries_by, watch};
 use tilde_index::GlobalHit;
 use tilde_query::{HereMatcher, Hit, Query};
-use tilde_types::Entry;
+use tilde_types::{Entry, SortKey, SortOrder};
 
 use crate::index::{IndexService, IndexState, home_dir};
+use crate::sorts::SortMemory;
 use crate::views::RowView;
 
 /// Most Everywhere results returned for one query.
@@ -23,6 +25,52 @@ const FOLDER_WATCH_LATENCY: Duration = Duration::from_millis(100);
 /// Changes elsewhere in the index refresh the Activity feed at most this often (the
 /// inbox folders are watched directly and refresh it straight away).
 const ACTIVITY_REFRESH: Duration = Duration::from_secs(2);
+
+/// What a folder is sorted by (`[sort] by` in the config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SortBy {
+    Name,
+    Modified,
+    /// When the item arrived in the folder.
+    Added,
+    Size,
+    /// By extension, then name.
+    Kind,
+}
+
+impl From<SortBy> for SortKey {
+    fn from(s: SortBy) -> Self {
+        match s {
+            SortBy::Name => SortKey::Name,
+            SortBy::Modified => SortKey::Modified,
+            SortBy::Added => SortKey::Added,
+            SortBy::Size => SortKey::Size,
+            SortBy::Kind => SortKey::Kind,
+        }
+    }
+}
+
+impl From<SortKey> for SortBy {
+    fn from(k: SortKey) -> Self {
+        match k {
+            SortKey::Name => SortBy::Name,
+            SortKey::Modified => SortBy::Modified,
+            SortKey::Added => SortBy::Added,
+            SortKey::Size => SortBy::Size,
+            SortKey::Kind => SortBy::Kind,
+        }
+    }
+}
+
+/// The open folder's order. Text searches rank by match instead; filters keep it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct FolderSort {
+    pub by: SortBy,
+    /// Against the natural direction (Z→A, oldest first, smallest first).
+    pub reverse: bool,
+    /// Differs from the config's default (it was chosen for this folder).
+    pub custom: bool,
+}
 
 /// The Activity view's number-key filters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -82,6 +130,7 @@ pub struct ResultsInfo {
     pub activity: Option<ActivityInfo>,
     pub here_count: u32,
     pub everywhere_count: u32,
+    pub sort: FolderSort,
 }
 
 /// Implemented by the Swift app. Called on a background thread.
@@ -114,6 +163,10 @@ pub(crate) enum Command {
         show: bool,
         generation: u64,
     },
+    Sort {
+        order: (SortKey, bool),
+        generation: u64,
+    },
     /// FSEvents reported a change directly inside this watched folder.
     FolderChanged(PathBuf),
     /// The index applied a batch of changes.
@@ -135,6 +188,8 @@ struct Published {
     activity: Option<PublishedActivity>,
     here: Vec<Hit>,
     everywhere: Vec<GlobalHit>,
+    /// Rows show when items were added instead of modified (sorting by added).
+    show_added: bool,
 }
 
 impl Published {
@@ -159,7 +214,7 @@ impl Engine {
     /// Starts an engine (one per window) that searches the shared `index`.
     #[uniffi::constructor]
     pub fn new(listener: Arc<dyn EngineListener>, index: Arc<IndexService>) -> Arc<Self> {
-        Engine::start(listener, index.home().to_path_buf(), Some(index), None)
+        Engine::start(listener, index.home().to_path_buf(), Some(index), None, SortMemory::on_disk(), None)
     }
 
     /// Lists `path` and makes it the current folder. The current query is kept; the UI
@@ -183,6 +238,11 @@ impl Engine {
         let _ = self.tx.send(Command::ShowHidden { show, generation });
     }
 
+    /// Sorts the open folder and remembers the order for it (if `[sort] remember`).
+    pub fn set_sort(&self, by: SortBy, reverse: bool, generation: u64) {
+        let _ = self.tx.send(Command::Sort { order: (by.into(), reverse), generation });
+    }
+
     /// Rows `start..start+count` of the results for `generation`: Here rows first, then
     /// Everywhere rows. Empty if a newer generation has replaced them.
     pub fn rows(&self, generation: u64, start: u32, count: u32) -> Vec<RowView> {
@@ -195,7 +255,7 @@ impl Engine {
         (start..end)
             .map(|i| match (p.here.get(i), &p.activity) {
                 (Some(hit), Some(a)) => RowView::activity(&p.home, &a.items[a.shown[hit.index as usize]], hit),
-                (Some(hit), None) => RowView::here(&p.folder, &p.entries[hit.index as usize], hit),
+                (Some(hit), None) => RowView::here(&p.folder, &p.entries[hit.index as usize], hit, p.show_added),
                 (None, _) => RowView::everywhere(&p.home, &p.everywhere[i - p.here.len()]),
             })
             .collect()
@@ -216,13 +276,15 @@ impl Engine {
 }
 
 impl Engine {
-    /// `index: None` disables the Everywhere scope, and `activity` replaces the Activity
-    /// settings from the config (both for tests).
+    /// `index: None` disables the Everywhere scope, and `activity` and `sort` replace the
+    /// Activity and sort settings from the config (all for tests).
     fn start(
         listener: Arc<dyn EngineListener>,
         home: PathBuf,
         index: Option<Arc<IndexService>>,
         activity: Option<Settings>,
+        sorts: SortMemory,
+        sort: Option<SortConfig>,
     ) -> Arc<Self> {
         let (tx, rx) = mpsc::channel();
         let published = Arc::new(Mutex::new(Published {
@@ -233,6 +295,7 @@ impl Engine {
             activity: None,
             here: Vec::new(),
             everywhere: Vec::new(),
+            show_added: false,
         }));
         let latest_open = Arc::new(AtomicU64::new(0));
         if let Some(index) = &index {
@@ -256,6 +319,10 @@ impl Engine {
             query: Query::default(),
             show_hidden: false,
             matcher: HereMatcher::default(),
+            sort: SortOrder::default(),
+            sort_default: SortOrder::default(),
+            sorts,
+            fixed_sort: sort,
         };
         thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
         Arc::new(Engine { tx, published, latest_open })
@@ -289,6 +356,11 @@ struct Worker {
     query: Query,
     show_hidden: bool,
     matcher: HereMatcher,
+    /// The open folder's order, and the config's default when last read.
+    sort: SortOrder,
+    sort_default: SortOrder,
+    sorts: SortMemory,
+    fixed_sort: Option<SortConfig>,
 }
 
 impl Worker {
@@ -324,13 +396,15 @@ impl Worker {
             let mut regather = false;
             let mut user_change = false;
             let mut index_changed = false;
-            for cmd in std::iter::once(first).chain(self.rx.try_iter()) {
+            let queued: Vec<Command> = std::iter::once(first).chain(self.rx.try_iter()).collect();
+            for cmd in queued {
                 user_change |= matches!(
                     cmd,
                     Command::Open { .. }
                         | Command::OpenActivity { .. }
                         | Command::Query { .. }
                         | Command::ShowHidden { .. }
+                        | Command::Sort { .. }
                 );
                 match cmd {
                     Command::Open { path, generation } => {
@@ -350,6 +424,17 @@ impl Worker {
                     Command::ShowHidden { show, generation } => {
                         relist |= show != self.show_hidden;
                         self.show_hidden = show;
+                        self.generation = self.generation.max(generation);
+                    }
+                    Command::Sort { order: (key, reverse), generation } => {
+                        let config = self.sort_config();
+                        self.sort = SortOrder { key, reverse, folders_first: config.folders_first };
+                        if config.remember && !self.folder.as_os_str().is_empty() {
+                            self.sorts.set(&self.folder, self.sort, config.order());
+                        }
+                        let mut entries = (*self.entries).clone();
+                        sort_entries_by(&mut entries, self.sort);
+                        self.entries = Arc::new(entries);
                         self.generation = self.generation.max(generation);
                     }
                     Command::FolderChanged(path) => {
@@ -394,10 +479,13 @@ impl Worker {
             };
             if let Some((path, open_generation)) = target {
                 let opts = ListOptions { include_hidden: self.show_hidden, ..Default::default() };
+                // A refresh keeps the order; another folder has its own (or the default).
+                let order = if path == self.folder { self.sort } else { self.order_for(&path) };
                 let latest = self.latest_open.clone();
                 match list_dir(&path, &opts, || latest.load(Ordering::SeqCst) > open_generation) {
                     Ok(mut entries) => {
-                        sort_entries(&mut entries);
+                        sort_entries_by(&mut entries, order);
+                        self.sort = order;
                         // Only folders the user navigated to: not the one opened at launch.
                         if explicit_open
                             && !self.folder.as_os_str().is_empty()
@@ -419,7 +507,8 @@ impl Worker {
                         let mut up = path.clone();
                         while !up.is_dir() && up.pop() {}
                         if let Ok(mut entries) = list_dir(&up, &opts, || false) {
-                            sort_entries(&mut entries);
+                            self.sort = self.order_for(&up);
+                            sort_entries_by(&mut entries, self.sort);
                             self.watch(vec![up.clone()]);
                             self.folder = up;
                             self.entries = Arc::new(entries);
@@ -479,6 +568,24 @@ impl Worker {
         (settings, items)
     }
 
+    /// Reads `[sort]` (on opening a folder or sorting, not per keystroke).
+    fn sort_config(&mut self) -> SortConfig {
+        let config =
+            self.fixed_sort.clone().unwrap_or_else(|| tilde_config::load(&tilde_config::config_path()).config.sort);
+        self.sort_default = config.order();
+        config
+    }
+
+    /// The order remembered for `folder`, else the default.
+    fn order_for(&mut self, folder: &std::path::Path) -> SortOrder {
+        let config = self.sort_config();
+        let default = config.order();
+        if !config.remember {
+            return default;
+        }
+        self.sorts.get(folder, default).unwrap_or(default)
+    }
+
     fn index_scanning(&self) -> bool {
         self.index.as_ref().is_some_and(|i| i.status().state == IndexState::Scanning)
     }
@@ -530,13 +637,20 @@ impl Worker {
             activity: published_activity,
             here,
             everywhere,
+            show_added: self.sort.key == SortKey::Added,
         };
+        let default = self.sort_default;
         self.listener.results_ready(ResultsInfo {
             generation: self.generation,
             folder: self.folder.to_string_lossy().into(),
             activity: activity_info,
             here_count,
             everywhere_count,
+            sort: FolderSort {
+                by: self.sort.key.into(),
+                reverse: self.sort.reverse,
+                custom: self.sort.key != default.key || self.sort.reverse != default.reverse,
+            },
         });
     }
 }
@@ -614,7 +728,7 @@ mod tests {
     }
 
     fn engine_without_index(rec: Arc<Recorder>) -> Arc<Engine> {
-        Engine::start(rec, home_dir(), None, None)
+        Engine::start(rec, home_dir(), None, None, SortMemory::in_memory(), Some(SortConfig::default()))
     }
 
     #[test]
@@ -648,6 +762,63 @@ mod tests {
         // Stale generations return nothing.
         assert!(engine.rows(1, 0, 10).is_empty());
         assert_eq!(engine.index_of(1, "Sources".into()), None);
+    }
+
+    #[test]
+    fn sorting_is_remembered_per_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(a.join("sub")).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let t0 = SystemTime::now() - Duration::from_secs(3600);
+        for (name, size, age) in [("big.txt", 300, 30), ("old.pdf", 100, 50), ("new.txt", 200, 10)] {
+            std::fs::write(a.join(name), vec![b'x'; size]).unwrap();
+            let f = std::fs::File::options().write(true).open(a.join(name)).unwrap();
+            f.set_modified(t0 + Duration::from_secs(60 - age)).unwrap();
+        }
+        let rec = Arc::new(Recorder::default());
+        let engine = engine_without_index(rec.clone());
+        let names = |g| engine.rows(g, 0, 10).iter().map(|r| r.name.clone()).collect::<Vec<_>>().join(" ");
+        let sort_of = |g| rec.infos.lock().unwrap().iter().rev().find(|i| i.generation == g).unwrap().sort;
+
+        engine.open_folder(a.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+        assert_eq!(names(1), "sub big.txt new.txt old.pdf");
+        assert_eq!(sort_of(1), FolderSort { by: SortBy::Name, reverse: false, custom: false });
+
+        engine.set_sort(SortBy::Size, false, 2);
+        rec.wait_for(2);
+        assert_eq!(names(2), "sub big.txt new.txt old.pdf");
+        engine.set_sort(SortBy::Modified, false, 3);
+        rec.wait_for(3);
+        assert_eq!(names(3), "sub new.txt big.txt old.pdf", "newest first");
+        assert_eq!(sort_of(3), FolderSort { by: SortBy::Modified, reverse: false, custom: true });
+
+        // A filter keeps the order; typed text ranks by match.
+        engine.set_query("ext:txt".into(), 4);
+        rec.wait_for(4);
+        assert_eq!(names(4), "new.txt big.txt");
+        engine.set_query("old".into(), 5);
+        rec.wait_for(5);
+        assert_eq!(names(5), "old.pdf");
+        engine.set_query(String::new(), 6);
+        rec.wait_for(6);
+
+        // Another folder has the default; coming back restores this folder's order.
+        engine.open_folder(b.to_string_lossy().into(), 7);
+        rec.wait_for(7);
+        assert_eq!(sort_of(7).by, SortBy::Name);
+        engine.open_folder(a.to_string_lossy().into(), 8);
+        rec.wait_for(8);
+        assert_eq!(names(8), "sub new.txt big.txt old.pdf");
+
+        // Choosing the default again forgets it.
+        engine.set_sort(SortBy::Name, true, 9);
+        rec.wait_for(9);
+        assert_eq!(names(9), "sub old.pdf new.txt big.txt");
+        engine.set_sort(SortBy::Name, false, 10);
+        rec.wait_for(10);
+        assert!(!sort_of(10).custom);
     }
 
     #[test]
@@ -709,7 +880,14 @@ mod tests {
             cache_path: None,
         };
         let index = IndexService::with_config(config, false);
-        let engine = Engine::start(rec.clone(), root.clone(), Some(index.clone()), None);
+        let engine = Engine::start(
+            rec.clone(),
+            root.clone(),
+            Some(index.clone()),
+            None,
+            SortMemory::in_memory(),
+            Some(SortConfig::default()),
+        );
         let t = Instant::now();
         while index.status().state == IndexState::Scanning || index.status().items < 5 {
             assert!(t.elapsed() < Duration::from_secs(5), "scan didn't finish");
@@ -746,7 +924,14 @@ mod tests {
 
         let rec = Arc::new(Recorder::default());
         let settings = Settings { home: root.clone(), inbox: vec![root.join("Downloads")], days: 30 };
-        let engine = Engine::start(rec.clone(), root.clone(), None, Some(settings));
+        let engine = Engine::start(
+            rec.clone(),
+            root.clone(),
+            None,
+            Some(settings),
+            SortMemory::in_memory(),
+            Some(SortConfig::default()),
+        );
         engine.open_folder(root.join("work").to_string_lossy().into(), 1);
         rec.wait_for(1);
 

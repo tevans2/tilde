@@ -3,11 +3,21 @@ import TildeFFI
 
 // MARK: Path bar
 
-/// Breadcrumbs for the current folder followed by the search field.
+/// Breadcrumbs for the current folder followed by the search field. It's also the
+/// window's title bar: the window buttons sit at its leading edge (`leadingInset`).
 @MainActor
 final class PathBar: NSView {
     let field = FocusReportingField()
     private let crumbs = NSTextField(labelWithString: "")
+    private var crumbsLeading: NSLayoutConstraint!
+
+    /// Room for the window buttons.
+    var leadingInset: CGFloat = 0 {
+        didSet { crumbsLeading.constant = 14 + leadingInset }
+    }
+
+    // Dragging the empty bar moves the window, as a title bar does.
+    override var mouseDownCanMoveWindow: Bool { true }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -29,8 +39,9 @@ final class PathBar: NSView {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
+        crumbsLeading = crumbs.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14)
         NSLayoutConstraint.activate([
-            crumbs.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            crumbsLeading,
             crumbs.centerYAnchor.constraint(equalTo: centerYAnchor),
             crumbs.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.6),
             field.leadingAnchor.constraint(equalTo: crumbs.trailingAnchor, constant: 4),

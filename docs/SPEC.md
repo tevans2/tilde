@@ -663,3 +663,18 @@ Finished later (see "M3, finished" below): tags, conflict prompts, persistent un
 - **Welcome** (first launch, Help › Welcome to Tilde): Full Disk Access status polled every second with a button to the right Privacy pane; "Ask now" for Desktop, Documents and Downloads (read off the main thread so macOS asks while the reason is on screen); editor choice with Neovim discovery; the three modes with the current keys. Run unbundled, it names the terminal app (via `__CFBundleIdentifier`, so tmux reports the terminal hosting it) since macOS attributes permissions to it.
 - Remaining for M7: Sparkle, the signed and notarized app bundle, a performance pass on launch and EDIT entry.
 
+### Sorting (done)
+
+- `SortKey` (name, modified, added, size, kind) with a natural direction each (A→Z, newest first, largest first) and `reverse`; ties go by name; folders stay first (`folders_first`), and a size sort keeps folders apart, ordered by item count. Kind sorts by extension.
+- The engine sorts each listing once; text queries rank by match, filter-only queries keep the order (the matcher preserves input order when there's no text). Sorting by added makes rows show the date added.
+- `s` in SELECT (a choice prompt; the current key reverses) and View › Sort By (`⌃⌘1`–`⌃⌘5`, Reverse Order). `[sort]` sets the default; with `remember`, orders chosen per folder live in `~/Library/Application Support/Tilde/sort.json` (re-read on each open so windows share it; choosing the default removes the entry). The status bar names the order when it isn't name A–Z. Activity keeps time order.
+
+
+### Window chrome (done)
+
+- Browser windows have no system title bar: full-size content, a transparent hidden title bar and an empty compact toolbar (which sizes the bar and keeps the window buttons centred). The path bar is the title bar: it takes the title bar's height, starts after the window buttons (from the edge in full screen) and drags the window from its empty parts. The window title is still set (Window menu, Mission Control) but not shown. Settings, Welcome and the Index window keep standard title bars.
+
+### Jump list (done)
+
+- Per window, browser-style: every navigation (open, up, home, reveal, Activity) pushes the place left and the item highlighted there; `⌃o` / `⌃i` (actions `back` / `forward` in GO and SELECT, Go › Back `⌘[` / Forward `⌘]`) move through it without recording, restoring the highlight. A new move clears forward history; folders that no longer exist are skipped; a failed open drops its entry. The place is tracked when navigation starts, so repeated `⌃o` before results arrive still steps correctly. Capped at 100.
+
