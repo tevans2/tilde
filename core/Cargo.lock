@@ -817,6 +817,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-cleanup"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilde-activity",
+ "tilde-fs",
+ "tilde-types",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "tilde-config"
 version = "0.1.0"
 dependencies = [
@@ -838,10 +853,12 @@ dependencies = [
 name = "tilde-ffi"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "serde_json",
  "tempfile",
  "thiserror",
  "tilde-activity",
+ "tilde-cleanup",
  "tilde-config",
  "tilde-edit",
  "tilde-fs",
@@ -1171,6 +1188,12 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "zmij"

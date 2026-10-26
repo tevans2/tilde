@@ -1,0 +1,19 @@
+[package]
+name = "tilde-cleanup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tilde-types.workspace = true
+tilde-fs.workspace = true
+tilde-activity.workspace = true
+libc.workspace = true
+rayon = "1"
+serde.workspace = true
+serde_json.workspace = true
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[dev-dependencies]
+tempfile.workspace = true

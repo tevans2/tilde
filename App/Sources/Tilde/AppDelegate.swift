@@ -100,12 +100,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         (front ?? windows.first { $0.window?.isVisible == true })?.showHistory()
     }
 
+    /// Clean Up opens in the front browser window.
+    @objc func showCleanup(_ sender: Any?) {
+        let front = NSApp.keyWindow?.windowController as? BrowserWindowController
+        (front ?? windows.first { $0.window?.isVisible == true })?.showCleanup()
+    }
+
     @objc func showSettings(_ sender: Any?) {
         settingsWindow.show()
     }
 
     @objc func showKeys(_ sender: Any?) {
         settingsWindow.show(tab: .keys)
+    }
+
+    @objc func showCleanupSettings(_ sender: Any?) {
+        settingsWindow.show(tab: .cleanup)
     }
 
     @objc func showWelcome(_ sender: Any?) {
@@ -230,6 +240,7 @@ enum MainMenu {
             .tag = -1
         sortItem.submenu = sortMenu
         viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Clean Up…", action: #selector(AppDelegate.showCleanup(_:)), keyEquivalent: "")
         let indexItem = viewMenu.addItem(withTitle: "Search Index…", action: #selector(AppDelegate.showIndex(_:)), keyEquivalent: "i")
         indexItem.keyEquivalentModifierMask = [.command, .shift]
         viewItem.submenu = viewMenu

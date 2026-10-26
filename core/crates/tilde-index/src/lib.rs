@@ -170,6 +170,18 @@ impl IndexHandle {
         if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
     }
 
+    /// Every indexed item `keep` accepts (given its absolute path and metadata). Walks the
+    /// whole index (a few ms per 100k items) without the search lock.
+    pub fn select(&self, mut keep: impl FnMut(&Path, &ItemMeta) -> bool) -> Vec<(PathBuf, ItemMeta)> {
+        let home = &self.shared.home;
+        let absolute = |key: &str| if key.starts_with('/') { PathBuf::from(key) } else { home.join(key) };
+        self.shared
+            .select(|key, meta| keep(&absolute(key), meta))
+            .into_iter()
+            .map(|(key, meta)| (absolute(&key), meta))
+            .collect()
+    }
+
     /// Visible files modified at or after `since` (seconds since the epoch), newest
     /// first, as (absolute path, metadata). Doesn't wait for the search lock.
     pub fn recent(&self, since: i64, limit: usize) -> Vec<(PathBuf, ItemMeta)> {

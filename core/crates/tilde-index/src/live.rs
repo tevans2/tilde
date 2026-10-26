@@ -139,6 +139,24 @@ impl Shared {
         found
     }
 
+    /// Live items that `keep` accepts (given the key and metadata), as (key, metadata).
+    pub fn select(&self, mut keep: impl FnMut(&str, &ItemMeta) -> bool) -> Vec<(String, ItemMeta)> {
+        let dead = self.dead();
+        let mut found = Vec::new();
+        for i in 0..self.injector.injected_items() {
+            let Some(item) = self.injector.get(i) else { continue };
+            let meta = *item.data;
+            if dead.contains(meta.id) || meta.extra {
+                continue;
+            }
+            let key = item.matcher_columns[0].to_string();
+            if keep(&key, &meta) {
+                found.push((key, meta));
+            }
+        }
+        found
+    }
+
     /// Adds an item and returns its ID, or `None` once the index is full.
     pub fn push(&self, key: &str, mut meta: ItemMeta) -> Option<u32> {
         if self.live_items() >= self.max_items {

@@ -5,6 +5,7 @@
 //! completion is reported through `EngineListener`. Results for stale generations are
 //! dropped.
 
+mod cleanup;
 mod config;
 mod edit;
 mod engine;
@@ -15,6 +16,9 @@ mod preview;
 mod sorts;
 mod views;
 
+pub use cleanup::{
+    CleanupCategory, CleanupItem, CleanupKind, CleanupListener, CleanupService, CleanupState, row_for_path,
+};
 pub use config::{
     ActionKeys, AppConfig, ConfigError, ConfigLoad, HotkeyInfo, KeyChord, KeymapInfo, SettingValue, Settings,
     ThemeAppearance, ensure_config_file, load_config, load_keymap, load_settings, parse_hotkey, reset_setting,

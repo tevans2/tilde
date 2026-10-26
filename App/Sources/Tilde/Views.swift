@@ -199,6 +199,11 @@ final class ResultsTableView: NSTableView {
     }
 }
 
+/// Which part of Clean Up shows, for the status bar's hints.
+enum CleanupPage {
+    case categories, items, trash
+}
+
 /// Keeps the selection blue while typing in the path bar (GO mode).
 final class AlwaysEmphasizedRowView: NSTableRowView {
     override var isEmphasized: Bool {
@@ -524,7 +529,8 @@ final class StatusBar: NSView {
         right.font = theme.small
     }
 
-    func update(mode: Mode, summary: String, inActivity: Bool = false, inHistory: Bool = false, inPreview: Bool = false) {
+    func update(mode: Mode, summary: String, inActivity: Bool = false, inHistory: Bool = false, inPreview: Bool = false,
+                inCleanup: CleanupPage? = nil) {
         let keys = Keymap.shared
         /// "m move   c copy" from the keymap, leaving out unbound actions.
         func hint(_ items: [(KeyAction, String)], all: Bool = false, gap: String = "   ") -> String {
@@ -537,6 +543,22 @@ final class StatusBar: NSView {
         case .select where inPreview:
             modePill.stringValue = "PREVIEW"
             hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) scroll   space page   \(keys.key(.top, in: .select)) \(keys.key(.bottom, in: .select)) top / bottom   \(keys.key(.previewFull, in: .select)) whole window   \(keys.key(.quickLookWindow, in: .select)) Quick Look   \(keys.key(.quickLook, in: .select)) or esc back"
+        case .select where inCleanup != nil:
+            modePill.stringValue = "CLEAN UP"
+            let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move"
+            let back = "\(keys.key(.parent, in: .select)) back"
+            switch inCleanup! {
+            case .categories:
+                hints.stringValue = "\(move)   \(keys.key(.enter, in: .select)) open   r look again   \(keys.key(.cleanup, in: .select)) or esc close"
+            case .items:
+                hints.stringValue = "\(move)   " + hint([
+                    (.shelf, "collect"), (.shelfAll, "all"), (.trash, "trash"), (.move, "move"),
+                    (.hide, "never suggest"), (.quickLook, "preview"),
+                ]) + "   ⏎ show in folder   \(back)"
+            case .trash:
+                hints.stringValue = "\(move)   " + hint([(.trash, "empty the Trash"), (.shelf, "collect"), (.move, "move out"), (.quickLook, "preview")])
+                    + "   \(back)"
+            }
         case .select where inHistory:
             modePill.stringValue = "HISTORY"
             hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move   u undo   r redo   ⏎ go to that state   esc back"

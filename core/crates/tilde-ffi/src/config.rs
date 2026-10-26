@@ -144,6 +144,14 @@ pub struct Settings {
     /// As written in the config: `ctrl+alt+space`.
     pub dialog_hotkey: String,
     pub dialog_confirm: bool,
+    /// `[cleanup]`, as written: "500M", "6mo".
+    pub cleanup_big_file: String,
+    pub cleanup_big_file_age: String,
+    pub cleanup_download_age: String,
+    pub cleanup_project_idle: String,
+    pub cleanup_duplicates_min: String,
+    pub cleanup_build_folders: Vec<String>,
+    pub cleanup_ignore: Vec<String>,
 }
 
 #[uniffi::export]
@@ -175,6 +183,13 @@ pub fn load_settings() -> Settings {
         dialog_enabled: c.dialog.enabled,
         dialog_hotkey: c.dialog.hotkey,
         dialog_confirm: c.dialog.confirm,
+        cleanup_big_file: c.cleanup.big_file,
+        cleanup_big_file_age: c.cleanup.big_file_age,
+        cleanup_download_age: c.cleanup.download_age,
+        cleanup_project_idle: c.cleanup.project_idle,
+        cleanup_duplicates_min: c.cleanup.duplicates_min,
+        cleanup_build_folders: c.cleanup.build_folders,
+        cleanup_ignore: c.cleanup.ignore,
     }
 }
 

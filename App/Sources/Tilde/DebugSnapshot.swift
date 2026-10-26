@@ -8,7 +8,7 @@ import SwiftTerm
 /// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause), so
 /// flows can be checked without screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead;
-/// `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome` does the same for those windows, and
+/// `TILDE_SNAPSHOT_WINDOW=settings|keys|cleanup-settings|welcome|history|cleanup` does the same for those windows, and
 /// `panel` snapshots a panel the keys opened (Quick Look).
 @MainActor
 enum DebugSnapshot {
@@ -26,8 +26,10 @@ enum DebugSnapshot {
         let other: Selector? = switch env["TILDE_SNAPSHOT_WINDOW"] {
         case "settings": #selector(AppDelegate.showSettings(_:))
         case "keys": #selector(AppDelegate.showKeys(_:))
+        case "cleanup-settings": #selector(AppDelegate.showCleanupSettings(_:))
         case "welcome": #selector(AppDelegate.showWelcome(_:))
         case "history": #selector(AppDelegate.showHistory(_:))
+        case "cleanup": #selector(AppDelegate.showCleanup(_:))
         default: nil
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {

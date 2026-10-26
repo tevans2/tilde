@@ -37,7 +37,7 @@ final class SettingsWindowController: NSWindowController {
 }
 
 enum SettingsTab: Hashable {
-    case general, preview, editing, search, keys
+    case general, preview, editing, search, cleanup, keys
 }
 
 @MainActor
@@ -202,6 +202,7 @@ struct SettingsView: View {
                 PreviewSettings(model: model).tabItem { Text("Preview") }.tag(SettingsTab.preview)
                 EditingSettings(model: model).tabItem { Text("Editing") }.tag(SettingsTab.editing)
                 SearchSettings(model: model).tabItem { Text("Search") }.tag(SettingsTab.search)
+                CleanupSettings(model: model).tabItem { Text("Clean Up") }.tag(SettingsTab.cleanup)
                 KeysSettings(model: model).tabItem { Text("Keys") }.tag(SettingsTab.keys)
             }
             .padding(12)
@@ -456,6 +457,82 @@ private struct SearchSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct CleanupSettings: View {
+    @Bindable var model: SettingsModel
+    @State private var buildFolders: String?
+
+    var body: some View {
+        Form {
+            Section("Suggestions") {
+                choice("Big files: at least", "cleanup.big_file", model.settings.cleanupBigFile,
+                       ["100M", "250M", "500M", "1G", "2G", "5G"])
+                choice("…not opened for", "cleanup.big_file_age", model.settings.cleanupBigFileAge,
+                       ["1mo", "3mo", "6mo", "1y", "2y"])
+                choice("Old downloads: older than", "cleanup.download_age", model.settings.cleanupDownloadAge,
+                       ["7d", "14d", "30d", "60d", "90d", "6mo", "1y"])
+                choice("Build output: projects idle for", "cleanup.project_idle", model.settings.cleanupProjectIdle,
+                       ["14d", "30d", "60d", "90d", "6mo", "1y"])
+                choice("Duplicates: at least", "cleanup.duplicates_min", model.settings.cleanupDuplicatesMin,
+                       ["100K", "1M", "10M", "100M"])
+                Text("Changes apply the next time Clean Up looks (r).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Build folders") {
+                TextField("Folder names", text: Binding(
+                    get: { buildFolders ?? model.settings.cleanupBuildFolders.joined(separator: ", ") },
+                    set: { buildFolders = $0 }))
+                    .onSubmit {
+                        guard let text = buildFolders else { return }
+                        let names = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                        model.write("cleanup.build_folders", .list(value: names))
+                        buildFolders = nil
+                    }
+                Text("Folders inside projects (a folder with .git, package.json, Cargo.toml…) that a build makes again. Comma-separated; ⏎ saves.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section("Never suggested") {
+                if model.settings.cleanupIgnore.isEmpty {
+                    Text("Nothing yet. X in Clean Up adds the highlighted item.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(model.settings.cleanupIgnore, id: \.self) { entry in
+                    HStack {
+                        Text(entry).font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Button("Remove") {
+                            model.write("cleanup.ignore", .list(value: model.settings.cleanupIgnore.filter { $0 != entry }))
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    /// A picker of common values, plus the current one if it's something else.
+    private func choice(_ label: String, _ key: String, _ current: String, _ options: [String]) -> some View {
+        Picker(label, selection: Binding(get: { current }, set: { model.write(key, .text(value: $0)) })) {
+            if !options.contains(current) { Text(Self.describe(current)).tag(current) }
+            ForEach(options, id: \.self) { Text(Self.describe($0)).tag($0) }
+        }
+    }
+
+    /// "500M" → "500 MB", "6mo" → "6 months".
+    static func describe(_ value: String) -> String {
+        let units: [(String, String, String)] = [
+            ("mo", "month", "months"), ("y", "year", "years"), ("w", "week", "weeks"), ("d", "day", "days"),
+            ("h", "hour", "hours"), ("K", "KB", "KB"), ("M", "MB", "MB"), ("G", "GB", "GB"), ("T", "TB", "TB"),
+        ]
+        for (suffix, one, many) in units where value.hasSuffix(suffix) {
+            let number = String(value.dropLast(suffix.count))
+            guard Double(number) != nil else { break }
+            return "\(number) \(number == "1" ? one : many)"
+        }
+        return value
     }
 }
 

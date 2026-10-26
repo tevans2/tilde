@@ -13,7 +13,7 @@ enum KeyAction: String {
     case newFolder = "new_folder"
     case compress
     case copyPath = "copy_path"
-    case hide, undo, redo, sort, history
+    case hide, undo, redo, sort, history, cleanup
     case quickLook = "quick_look"
     case quickLookWindow = "quick_look_window"
     case previewFull = "preview_full"

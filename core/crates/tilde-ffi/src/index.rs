@@ -380,6 +380,12 @@ impl IndexService {
         }
     }
 
+    /// The index's handle (for walking every item without the search lock), if there's an
+    /// index.
+    pub(crate) fn handle(&self) -> Option<tilde_index::IndexHandle> {
+        self.live.lock().unwrap().handle.clone()
+    }
+
     pub(crate) fn home(&self) -> &Path {
         &self.home
     }

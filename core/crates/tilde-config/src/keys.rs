@@ -102,6 +102,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("undo", "Undo", &["u"]),
     a("redo", "Redo", &["U", "ctrl+r"]),
     a("history", "History: undo or redo any operation", &["H"]),
+    a("cleanup", "Clean Up: free space (big files, old downloads, duplicates…)", &["C"]),
     a("filter_all", "Activity: everything", &["1"]),
     a("filter_downloads", "Activity: downloads", &["2"]),
     a("filter_screenshots", "Activity: screenshots", &["3"]),

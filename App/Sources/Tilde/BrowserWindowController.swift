@@ -32,6 +32,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// History (`H`): the undo tree, over the list and preview.
     private let historyView = HistoryView()
     private var inHistory = false
+    /// Clean Up (`C`): suggestions for freeing space, over the list (the preview stays).
+    private let cleanupView = CleanupView()
+    private var inCleanup = false
+    /// Started on the first Clean Up, scanning in the background.
+    private var cleanup: CleanupService?
+    private let cleanupEvents = CleanupEvents()
+    /// Every suggestion seen this scan, by path, for checking before acting on the shelf.
+    private var cleanupSeen: [String: (CleanupKind, CleanupItem)] = [:]
+    private var cleanupReload: DispatchWorkItem?
     // EDIT mode
     private let editor = FolderEditor()
     private let changesView = ChangesView()
@@ -202,7 +211,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             box.borderWidth = 0
         }
 
-        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar, editor, changesView, historyView] as [NSView] {
+        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar, editor, changesView, historyView, cleanupView] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -257,7 +266,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             historyView.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
             historyView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             historyView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            cleanupView.topAnchor.constraint(equalTo: scroll.topAnchor),
+            cleanupView.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            cleanupView.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            cleanupView.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
         ])
+        cleanupView.isHidden = true
+        cleanupView.onKey = { [weak self] event in self?.handleCleanupKey(event) ?? false }
+        cleanupView.onSelect = { [weak self] in self?.cleanupSelectionChanged() }
+        cleanupEvents.onChange = { [weak self] _ in self?.cleanupChanged() }
         historyView.isHidden = true
         historyView.onClose = { [weak self] in self?.closeHistory() }
         historyView.onUndo = { [weak self] e in self?.undoEntry(e) }
@@ -301,6 +318,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         statusBar.applyTheme(theme)
         terminal?.applyTheme(theme)
         historyView.applyTheme(theme)
+        cleanupView.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
         tableView.reloadData()
         preview.invalidate()
@@ -323,7 +341,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             : (editing ? 0.4 : 0)
         // With the whole window to the preview, the list (and its edge) step aside.
         let whole = previewFocused && previewWhole && !editing
-        listScroll.isHidden = whole || inHistory || editing
+        listScroll.isHidden = whole || inHistory || inCleanup || editing
+        cleanupView.isHidden = !inCleanup || whole
         if whole { previewSeparator.isHidden = true }
         previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
         previewWidth?.isActive = true
@@ -339,6 +358,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .go:
             window?.makeFirstResponder(pathBar.field)
             pathBar.field.currentEditor()?.selectedRange = NSRange(location: pathBar.field.stringValue.utf16.count, length: 0)
+        case .select where inCleanup:
+            cleanupView.focus()
         case .select:
             window?.makeFirstResponder(tableView)
         case .edit:
@@ -364,6 +385,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Shows `folder`, highlighting `select`. Recorded in the jump list unless it's a jump.
     private func open(folder: String, select: String? = nil, query: String = "", record: Bool = true) {
         leaveHistory()
+        leaveCleanup()
         endPreviewFocus(refocus: false)
         if record { recordJump(to: .folder(folder)) }
         place = .folder(folder)
@@ -382,6 +404,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func showActivity(record: Bool, query: String = "", select: String? = nil) {
         leaveHistory()
+        leaveCleanup()
         endPreviewFocus(refocus: false)
         if record { recordJump(to: .activity) }
         place = .activity
@@ -472,6 +495,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private var selectedRow: RowView? {
         results.row(tableView.selectedRow)
+    }
+
+    /// What the preview shows: the highlighted row, or in Clean Up the highlighted item.
+    private var previewRow: RowView? {
+        guard inCleanup else { return selectedRow }
+        return cleanupView.selectedItem.flatMap { rowForPath(path: $0.path) }
     }
 
     /// The folder a row leads into: itself for folders and symlinks to folders.
@@ -596,6 +625,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .hide: hideHighlightedFromSearch()
         case .sort: chooseSort()
         case .history: showHistory()
+        case .cleanup: showCleanup()
         case .quickLook: quickLookKey()
         case .quickLookWindow: toggleQuickLook(nil)
         case .previewFull:
@@ -639,6 +669,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     func showHistory() {
         guard mode != .edit, overlay == nil else { return }
         endPreviewFocus(refocus: false)
+        leaveCleanup()
         if !inHistory {
             inHistory = true
             listScroll.isHidden = true
@@ -800,13 +831,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// has items (the window shows the shelf).
     private func quickLookKey() {
         if let panel = QLPreviewPanel.shared(), panel.isVisible { return panel.orderOut(nil) }
-        guard shelf.isEmpty, Theme.shared.previewVisible, selectedRow != nil else { return toggleQuickLook(nil) }
+        let row = previewRow
+        guard shelf.isEmpty, Theme.shared.previewVisible, row != nil else { return toggleQuickLook(nil) }
         // The pane follows the selection after a moment: bring it up to date first.
-        if preview.shownPath != selectedRow?.path {
+        if preview.shownPath != row?.path {
             previewWork?.cancel()
-            preview.show(selectedRow)
+            preview.show(row)
         }
-        _ = preview.loadFull(for: selectedRow?.path)
+        _ = preview.loadFull(for: row?.path)
         startPreviewFocus()
     }
 
@@ -898,6 +930,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Chrome
 
     private func updateChrome() {
+        if inCleanup {
+            pathBar.setTitle(cleanupTitle())
+            pathBar.setMode(.select)
+            pathBar.field.placeholderString = ""
+            statusBar.update(mode: .select, summary: cleanupSummary(), inPreview: previewFocused,
+                             inCleanup: cleanupView.kind.map { $0 == .trash ? .trash : .items } ?? .categories)
+            window?.title = "Clean Up"
+            window?.representedURL = nil
+            return
+        }
         if inHistory {
             pathBar.setTitle("History")
             pathBar.setMode(.select)
@@ -980,7 +1022,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func schedulePreview() {
         previewWork?.cancel()
-        let row = selectedRow
+        let row = previewRow
         let work = DispatchWorkItem { [weak self] in
             guard let self, Theme.shared.previewVisible else { return }
             self.preview.show(row)
@@ -1112,6 +1154,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        cleanup?.cancel()
         indexTimer?.invalidate()
         preview.close()
         terminal?.terminate()
@@ -1239,6 +1282,8 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        // The list is out of sight in Clean Up (a folder refresh may still re-select).
+        if inCleanup { return }
         // A folder refresh re-selects the same row; only another item ends PREVIEW.
         if selectedRow?.path != preview.shownPath { endPreviewFocus(refocus: false) }
         schedulePreview()
@@ -1391,6 +1436,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     /// The shelf if it has anything, otherwise the highlighted row.
     private var targets: [String] {
         if !shelf.isEmpty { return shelf }
+        if inCleanup { return cleanupView.selectedItem.map { [$0.path] } ?? [] }
         return selectedRow.map { [$0.path] } ?? []
     }
 
@@ -1428,6 +1474,11 @@ extension BrowserWindowController: OpsEventsDelegate {
         let selected = tableView.selectedRowIndexes
         tableView.reloadData()
         tableView.selectRowIndexes(selected, byExtendingSelection: false)
+        cleanupView.shelved = shelfSet
+        if inCleanup {
+            cleanupView.refreshShelf()
+            updateChrome()
+        }
     }
 
     private func toggleShelf() {
@@ -1620,7 +1671,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         prompt.onCloseExtra = { [weak self] in
             guard let self else { return }
             self.overlay = nil
-            if self.inHistory { self.historyView.focus() } else { self.setMode(restore) }
+            if self.inHistory { self.historyView.focus() } else if self.inCleanup { self.setMode(.select) } else { self.setMode(restore) }
         }
     }
 
@@ -1671,6 +1722,8 @@ extension BrowserWindowController: OpsEventsDelegate {
         guard mine != nil || window?.isKeyWindow == true else { return }
 
         if inHistory { historyView.reload(ops) }
+        // Trashed suggestions leave the page (and their totals).
+        if inCleanup { cleanup?.forgetMissing() }
         if let error = outcome.error {
             if error == "Cancelled" {
                 let done = outcome.completed > 0 ? " after \(outcome.completed) of \(outcome.total)" : ""
@@ -2035,4 +2088,350 @@ final class MenuAction: NSObject {
     private let action: () -> Void
     init(_ action: @escaping () -> Void) { self.action = action }
     @objc func run() { action() }
+}
+
+// MARK: Clean Up
+
+extension BrowserWindowController {
+    /// `C` / View › Clean Up: suggestions for freeing space, in place of the list. Looks
+    /// the first time it opens, in the background; `r` looks again.
+    func showCleanup() {
+        guard mode != .edit, overlay == nil else { return }
+        endPreviewFocus(refocus: false)
+        leaveHistory()
+        if cleanup == nil {
+            cleanup = CleanupService(index: index, listener: cleanupEvents)
+            // The content check reads a lot: not on battery saving.
+            rescanCleanup(duplicates: !ProcessInfo.processInfo.isLowPowerModeEnabled)
+        }
+        if !inCleanup {
+            inCleanup = true
+            cleanupView.open(nil)
+            updateSidePane(Theme.shared)
+            reloadCleanup()
+        }
+        mode = .select
+        cleanupView.focus()
+        updateChrome()
+        schedulePreview()
+    }
+
+    private func closeCleanup() {
+        leaveCleanup()
+        setMode(.select)
+    }
+
+    /// Back to the list (when leaving for a folder, Activity or History too).
+    private func leaveCleanup() {
+        guard inCleanup else { return }
+        endPreviewFocus(refocus: false)
+        inCleanup = false
+        updateSidePane(Theme.shared)
+        schedulePreview()
+        updateChrome()
+    }
+
+    private func rescanCleanup(duplicates: Bool) {
+        cleanupSeen = [:]
+        cleanup?.scan(duplicates: duplicates)
+        reloadCleanup()
+    }
+
+    /// Progress comes often while measuring: redraw at most every 150 ms.
+    private func cleanupChanged() {
+        guard cleanupReload == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.cleanupReload = nil
+            self?.reloadCleanup()
+        }
+        cleanupReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    private func reloadCleanup() {
+        guard inCleanup, let cleanup else { return }
+        let items = cleanupView.kind.map { cleanup.items(kind: $0) }
+        if let kind = cleanupView.kind {
+            for item in items ?? [] { cleanupSeen[item.path] = (kind, item) }
+        }
+        cleanupView.shelved = shelfSet
+        cleanupView.update(categories: cleanup.categories(), items: items)
+        updateChrome()
+    }
+
+    private func cleanupSelectionChanged() {
+        if previewFocused, cleanupView.selectedItem?.path != preview.shownPath { endPreviewFocus(refocus: false) }
+        schedulePreview()
+        refreshQuickLook()
+    }
+
+    /// "Clean Up › Duplicates   212 GB free".
+    private func cleanupTitle() -> String {
+        var title = "Clean Up"
+        if let kind = cleanupView.kind { title += " › \(CleanupView.title(kind))" }
+        let home = URL(fileURLWithPath: engine.homeDir())
+        if let free = try? home.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage {
+            title += "   \(CleanupView.bytes(UInt64(max(free, 0)))) free"
+        }
+        return title
+    }
+
+    private func cleanupSummary() -> String {
+        guard let cleanup else { return "" }
+        let categories = cleanup.categories()
+        let looking = categories.contains { $0.state == .waiting || $0.state == .working }
+        var parts: [String] = []
+        if let category = cleanupView.category {
+            parts.append("\(category.count.formatted()) item\(category.count == 1 ? "" : "s")")
+            parts.append(CleanupView.bytes(category.bytes))
+            if category.state == .working { parts.append("still looking…") }
+        } else {
+            // Categories can overlap (a big file that's also a duplicate): "up to".
+            let total = categories.filter { $0.kind != .trash }.reduce(UInt64(0)) { $0 + $1.bytes }
+            parts.append("up to \(CleanupView.bytes(total)) to free")
+            if looking { parts.append("looking…") }
+        }
+        let collected = shelf.compactMap { cleanupSeen[$0]?.1 }
+        if !collected.isEmpty {
+            parts.append("\(collected.count) collected (\(CleanupView.bytes(collected.reduce(UInt64(0)) { $0 + $1.bytes })))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func handleCleanupKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) { return false }
+        let plain = flags.isDisjoint(with: [.control, .option])
+        if plain, event.charactersIgnoringModifiers == "r" {
+            // Looking again always includes the content check (it was skipped on battery
+            // saving).
+            rescanCleanup(duplicates: true)
+            statusBar.flash("Looking again…")
+            return true
+        }
+        if plain, event.keyCode == 51 {
+            cleanupBack()
+            return true
+        }
+        guard let action = Keymap.shared.action(for: event, in: .select) else {
+            if plain, let c = event.charactersIgnoringModifiers, c.count == 1, c.first!.isLetter {
+                statusBar.flash("\(c) does nothing in Clean Up.")
+                return true
+            }
+            return false
+        }
+        switch action {
+        case .down: cleanupView.move(1)
+        case .up: cleanupView.move(-1)
+        case .top: cleanupView.select(0)
+        case .bottom: cleanupView.select(cleanupView.rows.count - 1, step: -1)
+        case .enter, .open: cleanupEnter()
+        case .parent: cleanupBack()
+        case .clear:
+            if shelf.isEmpty { closeCleanup() } else { setShelf([]) }
+        case .cleanup: closeCleanup()
+        case .shelf: cleanupShelf()
+        case .shelfAll: cleanupShelfAll()
+        case .trash: cleanupTrash()
+        case .move:
+            guard cleanupView.kind != nil else { return true }
+            pickDestination(copy: false)
+        case .copyPath: copyPaths()
+        case .hide: cleanupIgnore()
+        case .quickLook: quickLookKey()
+        case .quickLookWindow: toggleQuickLook(nil)
+        case .previewFull:
+            previewWhole = true
+            quickLookKey()
+        case .undo: undo()
+        case .redo: redo()
+        case .history: showHistory()
+        case .activity: showActivity(record: true)
+        case .home: open(folder: engine.homeDir())
+        case .search: closeCleanup(); setMode(.go)
+        default: statusBar.flash("That does nothing in Clean Up.")
+        }
+        updateChrome()
+        return true
+    }
+
+    /// `l` / `⏎`: open a category; on an item, show it in its folder.
+    private func cleanupEnter() {
+        switch cleanupView.selected {
+        case let .category(category)?:
+            guard category.state != .waiting else { return statusBar.flash("Still looking…") }
+            cleanupView.open(category.kind)
+            reloadCleanup()
+            cleanupView.select(0)
+        case let .item(item)?:
+            let url = URL(fileURLWithPath: item.path)
+            open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
+        default: break
+        }
+    }
+
+    /// `h` / `⌫`: back to the categories, or out of Clean Up.
+    private func cleanupBack() {
+        guard let kind = cleanupView.kind else { return closeCleanup() }
+        cleanupView.open(nil)
+        reloadCleanup()
+        let row = cleanupView.rows.firstIndex {
+            if case let .category(c) = $0 { return c.kind == kind }
+            return false
+        }
+        cleanupView.select(row ?? 0)
+    }
+
+    /// Why an item can't go: the copy to keep, or the cache of an app that's running.
+    private func cleanupProtection(_ item: CleanupItem, _ kind: CleanupKind) -> String? {
+        if item.keep { return "That's the copy to keep" }
+        if cleanupView.isProtected(item, in: kind) { return "That app is running: quit it first" }
+        return nil
+    }
+
+    private func cleanupShelf() {
+        guard let item = cleanupView.selectedItem, let kind = cleanupView.kind else { return }
+        if shelfSet.contains(item.path) {
+            setShelf(shelf.filter { $0 != item.path })
+        } else if let why = cleanupProtection(item, kind) {
+            statusBar.flash(why)
+        } else {
+            setShelf(shelf + [item.path])
+        }
+        cleanupView.move(1)
+    }
+
+    /// `a`: every removable item in the category, or none if they're all collected.
+    private func cleanupShelfAll() {
+        guard let kind = cleanupView.kind else { return }
+        let removable = cleanupView.items.filter { cleanupProtection($0, kind) == nil }.map(\.path)
+        if removable.allSatisfy(shelfSet.contains) {
+            let remove = Set(removable)
+            setShelf(shelf.filter { !remove.contains($0) })
+        } else {
+            setShelf(shelf + removable.filter { !shelfSet.contains($0) })
+        }
+    }
+
+    /// `d`: to the Trash, after checking each item is still what was suggested (same size
+    /// and date; for a duplicate, still the same as the copy kept). In the Trash itself,
+    /// empties it.
+    private func cleanupTrash() {
+        guard let cleanup, let kind = cleanupView.kind else {
+            return statusBar.flash("Open a category first (\(Keymap.shared.key(.enter, in: .select)))")
+        }
+        if kind == .trash, shelf.isEmpty { return confirmEmptyTrash() }
+        let paths = targets
+        guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        if paths.count == 1, let (k, item) = cleanupSeen[paths[0]], let why = cleanupProtection(item, k) {
+            return statusBar.flash(why)
+        }
+        // The copy each duplicate set keeps.
+        var keepers: [String: String] = [:]
+        for (k, item) in cleanupSeen.values where k == .duplicates && item.keep {
+            if let group = item.group { keepers[group] = item.path }
+        }
+        struct Check: Sendable {
+            let path: String
+            let size: UInt64
+            let modified: Int64
+            let keep: String?
+            let bytes: UInt64
+        }
+        var pending: [Check] = []
+        var others: [String] = []
+        var refused = 0
+        for path in paths {
+            guard let (k, item) = cleanupSeen[path] else {
+                others.append(path)
+                continue
+            }
+            if cleanupProtection(item, k) != nil {
+                refused += 1
+                continue
+            }
+            let keep = k == .duplicates ? item.group.flatMap { keepers[$0] } : nil
+            if k == .duplicates, keep == nil {
+                refused += 1
+                continue
+            }
+            pending.append(Check(path: path, size: item.size, modified: item.modified, keep: keep, bytes: item.bytes))
+        }
+        let (checks, plain) = (pending, others)
+        statusBar.setActivity("Checking \(checks.count == 1 ? "it" : "\(checks.count) items") before trashing…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var ok: [String] = []
+            var changed = 0
+            var freed: UInt64 = 0
+            for c in checks {
+                guard cleanup.unchanged(path: c.path, size: c.size, modified: c.modified),
+                      c.keep.map({ cleanup.sameContents(a: $0, b: c.path) }) ?? true
+                else {
+                    changed += 1
+                    continue
+                }
+                ok.append(c.path)
+                freed += c.bytes
+            }
+            let go = ok + plain
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.statusBar.setActivity(nil)
+                    var notes: [String] = []
+                    if changed > 0 { notes.append("\(changed) changed since Clean Up looked, left alone (r looks again)") }
+                    if refused > 0 { notes.append("\(refused) kept (the copy to keep, or a running app's cache)") }
+                    guard !go.isEmpty else {
+                        return self.statusBar.flash(notes.isEmpty ? "Nothing to trash" : notes.joined(separator: " · "))
+                    }
+                    let note = notes.isEmpty ? "" : " · " + notes.joined(separator: " · ")
+                    self.submit(OpRequest(kind: .trash, sources: go, clash: .keepBoth),
+                                describing: "Moved \(self.describe(go)) to the Trash (\(CleanupView.bytes(freed)))\(note)")
+                    let gone = Set(go)
+                    self.setShelf(self.shelf.filter { !gone.contains($0) })
+                }
+            }
+        }
+    }
+
+    private func confirmEmptyTrash() {
+        guard let cleanup, let trash = cleanupView.category(.trash), trash.count > 0 else {
+            return statusBar.flash("The Trash is empty")
+        }
+        let items = "\(trash.count.formatted()) item\(trash.count == 1 ? "" : "s")"
+        confirm("Empty the Trash? \(items), \(CleanupView.bytes(trash.bytes)). This can't be undone.",
+                action: "Empty the Trash") { [weak self] in
+            self?.statusBar.setActivity("Emptying the Trash…")
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                var freed: UInt64?
+                var problem: String?
+                do { freed = try cleanup.emptyTrash() } catch { problem = error.message }
+                let (bytes, message) = (freed, problem)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.statusBar.setActivity(nil)
+                        if let bytes {
+                            self.statusBar.flash("Emptied the Trash · freed \(CleanupView.bytes(bytes))")
+                        } else {
+                            self.statusBar.flash("Couldn't empty the Trash: \(message ?? "")")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `X`: never suggest it again (`[cleanup] ignore` in the config).
+    private func cleanupIgnore() {
+        guard let cleanup, let item = cleanupView.selectedItem else { return }
+        do {
+            try cleanup.ignore(path: item.path)
+            reloadCleanup()
+            statusBar.flash("Won't suggest \(describe([item.path])) again ([cleanup] ignore in the config)")
+        } catch {
+            statusBar.flash("Couldn't update the config: \(error.message)")
+        }
+    }
 }

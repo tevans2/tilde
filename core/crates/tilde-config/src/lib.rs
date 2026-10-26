@@ -33,6 +33,131 @@ pub struct Config {
     pub keys: KeysConfig,
     pub sort: SortConfig,
     pub dialog: DialogConfig,
+    pub cleanup: CleanupConfig,
+}
+
+/// The Clean Up page (`C`): what it suggests.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CleanupConfig {
+    /// "Big files": at least this big ("500M", "2G")…
+    pub big_file: String,
+    /// …and not opened or changed for this long ("6mo", "1y", "90d").
+    pub big_file_age: String,
+    /// "Old downloads": in an inbox folder (Downloads, Desktop) this long.
+    pub download_age: String,
+    /// "Build output": in projects where nothing has changed for this long.
+    pub project_idle: String,
+    /// Duplicates smaller than this are ignored.
+    pub duplicates_min: String,
+    /// Folder names inside projects that hold build output or downloaded dependencies.
+    pub build_folders: Vec<String>,
+    /// Paths (starting with `~/` or `/`), names, or `*` patterns never suggested.
+    pub ignore: Vec<String>,
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        CleanupConfig {
+            big_file: "500M".into(),
+            big_file_age: "6mo".into(),
+            download_age: "60d".into(),
+            project_idle: "90d".into(),
+            duplicates_min: "1M".into(),
+            build_folders: [
+                "node_modules",
+                "target",
+                "DerivedData",
+                ".venv",
+                "venv",
+                "build",
+                ".gradle",
+                "Pods",
+                ".next",
+                "dist",
+            ]
+            .map(String::from)
+            .to_vec(),
+            ignore: Vec::new(),
+        }
+    }
+}
+
+/// `CleanupConfig` in bytes and seconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CleanupRules {
+    pub big_file: u64,
+    pub big_file_age: i64,
+    pub download_age: i64,
+    pub project_idle: i64,
+    pub duplicates_min: u64,
+    pub build_folders: Vec<String>,
+    pub ignore: Vec<String>,
+}
+
+impl CleanupConfig {
+    /// The rules, with anything that doesn't parse replaced by its default (and named in
+    /// the returned problems).
+    pub fn rules(&self) -> (CleanupRules, Vec<String>) {
+        let d = CleanupConfig::default();
+        let mut problems = Vec::new();
+        let mut size = |key: &str, v: &str, default: &str| {
+            parse_size(v).unwrap_or_else(|| {
+                problems.push(format!("cleanup.{key} “{v}” isn't a size like 500M or 2G"));
+                parse_size(default).unwrap()
+            })
+        };
+        let big_file = size("big_file", &self.big_file, &d.big_file);
+        let duplicates_min = size("duplicates_min", &self.duplicates_min, &d.duplicates_min);
+        let mut age = |key: &str, v: &str, default: &str| {
+            parse_age(v).unwrap_or_else(|| {
+                problems.push(format!("cleanup.{key} “{v}” isn't an age like 60d, 6mo or 1y"));
+                parse_age(default).unwrap()
+            })
+        };
+        let rules = CleanupRules {
+            big_file,
+            big_file_age: age("big_file_age", &self.big_file_age, &d.big_file_age),
+            download_age: age("download_age", &self.download_age, &d.download_age),
+            project_idle: age("project_idle", &self.project_idle, &d.project_idle),
+            duplicates_min,
+            build_folders: self.build_folders.clone(),
+            ignore: self.ignore.clone(),
+        };
+        (rules, problems)
+    }
+}
+
+/// "500M", "2G", "1.5T", "800K", "1000" (bytes), in decimal units as the Finder shows them.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim().to_uppercase();
+    let s = s.strip_suffix('B').unwrap_or(&s);
+    let (num, mult) = match s.chars().last()? {
+        'K' => (&s[..s.len() - 1], 1e3),
+        'M' => (&s[..s.len() - 1], 1e6),
+        'G' => (&s[..s.len() - 1], 1e9),
+        'T' => (&s[..s.len() - 1], 1e12),
+        _ => (s, 1.0),
+    };
+    let n: f64 = num.trim().parse().ok()?;
+    (n >= 0.0).then_some((n * mult) as u64)
+}
+
+/// "60d", "12w", "6mo", "1y", "36h" in seconds (a month is 30 days, a year 365).
+pub fn parse_age(s: &str) -> Option<i64> {
+    let s = s.trim().to_lowercase();
+    let split = s.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+    let (num, unit) = s.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let unit_secs = match unit.trim() {
+        "h" => 3_600.0,
+        "d" => 86_400.0,
+        "w" => 7.0 * 86_400.0,
+        "mo" | "m" => 30.0 * 86_400.0,
+        "y" => 365.0 * 86_400.0,
+        _ => return None,
+    };
+    (n >= 0.0).then_some((n * unit_secs) as i64)
 }
 
 /// The file-dialog helper: a global hotkey that opens Tilde's search over another app's
@@ -376,6 +501,7 @@ pub fn load(path: &Path) -> Loaded {
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
             config.activity.days = config.activity.days.clamp(1, 3650);
             let (_, mut problems) = config.theme.resolve();
+            problems.extend(config.cleanup.rules().1);
             if let Err(e) = parse_hotkey(&config.dialog.hotkey) {
                 problems.push(format!("dialog.hotkey: {e}"));
             }
@@ -506,6 +632,25 @@ hotkey = "ctrl+alt+space"
 # After picking a file in an Open dialog, press Open too.
 confirm = false
 
+# The Clean Up page (C): suggestions for freeing space. Everything it moves goes to the
+# Trash and can be undone (History); emptying the Trash asks first.
+[cleanup]
+# Big files: at least this big, and not opened or changed for this long.
+big_file = "500M"
+big_file_age = "6mo"
+# Old downloads: still in Downloads or on the Desktop after this long.
+download_age = "60d"
+# Build output (node_modules, target, …) in projects untouched for this long.
+project_idle = "90d"
+# Duplicates smaller than this are left out.
+duplicates_min = "1M"
+build_folders = [
+  "node_modules", "target", "DerivedData", ".venv", "venv", "build", ".gradle",
+  "Pods", ".next", "dist",
+]
+# Never suggested: paths (~/… or /…), names, or patterns with *. X on the page adds here.
+ignore = []
+
 # Keys for GO (typing in the bar) and SELECT (the list). Give an action a key or a list
 # of keys; [] unbinds it. A key is the character it types (j, G, @) or a name (down, up,
 # left, right, return, tab, esc, space, backspace, delete, home, end, pageup, pagedown),
@@ -589,6 +734,28 @@ pub fn remove_value(path: &Path, key_path: &[&str]) -> std::io::Result<()> {
         std::fs::write(path, doc.to_string())?;
     }
     Ok(())
+}
+
+/// Adds `entry` to the list at `section.key` (like `cleanup.ignore`), keeping comments.
+/// Creates the file, table and list as needed; doesn't add it twice.
+pub fn add_to_list(path: &Path, section: &str, key: &str, entry: &str) -> std::io::Result<()> {
+    let invalid = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidData, m);
+    ensure_file(path)?;
+    let text = std::fs::read_to_string(path)?;
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| invalid(format!("{e}")))?;
+    let table = doc
+        .entry(section)
+        .or_insert_with(toml_edit::table)
+        .as_table_mut()
+        .ok_or_else(|| invalid(format!("[{section}] is not a table")))?;
+    if !table.contains_key(key) {
+        table.insert(key, toml_edit::value(toml_edit::Array::new()));
+    }
+    let array = table[key].as_array_mut().ok_or_else(|| invalid(format!("{section}.{key} is not a list")))?;
+    if !array.iter().any(|v| v.as_str() == Some(entry)) {
+        array.push(entry);
+    }
+    std::fs::write(path, doc.to_string())
 }
 
 /// The two `[index]` lists an entry can be added to.
@@ -708,6 +875,31 @@ mod tests {
         assert_eq!(l.config.preview.width, 0.5);
         assert_eq!(l.config.bat_themes(), ("GitHub".to_string(), "Nord".to_string()));
         assert!(l.error.unwrap().contains("preview.width"));
+    }
+
+    #[test]
+    fn cleanup_rules_parse_sizes_and_ages() {
+        assert_eq!(parse_size("500M"), Some(500_000_000));
+        assert_eq!(parse_size("1.5g"), Some(1_500_000_000));
+        assert_eq!(parse_size("800KB"), Some(800_000));
+        assert_eq!(parse_size("1000"), Some(1000));
+        assert_eq!(parse_size("lots"), None);
+        assert_eq!(parse_age("60d"), Some(60 * 86_400));
+        assert_eq!(parse_age("6mo"), Some(180 * 86_400));
+        assert_eq!(parse_age("1y"), Some(365 * 86_400));
+        assert_eq!(parse_age("soon"), None);
+        let (rules, problems) = CleanupConfig::default().rules();
+        assert!(problems.is_empty());
+        assert_eq!((rules.big_file, rules.download_age), (500_000_000, 60 * 86_400));
+        let l = load_str("[cleanup]\nbig_file = \"huge\"\n");
+        assert!(l.error.unwrap().contains("cleanup.big_file"));
+        assert_eq!(l.config.cleanup.rules().0.big_file, 500_000_000);
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        add_to_list(&p, "cleanup", "ignore", "~/Movies/keep").unwrap();
+        add_to_list(&p, "cleanup", "ignore", "~/Movies/keep").unwrap();
+        assert_eq!(load(&p).config.cleanup.ignore, ["~/Movies/keep"]);
     }
 
     #[test]

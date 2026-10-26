@@ -82,7 +82,7 @@ the new key) or in the config file (see below).
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
-| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `p` Quick Look · `w` open with · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `X` hide from search |
+| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `p` Quick Look · `w` open with · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `C` Clean Up · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
 | Anywhere | `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
@@ -157,6 +157,33 @@ and says why; what was done so far stays recorded. `u` / `⌘Z` and `U` / `⌘�
 and forward along the current branch. `j` / `k` move, `esc` goes back. The history is
 shared by all windows and kept across restarts (the last 200 operations from the past 30
 days, in `~/Library/Application Support/Tilde/undo.json`).
+
+**Clean Up** (`C`, or View › Clean Up…) suggests what could go, in place of the list
+(the preview stays beside it), with the free space on the disk at the top:
+
+- **App caches** in `~/Library/Caches` (Apple's own are left alone). Apps rebuild them.
+- **Duplicates**: files with the same contents, at least 1 MB. One copy per set is marked
+  **keep** (one outside Downloads, the Desktop and caches; then the oldest) and can't be
+  trashed. Likely sets show within a second or two; the contents are then checked in
+  full, biggest first ("checking…" until then). Hashes are cached, so looking again is
+  quick. Clones (APFS copies that share their space) are counted as freeing nothing.
+- **Big files you haven't opened**: 500 MB or more, not opened or changed in 6 months.
+- **Old downloads**: in Downloads or on the Desktop for over 60 days; installers
+  (`.dmg`, `.pkg`) are marked, with the site they came from.
+- **Build output in idle projects**: `node_modules`, `target`, `.venv`… in projects
+  (a folder with `.git`, `package.json`, `Cargo.toml`…) nothing has changed in for 90 days.
+- **Trash**: what's in it.
+
+It looks in the background, from the search index plus a measuring pass, so the page
+opens at once and fills in. `j` / `k` move, `l` or `⏎` opens a category, `h` or `⌫` goes
+back, `r` looks again, `esc` or `C` closes. In a category: `x` collects an item on the
+shelf, `a` collects all of them, `d` trashes (the collected items, or the highlighted
+one), `m` moves, `X` never suggests it again, `p` previews, `⏎` shows it in its folder.
+Before trashing, each item is checked to still be what was suggested (same size and
+date; for a duplicate, still identical to the copy kept), and a running app's cache is
+left alone. Everything goes to the Trash and can be undone, except emptying the Trash
+(`d` in the Trash category), which asks first. In Low Power Mode the duplicate check is
+skipped until you press `r`. Settings › Clean Up (or `[cleanup]`) has the thresholds.
 
 While typing in the bar, `⌘⌫` and `⌃⌫` clear what's typed; Move to Trash (`⌘⌫`) only
 works from the list in SELECT.
@@ -307,6 +334,16 @@ by = "name"                 # name, modified, added, size, kind
 reverse = false             # Z→A, oldest first, smallest first
 folders_first = true
 remember = true             # remember the order chosen for each folder
+
+[cleanup]                   # sizes: 500M, 2G; ages: 90d, 6mo, 1y
+big_file = "500M"           # big files at least this big...
+big_file_age = "6mo"        # ...not opened or changed for this long
+download_age = "60d"        # old downloads: in Downloads or on the Desktop this long
+project_idle = "90d"        # build output: projects untouched this long
+duplicates_min = "1M"       # smaller duplicates are ignored
+build_folders = ["node_modules", "target", "DerivedData", ".venv", "venv", "build",
+                 ".gradle", "Pods", ".next", "dist"]
+ignore = []                 # never suggested: ~/paths, names or *.patterns (X adds)
 
 [keys.go]                   # while typing in the bar: needs ctrl+/alt+ unless a named key
 down = ["down", "ctrl+j"]
