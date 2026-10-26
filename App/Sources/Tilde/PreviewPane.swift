@@ -144,6 +144,11 @@ final class PreviewPane: NSView {
         let current = generation
         showTags(row?.path)
         guard let row else { return showQuickLook(nil) }
+        // Folders and packages (apps) only ever get their icon and details from Quick
+        // Look, which is quick: no thumbnail stage or spinner.
+        if row.kind == .folder || row.kind == .package {
+            return showQuickLookNow(row.path)
+        }
         let theme = Theme.shared
         guard theme.previewBat, Self.usesBat(row) else { return showQuickLook(row.path) }
         // bat themes are light or dark; match the window.
@@ -204,6 +209,17 @@ final class PreviewPane: NSView {
         }
     }
 
+    /// Straight to the full Quick Look view, for items where there's nothing to stage.
+    private func showQuickLookNow(_ path: String) {
+        textScroll.isHidden = true
+        thumbnail.isHidden = true
+        thumbnail.image = nil
+        quickLook.alphaValue = 1
+        quickLook.isHidden = false
+        quickLook.previewItem = URL(fileURLWithPath: path) as NSURL
+        fullPath = path
+    }
+
     private func showQuickLook(_ path: String?) {
         textScroll.isHidden = true
         // The last item's full preview goes at once; it shouldn't keep loading or playing.
@@ -232,6 +248,8 @@ final class PreviewPane: NSView {
             for: request,
             update: Self.onThumbnail { [weak self] image, final in
                 guard let self, current == self.generation else { return }
+                // Only real thumbnails: a file icon stretched to fill the pane would just
+                // shrink back when the full preview (which shows it at icon size) arrives.
                 if let image { self.thumbnail.image = image }
                 if final {
                     self.fullSizeReady = true
@@ -260,8 +278,9 @@ final class PreviewPane: NSView {
         _ body: @escaping @MainActor (NSImage?, _ final: Bool) -> Void
     ) -> @Sendable (QLThumbnailRepresentation?, QLThumbnailRepresentation.RepresentationType, (any Error)?) -> Void {
         { rep, type, _ in
-            // CGImage crosses threads; NSImage is made on the main thread.
-            let image = rep?.cgImage
+            // CGImage crosses threads; NSImage is made on the main thread. Icons aren't
+            // passed on (see the caller).
+            let image = type == .icon ? nil : rep?.cgImage
             let final = type == .thumbnail || rep == nil
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { body(image.map { NSImage(cgImage: $0, size: .zero) }, final) }
