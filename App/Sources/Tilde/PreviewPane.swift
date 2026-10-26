@@ -26,6 +26,12 @@ final class PreviewPane: NSView {
     private var fullWork: DispatchWorkItem?
     /// For the current item: the selection has rested, and the full-size thumbnail is in.
     private var rested = false
+    /// The item showing, and the one whose full Quick Look preview is in place (faded in).
+    private(set) var shownPath: String?
+    private(set) var fullPath: String?
+    /// `p` asked for the full preview of the item showing: a late bat render mustn't
+    /// replace it.
+    private var fullRequested = false
     private var fullSizeReady = false
 
     /// How long the selection must rest before the full preview starts loading.
@@ -132,6 +138,9 @@ final class PreviewPane: NSView {
     func show(_ row: RowView?) {
         generation += 1
         cancelQuickLook()
+        shownPath = row?.path
+        fullPath = nil
+        fullRequested = false
         let current = generation
         showTags(row?.path)
         guard let row else { return showQuickLook(nil) }
@@ -144,7 +153,7 @@ final class PreviewPane: NSView {
         Task.detached {
             let preview = batPreview(path: path, theme: batTheme, maxLines: maxLines)
             await MainActor.run {
-                guard current == self.generation else { return }
+                guard current == self.generation, !self.fullRequested else { return }
                 if let preview { self.showText(preview) } else { self.showQuickLook(path) }
             }
         }
@@ -153,6 +162,26 @@ final class PreviewPane: NSView {
     func close() {
         cancelQuickLook()
         quickLook.close()
+    }
+
+    /// `p`: the full Quick Look preview of the item showing, now: without waiting for the
+    /// selection to rest, and instead of bat for code and text. Returns false when it's
+    /// already in place (`p` then opens the Quick Look window).
+    func loadFull(for path: String?) -> Bool {
+        guard let path, path == shownPath, fullPath != path else { return false }
+        fullRequested = true
+        // Already on its way in.
+        if (quickLook.previewItem as? NSURL)?.path == path { return true }
+        fullWork?.cancel()
+        rested = true
+        fullSizeReady = true
+        if !textScroll.isHidden {
+            textScroll.isHidden = true
+            loading.isHidden = false
+            spinner.startAnimation(nil)
+        }
+        showFullPreview(URL(fileURLWithPath: path), generation: generation)
+        return true
     }
 
     /// Stops loading anything for the previous item.
@@ -252,6 +281,12 @@ final class PreviewPane: NSView {
         quickLook.previewItem = url as NSURL
         quickLook.alphaValue = 0
         quickLook.isHidden = false
+        #if DEBUG
+        // `TILDE_DEBUG_PREVIEW_FOCUS=1`: act like a preview that takes the keyboard.
+        if ProcessInfo.processInfo.environment["TILDE_DEBUG_PREVIEW_FOCUS"] == "1" {
+            window?.makeFirstResponder(quickLook)
+        }
+        #endif
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self, current == self.generation else { return }
             NSAnimationContext.runAnimationGroup { context in
@@ -260,6 +295,7 @@ final class PreviewPane: NSView {
             } completionHandler: {
                 MainActor.assumeIsolated {
                     guard current == self.generation else { return }
+                    self.fullPath = url.path
                     self.thumbnail.isHidden = true
                     self.spinner.stopAnimation(nil)
                     self.loading.isHidden = true

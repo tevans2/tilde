@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import Quartz
 import SwiftTerm
 
 /// Development aid: `TILDE_SNAPSHOT=/path/out.png` renders the key window to a PNG after
@@ -35,6 +36,12 @@ enum DebugSnapshot {
                 if env["TILDE_SNAPSHOT_INDEX"] == "1" { NSApp.sendAction(#selector(AppDelegate.showIndex(_:)), to: nil, from: nil) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + (showIndex || other != nil ? 2.0 : 0.6)) {
                     write(to: out, panel: showIndex, other: other != nil)
+                    // `TILDE_SNAPSHOT_FOCUS=1`: which view has the keyboard at the end.
+                    if env["TILDE_SNAPSHOT_FOCUS"] == "1" {
+                        let responder = NSApp.keyWindow?.firstResponder ?? NSApp.windows.first?.firstResponder
+                        let popup = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+                        FileHandle.standardError.write("FOCUS \(responder.map { String(describing: Swift.type(of: $0)) } ?? "none") popup=\(popup)\n".data(using: .utf8)!)
+                    }
                     NSApp.terminate(nil)
                 }
             }

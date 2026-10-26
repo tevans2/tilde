@@ -50,6 +50,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// The current edit is in Neovim.
     private var editInNvim = false
     private var keyMonitor: Any?
+    private var focusObservation: NSKeyValueObservation?
     private let engine: Engine
     private let results: ResultsCache
 
@@ -140,6 +141,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { self?.handleWindowKey(event) ?? false }
             return handled ? nil : event
+        }
+        // Some Quick Look previews (web-based ones, like Markdown extensions) take the
+        // keyboard when they finish loading, which stops arrow keys moving through the
+        // list until something else is clicked. Focus only stays in the preview if it was
+        // clicked into.
+        focusObservation = window.observe(\.firstResponder, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.keepFocusOutOfPreview() } }
         }
     }
 
@@ -572,7 +580,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .hide: hideHighlightedFromSearch()
         case .sort: chooseSort()
         case .history: showHistory()
-        case .quickLook: toggleQuickLook(nil)
+        case .quickLook: quickLookKey()
         case .openWith: openWith()
         case .undo: undo()
         case .redo: redo()
@@ -765,6 +773,25 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// `p` / File › Quick Look (⌘Y): the full Quick Look panel, which follows the
     /// highlighted row while it's open.
+    /// `p`: first the full preview in the pane; once it's showing, `p` again opens the
+    /// Quick Look window (and closes it). Straight to the window when the pane can't show
+    /// it: preview hidden, or the shelf has items (the window shows the shelf).
+    private func quickLookKey() {
+        if let panel = QLPreviewPanel.shared(), panel.isVisible { return panel.orderOut(nil) }
+        if shelf.isEmpty, Theme.shared.previewVisible, selectedRow != nil {
+            // The pane follows the selection after a moment: bring it up to date first.
+            if preview.shownPath != selectedRow?.path {
+                previewWork?.cancel()
+                preview.show(selectedRow)
+            }
+            if preview.loadFull(for: selectedRow?.path) {
+                return statusBar.flash("Full preview · \(Keymap.shared.key(.quickLook, in: .select)) again for Quick Look")
+            }
+        }
+        toggleQuickLook(nil)
+    }
+
+    /// File › Quick Look (⌘Y): the Quick Look window, as in the Finder.
     @objc func toggleQuickLook(_ sender: Any?) {
         guard let panel = QLPreviewPanel.shared() else { return }
         if panel.isVisible {
@@ -984,6 +1011,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         default: return false
         }
         return true
+    }
+
+    /// Puts the keyboard back on the bar or the list if the preview took it on its own.
+    private func keepFocusOutOfPreview() {
+        guard let window, mode != .edit, overlay == nil,
+              let responder = window.firstResponder as? NSView, responder.isDescendant(of: preview)
+        else { return }
+        if let event = NSApp.currentEvent, event.window === window,
+           [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+           preview.frame.contains(preview.superview?.convert(event.locationInWindow, from: nil) ?? .zero) {
+            return
+        }
+        setMode(mode)
     }
 
     func windowWillClose(_ notification: Notification) {

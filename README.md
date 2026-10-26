@@ -109,8 +109,11 @@ while a Save dialog goes to its folder and keeps the name you typed. It works wi
 dialogs that use the standard macOS panel (most apps and browsers); apps with their own
 pickers aren't supported. You can also drag from Tilde onto any dialog.
 
-**Quick Look and Open With.** `p` (or `⌘Y`) opens the full Quick Look panel for the
-shelf or the highlighted item; it follows as you move with `j` / `k`, and `p` closes it.
+**Quick Look and Open With.** `p` loads the full preview in the pane straight away (for
+code and text too, instead of bat); once it's showing, `p` again opens the Quick Look
+window, which follows as you move with `j` / `k` and closes with `p`. With items on the
+shelf, or the preview pane turned off, `p` opens the window directly. `⌘Y` always opens
+the window, as in the Finder.
 `w` lists the apps that can open the item, your default first; type to narrow it down.
 Right-click a row for Open, Open With, Quick Look, Show in Finder, Copy Path, Tags, Rename
 and Move to Trash. The shelf is kept when you quit, and comes back in the first window.
