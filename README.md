@@ -119,15 +119,26 @@ in the Finder). With several items it shows the tags they share: removing one re
 from all of them, adding one adds it to all, and their other tags stay. Tags show under the
 preview.
 
-**History** (`H`, or Edit › History… `⌥⌘Z`) lists every operation, newest first, with what
-each one did, including ones you've undone. Select any of them and press `u` to undo just
-that one (not everything after it) or `r` to redo it. Nothing is lost when you undo and
-then do something new: the undone operation stays in the list and can still be redone.
-If a later change makes part of an undo impossible (the file moved again, its old name
-is taken), that part is reported and nothing is forced; the rest can be undone later.
-`u` / `⌘Z` and `U` / `⌘⇧Z` still undo and redo the latest. The history is shared by all
-windows and kept across restarts (the last 200 operations from the past 30 days, in
-`~/Library/Application Support/Tilde/undo.json`).
+**History** (`H`, or Edit › History… `⌥⌘Z`) shows the undo tree in place of the list:
+every operation is a node, newest at the top, on the branch it was done on, down to a
+**Start** node. Undoing something and then doing something new starts a new branch; the
+old one stays (struck through) and can be returned to. The current state is ringed and
+marked **now**. The side shows what the selected operation did and what each key would do:
+
+- `⏎` puts files back the way they were right after that operation, across branches:
+  everything not on its line is undone (newest first), and what's missing on its line is
+  redone (oldest first). Use **Start** to go back before everything.
+- `u` undoes just that operation. Later operations that touched the same files (or
+  things inside a folder it touched) are undone first, newest first, so nothing is left
+  half-reverted.
+- `r` redoes it, after redoing the undone operations it builds on.
+
+Anything involving more than one operation lists them and asks first. If something
+outside Tilde got in the way (a file moved again, a name now taken), the run stops there
+and says why; what was done so far stays recorded. `u` / `⌘Z` and `U` / `⌘⇧Z` move back
+and forward along the current branch. `j` / `k` move, `esc` goes back. The history is
+shared by all windows and kept across restarts (the last 200 operations from the past 30
+days, in `~/Library/Application Support/Tilde/undo.json`).
 
 While typing in the bar, `⌘⌫` and `⌃⌫` clear what's typed; Move to Trash (`⌘⌫`) only
 works from the list in SELECT.

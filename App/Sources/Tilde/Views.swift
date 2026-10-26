@@ -78,6 +78,15 @@ final class PathBar: NSView {
     }
 
     /// `@ Activity`, then the filter (`/ Downloaded`, `/ Inbox`).
+    /// A page that isn't a folder: "History /".
+    func setTitle(_ title: String) {
+        let font = Theme.shared.bar
+        let c = Theme.shared.colors
+        let s = NSMutableAttributedString(string: title, attributes: [.font: font, .foregroundColor: c.text])
+        s.append(NSAttributedString(string: " / ", attributes: [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55)]))
+        crumbs.attributedStringValue = s
+    }
+
     func setActivity(_ filter: ActivityFilter) {
         let font = Theme.shared.bar
         let c = Theme.shared.colors
@@ -515,7 +524,7 @@ final class StatusBar: NSView {
         right.font = theme.small
     }
 
-    func update(mode: Mode, summary: String, inActivity: Bool = false) {
+    func update(mode: Mode, summary: String, inActivity: Bool = false, inHistory: Bool = false) {
         let keys = Keymap.shared
         /// "m move   c copy" from the keymap, leaving out unbound actions.
         func hint(_ items: [(KeyAction, String)], all: Bool = false, gap: String = "   ") -> String {
@@ -525,6 +534,9 @@ final class StatusBar: NSView {
             }.joined(separator: gap)
         }
         switch mode {
+        case .select where inHistory:
+            modePill.stringValue = "HISTORY"
+            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move   u undo   r redo   ⏎ go to that state   esc back"
         case .select where inActivity:
             modePill.stringValue = "SELECT"
             hints.stringValue = hint([

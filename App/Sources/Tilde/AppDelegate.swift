@@ -10,7 +10,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var ops = FileOps(listener: opsEvents)
     private var windows: [BrowserWindowController] = []
     private lazy var indexWindow = IndexWindowController(index: index)
-    private lazy var historyWindow = HistoryWindowController(ops: ops)
     private lazy var settingsWindow = SettingsWindowController(
         onChange: { [weak self] in self?.reloadConfig(nil) },
         showIndex: { [weak self] in self?.showIndex(nil) })
@@ -95,8 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indexWindow.showWindow(nil)
     }
 
+    /// History opens in the front browser window.
     @objc func showHistory(_ sender: Any?) {
-        historyWindow.show()
+        let front = NSApp.keyWindow?.windowController as? BrowserWindowController
+        (front ?? windows.first { $0.window?.isVisible == true })?.showHistory()
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -155,7 +156,6 @@ extension AppDelegate: OpsEventsDelegate {
     func operationFinished(id: UInt64, outcome: OpOutcome) {
         windows.removeAll { $0.window?.isVisible != true }
         windows.forEach { $0.operationFinished(id: id, outcome: outcome) }
-        historyWindow.operationFinished(id: id, outcome: outcome)
     }
 }
 

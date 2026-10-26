@@ -166,8 +166,8 @@ enum DebugSnapshot {
         let window = panel
             ? NSApp.windows.first { $0 is NSPanel && $0.isVisible }
             : other
-            ? NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController
-                || $0.windowController is HistoryWindowController }
+            ? (NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController }
+                ?? NSApp.keyWindow ?? NSApp.windows.first)
             : (NSApp.keyWindow ?? NSApp.windows.first)
         guard let window, let view = window.contentView?.superview else { return }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }

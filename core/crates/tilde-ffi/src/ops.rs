@@ -52,6 +52,8 @@ pub enum OpPhase {
     Done,
     Undone,
     Redone,
+    /// Went to another state in the history (undos and redos).
+    Restored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -87,10 +89,30 @@ pub struct HistoryEntry {
     pub at: i64,
     pub changed: i64,
     pub state: HistoryState,
+    /// The operation it was done on top of: the tree's edges.
+    pub parent: Option<u64>,
+    /// The current state is right after this one.
+    pub is_head: bool,
     /// What it did, one line per item: "Renamed ~/a.txt → b.txt".
     pub changes: Vec<String>,
     pub can_undo: bool,
     pub can_redo: bool,
+}
+
+/// What an undo, redo or go-to would do, shown before it runs.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HistoryPreview {
+    /// Entries undone (newest first), then redone (oldest first).
+    pub undo: Vec<u64>,
+    pub redo: Vec<u64>,
+    /// Why it can't be done.
+    pub problem: Option<String>,
+}
+
+impl From<tilde_ops::Preview> for HistoryPreview {
+    fn from(p: tilde_ops::Preview) -> Self {
+        HistoryPreview { undo: p.undo, redo: p.redo, problem: p.problem }
+    }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -129,6 +151,7 @@ impl Listener for Forward {
                     OutcomeKind::Done => OpPhase::Done,
                     OutcomeKind::Undone => OpPhase::Undone,
                     OutcomeKind::Redone => OpPhase::Redone,
+                    OutcomeKind::Restored => OpPhase::Restored,
                 },
                 label: o.label,
                 completed: o.completed,
@@ -189,6 +212,8 @@ impl FileOps {
                     RecordState::Undone => HistoryState::Undone,
                     RecordState::PartlyUndone => HistoryState::PartlyUndone,
                 },
+                parent: h.parent,
+                is_head: h.is_head,
                 changes: h.changes.iter().map(|d| describe(&home, d)).collect(),
                 can_undo: h.can_undo,
                 can_redo: h.can_redo,
@@ -196,14 +221,39 @@ impl FileOps {
             .collect()
     }
 
-    /// Undoes a history entry, whatever came after it. `None` if it has nothing to undo.
+    /// Undoes a history entry, with the later operations that touched the same files
+    /// (see `preview_undo`). `None` if it has nothing to undo.
     pub fn undo_entry(&self, entry: u64) -> Option<u64> {
         self.inner.undo_record(entry)
     }
 
-    /// Redoes an undone history entry. `None` if it isn't undone.
+    /// Redoes an undone history entry, after the undone ones it builds on. `None` if it
+    /// isn't undone.
     pub fn redo_entry(&self, entry: u64) -> Option<u64> {
         self.inner.redo_record(entry)
+    }
+
+    /// Puts files back the way they were right after `entry` (`None`: before everything),
+    /// across branches. `None` when it's already like that.
+    pub fn goto_entry(&self, entry: Option<u64>) -> Result<Option<u64>, OpError> {
+        self.inner.goto(entry).map_err(|message| OpError::Invalid { message })
+    }
+
+    pub fn preview_undo(&self, entry: u64) -> HistoryPreview {
+        self.inner.preview_undo(entry).into()
+    }
+
+    pub fn preview_redo(&self, entry: u64) -> HistoryPreview {
+        self.inner.preview_redo(entry).into()
+    }
+
+    pub fn preview_goto(&self, entry: Option<u64>) -> HistoryPreview {
+        self.inner.preview_goto(entry).into()
+    }
+
+    /// The current state: right after this entry (`None`: before all of them).
+    pub fn head(&self) -> Option<u64> {
+        self.inner.head()
     }
 
     /// Starts an operation and returns its ID. Problems found while planning (a name

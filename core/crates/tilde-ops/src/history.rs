@@ -29,23 +29,48 @@ pub(crate) fn load(path: &Path) -> Journal {
     } else {
         serde_json::from_value::<Legacy>(value).map(Legacy::upgrade).unwrap_or_default()
     };
+    if journal.version < 2 {
+        linearize(&mut journal);
+    }
     let cutoff = now().saturating_sub(MAX_AGE_SECS);
     journal.records.retain(|r| r.changed >= cutoff);
-    let ids: Vec<u64> = journal.records.iter().map(|r| r.id).collect();
-    journal.redo.retain(|id| ids.contains(id));
-    journal.next = journal.next.max(ids.iter().copied().max().unwrap_or(0));
+    forget_missing(&mut journal);
     journal
+}
+
+/// Histories from before the tree were one line: each record sits on the one before, and
+/// the current state is the newest still in place.
+fn linearize(journal: &mut Journal) {
+    let mut previous = None;
+    for r in &mut journal.records {
+        r.parent = previous;
+        previous = Some(r.id);
+    }
+    journal.head =
+        journal.records.iter().filter(|r| !r.done.is_empty()).max_by_key(|r| (r.changed, r.id)).map(|r| r.id);
+    journal.version = 2;
+}
+
+/// After dropping old records: parents that are gone become roots, and the head moves to
+/// one that's still there.
+fn forget_missing(journal: &mut Journal) {
+    let ids: Vec<u64> = journal.records.iter().map(|r| r.id).collect();
+    for r in &mut journal.records {
+        if r.parent.is_some_and(|p| !ids.contains(&p)) {
+            r.parent = None;
+        }
+    }
+    if journal.head.is_some_and(|h| !ids.contains(&h)) {
+        journal.head = None;
+    }
+    journal.next = journal.next.max(ids.iter().copied().max().unwrap_or(0));
 }
 
 pub(crate) fn save(path: &Path, journal: &Journal) {
     let keep = journal.records.len().saturating_sub(MAX_ENTRIES);
-    let records = journal.records[keep..].to_vec();
-    let ids: Vec<u64> = records.iter().map(|r| r.id).collect();
-    let trimmed = Journal {
-        redo: journal.redo.iter().copied().filter(|id| ids.contains(id)).collect(),
-        records,
-        next: journal.next,
-    };
+    let mut trimmed =
+        Journal { records: journal.records[keep..].to_vec(), head: journal.head, next: journal.next, version: 2 };
+    forget_missing(&mut trimmed);
     let Ok(text) = serde_json::to_string(&trimmed) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -81,6 +106,7 @@ impl Legacy {
             journal.next += 1;
             journal.records.push(Record {
                 id: journal.next,
+                parent: None,
                 request: e.request,
                 log: e.done.clone(),
                 done: e.done,
@@ -89,12 +115,14 @@ impl Legacy {
                 state: RecordState::Applied,
             });
         }
-        // Redo requests were undone most recently last-pushed-first.
+        // Redo requests were undone most recently last-pushed-first; as a line, the next to
+        // redo sits right after what's applied.
         let undone_at = now();
         for request in self.redo.into_iter().rev() {
             journal.next += 1;
             journal.records.push(Record {
                 id: journal.next,
+                parent: None,
                 request,
                 done: Vec::new(),
                 log: Vec::new(),
@@ -102,7 +130,6 @@ impl Legacy {
                 changed: undone_at,
                 state: RecordState::Undone,
             });
-            journal.redo.insert(0, journal.next);
         }
         journal
     }

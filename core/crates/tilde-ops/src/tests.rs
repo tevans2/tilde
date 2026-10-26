@@ -545,12 +545,65 @@ fn any_operation_in_the_history_can_be_undone_or_redone() {
     assert_eq!(env.wait().error, None);
     assert!(env.p("a2.txt").exists());
 
-    // Undoing what later operations depend on is refused step by step, not forced.
+    // Undoing what a later operation built on takes that one too, newest first.
     env.run(Request::Rename { source: env.p("a2.txt"), name: "a3.txt".into() });
+    let later = env.ops.history()[0].id;
+    let preview = env.ops.preview_undo(first);
+    assert_eq!((preview.undo, preview.redo), (vec![later, first], vec![]));
     env.ops.undo_record(first).unwrap();
-    assert!(env.wait().error.unwrap().contains("no longer exists"));
-    assert!(env.p("a3.txt").exists(), "nothing was changed");
-    assert!(env.ops.redo_record(first).is_none(), "still applied, so nothing to redo");
+    let out = env.wait();
+    assert_eq!((out.error, out.completed, out.label.as_str()), (None, 2, "Rename “a.txt” and 1 later operation"));
+    assert!(env.p("a.txt").exists() && !env.p("a3.txt").exists());
+
+    // And redoing the later one first redoes what it builds on.
+    assert_eq!(env.ops.preview_redo(later).redo, [first, later]);
+    env.ops.redo_record(later).unwrap();
+    assert_eq!(env.wait().error, None);
+    assert!(env.p("a3.txt").exists());
+}
+
+/// Undo, then something new, makes a branch; going to a state on the other branch undoes
+/// back to where they meet and redoes down the other side.
+#[test]
+fn the_history_is_a_tree_and_any_state_can_be_restored() {
+    let env = Env::new();
+    env.file("a.txt", "a");
+    env.file("b.txt", "b");
+    let rename = |from: &str, to: &str| Request::Rename { source: env.p(from), name: to.into() };
+    env.run(rename("a.txt", "a1.txt"));
+    let one = env.ops.head().unwrap();
+    env.run(rename("a1.txt", "a2.txt"));
+    let two = env.ops.head().unwrap();
+    env.undo();
+    assert_eq!(env.ops.head(), Some(one), "undo moves back along the branch");
+    env.run(rename("b.txt", "b1.txt"));
+    let branch = env.ops.head().unwrap();
+    let parents: Vec<(u64, Option<u64>)> = env.ops.history().iter().map(|h| (h.id, h.parent)).collect();
+    assert!(parents.contains(&(branch, Some(one))) && parents.contains(&(two, Some(one))), "{parents:?}");
+    assert!(env.ops.redo_label().is_none(), "the old branch isn't the redo of the new one");
+
+    // To the old branch: b1 undone, a2 redone.
+    let p = env.ops.preview_goto(Some(two));
+    assert_eq!((p.undo, p.redo), (vec![branch], vec![two]));
+    env.ops.goto(Some(two)).unwrap().unwrap();
+    assert_eq!(env.wait().error, None);
+    assert!(env.p("a2.txt").exists() && env.p("b.txt").exists());
+    assert_eq!(env.ops.head(), Some(two));
+
+    // Back to the new branch, then to the very start.
+    env.ops.goto(Some(branch)).unwrap().unwrap();
+    assert_eq!(env.wait().error, None);
+    assert!(env.p("a1.txt").exists() && env.p("b1.txt").exists());
+    env.ops.goto(None).unwrap().unwrap();
+    let out = env.wait();
+    assert_eq!((out.error, out.kind), (None, OutcomeKind::Restored));
+    assert!(env.p("a.txt").exists() && env.p("b.txt").exists());
+    assert_eq!(env.ops.head(), None);
+    assert!(env.ops.goto(None).unwrap().is_none(), "already there");
+
+    // ⌘⇧Z from the start redoes the branch undone most recently.
+    env.redo();
+    assert_eq!(env.ops.head(), Some(one));
 }
 
 #[test]
@@ -600,4 +653,69 @@ fn the_first_history_format_is_upgraded() {
     ops.undo();
     assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().error, None);
     assert!(env.p("b.txt").exists());
+}
+
+/// Random operations, undos, redos and jumps to random states across branches; going to
+/// the start afterwards must give back exactly the original tree.
+#[test]
+fn wandering_the_history_tree_always_comes_back() {
+    for seed in 1..=25u64 {
+        let env = Env::new();
+        for f in ["a/1.txt", "a/2.txt", "b/3.txt", "b/c/4.txt", "5.txt"] {
+            env.file(f, f);
+        }
+        let before = env.tree();
+        let mut rng = seed;
+        let mut next = |n: usize| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (rng >> 33) as usize % n.max(1)
+        };
+        for step in 0..30 {
+            match next(6) {
+                0..=2 => {
+                    let all: Vec<PathBuf> = env.tree().keys().map(|k| env.p(k)).collect();
+                    if all.is_empty() {
+                        continue;
+                    }
+                    let dirs: Vec<PathBuf> =
+                        all.iter().filter(|p| p.is_dir()).cloned().chain([env.root.clone()]).collect();
+                    let pick = all[next(all.len())].clone();
+                    let request = match next(4) {
+                        0 => Request::Move {
+                            sources: vec![pick],
+                            into: dirs[next(dirs.len())].clone(),
+                            clash: Clash::KeepBoth,
+                        },
+                        1 => Request::Trash { sources: vec![pick] },
+                        2 => Request::Rename { source: pick, name: format!("r{seed}-{step}") },
+                        _ => Request::NewFolder { parent: dirs[next(dirs.len())].clone(), name: format!("n{step}") },
+                    };
+                    env.run(request);
+                }
+                3 => {
+                    if env.ops.undo().is_some() {
+                        env.wait();
+                    }
+                }
+                4 => {
+                    if env.ops.redo().is_some() {
+                        env.wait();
+                    }
+                }
+                _ => {
+                    let ids: Vec<u64> = env.ops.history().iter().map(|h| h.id).collect();
+                    let target = if ids.is_empty() || next(5) == 0 { None } else { Some(ids[next(ids.len())]) };
+                    if let Ok(Some(_)) = env.ops.goto(target) {
+                        let out = env.wait();
+                        assert_eq!(out.error, None, "seed {seed} step {step}: going to {target:?}");
+                        assert_eq!(env.ops.head(), target, "seed {seed} step {step}");
+                    }
+                }
+            }
+        }
+        if let Ok(Some(_)) = env.ops.goto(None) {
+            assert_eq!(env.wait().error, None, "seed {seed}");
+        }
+        assert_eq!(env.tree(), before, "seed {seed}");
+    }
 }

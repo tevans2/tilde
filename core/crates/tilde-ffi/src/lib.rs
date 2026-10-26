@@ -27,8 +27,8 @@ pub use engine::{
 pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
 pub use nvim::{NvimEditor, NvimLaunch, NvimListener, NvimOpenMode, NvimStatus, find_nvim};
 pub use ops::{
-    ClashPolicy, FileOps, HistoryEntry, HistoryState, OpError, OpKind, OpOutcome, OpPhase, OpRequest, OpsListener,
-    common_tags,
+    ClashPolicy, FileOps, HistoryEntry, HistoryPreview, HistoryState, OpError, OpKind, OpOutcome, OpPhase, OpRequest,
+    OpsListener, common_tags,
 };
 pub use preview::{TextPreview, TextSpan, bat_installed, bat_preview};
 pub use views::{ActivityOrigin, Category, HighlightRange, RowKind, RowView, Section};

@@ -43,6 +43,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var runningSteps: [UInt64: String] = [:]
     private var overlay: PromptOverlay?
     private let listScroll = NSScrollView()
+    /// History (`H`): the undo tree, over the list and preview.
+    private let historyView = HistoryView()
+    private var inHistory = false
     // EDIT mode
     private let editor = FolderEditor()
     private let changesView = ChangesView()
@@ -201,7 +204,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             box.borderWidth = 0
         }
 
-        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar, editor, changesView] as [NSView] {
+        for v in [pathBar, topSeparator, scroll, previewSeparator, preview, shelfBar, statusBar, editor, changesView, historyView] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(v)
         }
@@ -252,7 +255,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             changesView.bottomAnchor.constraint(equalTo: preview.bottomAnchor),
             changesView.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
             changesView.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
+            historyView.topAnchor.constraint(equalTo: scroll.topAnchor),
+            historyView.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            historyView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            historyView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
         ])
+        historyView.isHidden = true
+        historyView.onClose = { [weak self] in self?.closeHistory() }
+        historyView.onUndo = { [weak self] e in self?.undoEntry(e) }
+        historyView.onRedo = { [weak self] e in self?.redoEntry(e) }
+        historyView.onGoto = { [weak self] e in self?.gotoEntry(e) }
         pathBarHeight = pathBar.heightAnchor.constraint(equalToConstant: 46)
         pathBarHeight.isActive = true
         fitTitleBar()
@@ -290,6 +302,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         pathBar.applyTheme(theme)
         statusBar.applyTheme(theme)
         terminal?.applyTheme(theme)
+        historyView.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
         tableView.reloadData()
         if tableView.selectedRow < 0 { selectFirstResult() }
@@ -344,6 +357,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// Shows `folder`, highlighting `select`. Recorded in the jump list unless it's a jump.
     private func open(folder: String, select: String? = nil, query: String = "", record: Bool = true) {
+        leaveHistory()
         if record { recordJump(to: .folder(folder)) }
         place = .folder(folder)
         inActivity = false
@@ -360,6 +374,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showActivity(record: Bool, query: String = "", select: String? = nil) {
+        leaveHistory()
         if record { recordJump(to: .activity) }
         place = .activity
         inActivity = true
@@ -568,7 +583,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .compress: compressTargets()
         case .hide: hideHighlightedFromSearch()
         case .sort: chooseSort()
-        case .history: NSApp.sendAction(#selector(AppDelegate.showHistory(_:)), to: nil, from: nil)
+        case .history: showHistory()
         case .quickLook: toggleQuickLook(nil)
         case .openWith: openWith()
         case .undo: undo()
@@ -599,6 +614,109 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func goIntoOrActivate() {
         if !goIntoHighlighted() { activateHighlighted() }
+    }
+
+    // MARK: History
+
+    /// `H` / Edit › History: the undo tree in place of the list and preview.
+    func showHistory() {
+        guard mode != .edit, overlay == nil else { return }
+        if !inHistory {
+            inHistory = true
+            listScroll.isHidden = true
+            preview.isHidden = true
+            previewSeparator.isHidden = true
+            historyView.isHidden = false
+            historyView.reload(ops, selectCurrent: true)
+        }
+        mode = .select
+        historyView.focus()
+        updateChrome()
+    }
+
+    private func closeHistory() {
+        leaveHistory()
+        setMode(.select)
+        updateChrome()
+    }
+
+    /// Back to the list (when leaving for a folder, Activity or EDIT too).
+    private func leaveHistory() {
+        guard inHistory else { return }
+        inHistory = false
+        historyView.isHidden = true
+        listScroll.isHidden = false
+        updateSidePane(Theme.shared)
+        schedulePreview()
+    }
+
+    private func historySummary() -> String {
+        let all = historyView.rows.compactMap(\.entry)
+        let undone = all.filter { $0.state != .applied }.count
+        return "\(all.count.formatted()) operation\(all.count == 1 ? "" : "s")" + (undone > 0 ? " · \(undone) undone" : "")
+    }
+
+    private func labels(_ ids: [UInt64]) -> [String] {
+        ids.map { id in historyView.rows.first { $0.entry?.id == id }?.entry?.label ?? "#\(id)" }
+    }
+
+    /// "“A”, “B” and 3 more".
+    private func list(_ names: [String]) -> String {
+        let shown = names.prefix(3).joined(separator: ", ")
+        return names.count > 3 ? "\(shown) and \(names.count - 3) more" : shown
+    }
+
+    private func undoEntry(_ e: HistoryEntry) {
+        guard e.canUndo else { return statusBar.flash("“\(e.label)” isn't in place; r redoes it") }
+        let p = ops.previewUndo(entry: e.id)
+        let run = { [weak self] in
+            guard let self else { return }
+            if let id = self.ops.undoEntry(entry: e.id) { self.myOperations[id] = "" }
+        }
+        guard p.undo.count > 1 else { return run() }
+        let later = labels(Array(p.undo.dropLast()))
+        confirm("Undoing \(e.label) also undoes \(later.count) later operation\(later.count == 1 ? "" : "s") on the same files, newest first: \(list(later)).",
+                action: "Undo all \(p.undo.count)", run: run)
+    }
+
+    private func redoEntry(_ e: HistoryEntry) {
+        guard e.canRedo else { return statusBar.flash(e.state == .applied ? "“\(e.label)” is already in place" : "Undo the rest of “\(e.label)” first") }
+        let p = ops.previewRedo(entry: e.id)
+        let run = { [weak self] in
+            guard let self else { return }
+            if let id = self.ops.redoEntry(entry: e.id) { self.myOperations[id] = "" }
+        }
+        guard p.redo.count > 1 else { return run() }
+        let earlier = labels(Array(p.redo.dropLast()))
+        confirm("Redoing \(e.label) first redoes \(earlier.count) earlier operation\(earlier.count == 1 ? "" : "s") it builds on: \(list(earlier)).",
+                action: "Redo all \(p.redo.count)", run: run)
+    }
+
+    /// `⏎`: files back the way they were right after `e` (`nil`: before everything).
+    private func gotoEntry(_ e: HistoryEntry?) {
+        let p = ops.previewGoto(entry: e?.id)
+        if let problem = p.problem { return statusBar.flash(problem) }
+        guard !p.undo.isEmpty || !p.redo.isEmpty else { return statusBar.flash("Already at that state") }
+        let run = { [weak self] in
+            guard let self else { return }
+            do {
+                if let id = try self.ops.gotoEntry(entry: e?.id) { self.myOperations[id] = "" }
+            } catch {
+                self.statusBar.flash(error.message)
+            }
+        }
+        guard p.undo.count + p.redo.count > 1 else { return run() }
+        var parts: [String] = []
+        if !p.undo.isEmpty { parts.append("undo \(list(labels(p.undo)))") }
+        if !p.redo.isEmpty { parts.append("redo \(list(labels(p.redo)))") }
+        let target = e.map { "right after \($0.label)" } ?? "before all of these operations"
+        confirm("Go back to how files were \(target): \(parts.joined(separator: ", then "))?",
+                action: "Go (\(p.undo.count + p.redo.count) steps)", run: run)
+    }
+
+    private func confirm(_ message: String, action: String, run: @escaping () -> Void) {
+        showOverlay(PromptOverlay(title: message, kind: .choice(options: [("y", action)], onChoose: { _ in run() }),
+                                  hint: "⏎ or y to go ahead   esc cancel"))
     }
 
     // MARK: Sorting
@@ -746,6 +864,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Chrome
 
     private func updateChrome() {
+        if inHistory {
+            pathBar.setTitle("History")
+            pathBar.setMode(.select)
+            pathBar.field.placeholderString = ""
+            statusBar.update(mode: .select, summary: historySummary(), inHistory: true)
+            window?.title = "History"
+            window?.representedURL = nil
+            return
+        }
         if inActivity {
             pathBar.setActivity(activityFilter)
         } else {
@@ -1362,7 +1489,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         if let id = ops.redo() { myOperations[id] = "" } else { statusBar.flash("Nothing to redo") }
     }
 
-    private func showOverlay(_ prompt: PromptOverlay) {
+    func showOverlay(_ prompt: PromptOverlay) {
         overlay?.removeFromSuperview()
         guard let content = window?.contentView else { return }
         let restore = mode
@@ -1377,8 +1504,9 @@ extension BrowserWindowController: OpsEventsDelegate {
         ])
         prompt.focus()
         prompt.onCloseExtra = { [weak self] in
-            self?.overlay = nil
-            self?.setMode(restore)
+            guard let self else { return }
+            self.overlay = nil
+            if self.inHistory { self.historyView.focus() } else { self.setMode(restore) }
         }
     }
 
@@ -1428,6 +1556,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         if runningLabels.removeValue(forKey: id) != nil { statusBar.setActivity(nil) }
         guard mine != nil || window?.isKeyWindow == true else { return }
 
+        if inHistory { historyView.reload(ops) }
         if let error = outcome.error {
             if error == "Cancelled" {
                 let done = outcome.completed > 0 ? " after \(outcome.completed) of \(outcome.total)" : ""
@@ -1444,6 +1573,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         case .done: message = mine.flatMap { $0.isEmpty ? nil : $0 } ?? outcome.label
         case .undone: message = "Undid \(outcome.label)"
         case .redone: message = "Redid \(outcome.label)"
+        case .restored: message = "Back to \(outcome.label)"
         }
         var notes: [String] = []
         if outcome.renamed > 0 { notes.append("\(outcome.renamed) renamed to keep both") }
@@ -1452,7 +1582,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         if !notes.isEmpty { message += " (\(notes.joined(separator: ", ")))" }
         if outcome.phase == .done, outcome.completed == 0, outcome.skipped > 0 {
             message = "Nothing to do"
-        } else if outcome.phase != .undone {
+        } else if outcome.phase != .undone, outcome.phase != .restored {
             message += " · u undo"
         }
         statusBar.flash(message)
@@ -1481,7 +1611,7 @@ extension BrowserWindowController {
     /// selects its name (rename); `newLine` opens an empty line below it. In quick mode `⏎`
     /// applies.
     private func enterEdit(focus: String?, selectName: Bool, newLine: Bool, quick: Bool) {
-        guard !currentFolder.isEmpty, overlay == nil, !inActivity else { return }
+        guard !currentFolder.isEmpty, overlay == nil, !inActivity, !inHistory else { return }
         let session: EditSession
         do {
             session = try EditSession(dir: currentFolder, showHidden: showHidden)
