@@ -92,8 +92,11 @@ fn move_with_conflicts_then_undo_and_redo() {
     env.file("dest/report.pdf", "D");
     let before = env.tree();
 
-    let out =
-        env.run(Request::Move { sources: vec![env.p("a/report.pdf"), env.p("b/report.pdf")], into: env.p("dest") });
+    let out = env.run(Request::Move {
+        sources: vec![env.p("a/report.pdf"), env.p("b/report.pdf")],
+        into: env.p("dest"),
+        clash: Clash::KeepBoth,
+    });
     assert_eq!((out.completed, out.total, out.renamed, out.error.clone()), (2, 2, 2, None));
     assert_eq!(fs::read_to_string(env.p("dest/report 2.pdf")).unwrap(), "A");
     assert_eq!(fs::read_to_string(env.p("dest/report 3.pdf")).unwrap(), "B");
@@ -115,7 +118,7 @@ fn move_with_conflicts_then_undo_and_redo() {
 fn moving_into_the_same_folder_does_nothing() {
     let env = Env::new();
     env.file("a/x.txt", "x");
-    let out = env.run(Request::Move { sources: vec![env.p("a/x.txt")], into: env.p("a") });
+    let out = env.run(Request::Move { sources: vec![env.p("a/x.txt")], into: env.p("a"), clash: Clash::KeepBoth });
     assert_eq!((out.completed, out.skipped, out.error), (0, 1, None));
     assert!(env.ops.undo().is_none(), "nothing happened, so nothing to undo");
 }
@@ -124,9 +127,9 @@ fn moving_into_the_same_folder_does_nothing() {
 fn folders_cant_go_inside_themselves() {
     let env = Env::new();
     env.file("a/inner/x.txt", "x");
-    let out = env.run(Request::Move { sources: vec![env.p("a")], into: env.p("a/inner") });
+    let out = env.run(Request::Move { sources: vec![env.p("a")], into: env.p("a/inner"), clash: Clash::KeepBoth });
     assert!(out.error.unwrap().contains("into itself"));
-    let out = env.run(Request::Copy { sources: vec![env.p("a")], into: env.p("a") });
+    let out = env.run(Request::Copy { sources: vec![env.p("a")], into: env.p("a"), clash: Clash::KeepBoth });
     assert!(out.error.unwrap().contains("into itself"));
 }
 
@@ -136,13 +139,14 @@ fn copy_folder_recursively_and_undo_to_trash() {
     env.file("src/one.txt", "1");
     env.file("src/sub/two.txt", "2");
     fs::create_dir(env.p("dest")).unwrap();
-    let out = env.run(Request::Copy { sources: vec![env.p("src")], into: env.p("dest") });
+    let out = env.run(Request::Copy { sources: vec![env.p("src")], into: env.p("dest"), clash: Clash::KeepBoth });
     assert_eq!(out.error, None);
     assert_eq!(fs::read_to_string(env.p("dest/src/sub/two.txt")).unwrap(), "2");
     assert_eq!(fs::read_to_string(env.p("src/one.txt")).unwrap(), "1", "original kept");
 
     // Copying into the same folder keeps both.
-    let out = env.run(Request::Copy { sources: vec![env.p("src/one.txt")], into: env.p("src") });
+    let out =
+        env.run(Request::Copy { sources: vec![env.p("src/one.txt")], into: env.p("src"), clash: Clash::KeepBoth });
     assert_eq!(out.renamed, 1);
     assert!(env.p("src/one 2.txt").exists());
 
@@ -224,9 +228,10 @@ fn new_folder_and_compress() {
 fn errors_are_reported_and_nothing_partial_is_lost() {
     let env = Env::new();
     env.file("a.txt", "a");
-    let out = env.run(Request::Move { sources: vec![env.p("missing.txt")], into: env.root.clone() });
+    let out =
+        env.run(Request::Move { sources: vec![env.p("missing.txt")], into: env.root.clone(), clash: Clash::KeepBoth });
     assert!(out.error.unwrap().contains("no longer exists"));
-    let out = env.run(Request::Move { sources: vec![env.p("a.txt")], into: env.p("nowhere") });
+    let out = env.run(Request::Move { sources: vec![env.p("a.txt")], into: env.p("nowhere"), clash: Clash::KeepBoth });
     assert!(out.error.unwrap().contains("isn't a folder"));
     assert_eq!(env.tree(), BTreeMap::from([("a.txt".to_string(), "a".to_string())]));
 }
@@ -242,11 +247,11 @@ fn new_operations_clear_redo() {
     assert!(env.ops.redo_label().is_none());
 }
 
-/// Random sequences of operations, then undo everything: the tree must be exactly as it
-/// started.
+/// Random sequences of operations (with every clash policy), then undo everything: the
+/// tree must be exactly as it started.
 #[test]
 fn undoing_everything_restores_the_original_tree() {
-    for seed in 1..=12u64 {
+    for seed in 1..=40u64 {
         let env = Env::new();
         for f in ["a/1.txt", "a/2.txt", "b/3.txt", "b/c/4.txt", "d/5.txt", "6.txt"] {
             env.file(f, f);
@@ -260,13 +265,18 @@ fn undoing_everything_restores_the_original_tree() {
         let mut applied = 0;
         for step in 0..15 {
             let all: Vec<PathBuf> = env.tree().keys().map(|k| env.p(k)).collect();
+            if all.is_empty() {
+                break;
+            }
             let dirs: Vec<PathBuf> = all.iter().filter(|p| p.is_dir()).cloned().chain([env.root.clone()]).collect();
             let pick = all[next(all.len())].clone();
-            let request = match next(5) {
-                0 => Request::Move { sources: vec![pick], into: dirs[next(dirs.len())].clone() },
-                1 => Request::Copy { sources: vec![pick], into: dirs[next(dirs.len())].clone() },
+            let clash = [Clash::KeepBoth, Clash::Replace, Clash::Skip][next(3)];
+            let request = match next(6) {
+                0 => Request::Move { sources: vec![pick], into: dirs[next(dirs.len())].clone(), clash },
+                1 => Request::Copy { sources: vec![pick], into: dirs[next(dirs.len())].clone(), clash },
                 2 => Request::Trash { sources: vec![pick] },
                 3 => Request::Rename { source: pick, name: format!("r{seed}-{step}") },
+                4 => Request::Tag { sources: vec![pick], add: vec![format!("t{step}")], remove: vec![] },
                 _ => Request::NewFolder { parent: dirs[next(dirs.len())].clone(), name: format!("n{step}") },
             };
             if env.run(request).completed > 0 {
@@ -387,4 +397,116 @@ fn batch_problems_are_caught_before_anything_changes() {
         assert!(error.contains(expected), "expected “{expected}”, got “{error}”");
         assert_eq!(env.tree(), before);
     }
+}
+
+#[test]
+fn clashes_can_replace_or_skip() {
+    let env = Env::new();
+    env.file("a/report.pdf", "new");
+    env.file("a/notes.txt", "notes");
+    env.file("dest/report.pdf", "old");
+    let before = env.tree();
+    let sources = vec![env.p("a/report.pdf"), env.p("a/notes.txt")];
+    let request = |clash| Request::Move { sources: sources.clone(), into: env.p("dest"), clash };
+    assert_eq!(clashes(&request(Clash::Replace)), [env.p("a/report.pdf")]);
+
+    let out = env.run(request(Clash::Skip));
+    assert_eq!((out.completed, out.skipped, out.error), (1, 1, None));
+    assert_eq!(fs::read_to_string(env.p("dest/report.pdf")).unwrap(), "old");
+    assert!(env.p("a/report.pdf").exists() && env.p("dest/notes.txt").exists());
+    env.undo();
+    assert_eq!(env.tree(), before);
+
+    let out = env.run(request(Clash::Replace));
+    assert_eq!((out.replaced, out.renamed, out.error), (1, 0, None));
+    assert_eq!(fs::read_to_string(env.p("dest/report.pdf")).unwrap(), "new");
+    assert_eq!(fs::read_to_string(env.trash.join("report.pdf")).unwrap(), "old", "replaced item is in the Trash");
+    env.undo();
+    assert_eq!(env.tree(), before, "undo puts the replaced item back");
+
+    // Copies into their own folder are duplicates, never clashes.
+    let dup = Request::Copy { sources: vec![env.p("a/notes.txt")], into: env.p("a"), clash: Clash::Replace };
+    assert!(clashes(&dup).is_empty());
+    assert_eq!(env.run(dup).renamed, 1);
+    assert!(env.p("a/notes 2.txt").exists());
+
+    // A folder can't be replaced by something inside it.
+    env.file("x/x/inner.txt", "i");
+    let out = env.run(Request::Move { sources: vec![env.p("x/x")], into: env.root.clone(), clash: Clash::Replace });
+    assert!(out.error.unwrap().contains("inside it"));
+}
+
+#[test]
+fn tags_add_and_remove_and_undo() {
+    let env = Env::new();
+    env.file("a.txt", "a");
+    env.file("b.txt", "b");
+    fsops::set_tags(&env.p("b.txt"), &["Old".into(), "Keep".into()]).unwrap();
+    let sorted = |p: &str| {
+        let mut t = tags(&env.p(p)).unwrap();
+        t.sort();
+        t
+    };
+    let out = env.run(Request::Tag {
+        sources: vec![env.p("a.txt"), env.p("b.txt")],
+        add: vec!["Work".into(), " Red ".into()],
+        remove: vec!["old".into()],
+    });
+    assert_eq!((out.completed, out.error.clone()), (2, None));
+    assert_eq!(out.label, "Tag 2 items");
+    assert_eq!(sorted("a.txt"), ["Red", "Work"]);
+    assert_eq!(sorted("b.txt"), ["Keep", "Red", "Work"]);
+
+    // Nothing to change is skipped.
+    let out = env.run(Request::Tag { sources: vec![env.p("a.txt")], add: vec!["work".into()], remove: vec![] });
+    assert_eq!((out.completed, out.skipped), (0, 1));
+
+    env.undo();
+    assert!(sorted("a.txt").is_empty());
+    assert_eq!(sorted("b.txt"), ["Keep", "Old"]);
+
+    let bad = env.run(Request::Tag { sources: vec![env.p("a.txt")], add: vec!["a,b".into()], remove: vec![] });
+    assert!(bad.error.unwrap().contains("commas"));
+}
+
+#[test]
+fn history_survives_a_restart() {
+    let env = Env::new();
+    let history = env.root.parent().unwrap().join("state/undo.json");
+    let start = || {
+        let (tx, rx) = mpsc::channel();
+        let ops = Operations::with_history(
+            Box::new(FolderTrash(env.trash.clone())),
+            Arc::new(Collect(Mutex::new(tx))),
+            history.clone(),
+        );
+        (ops, rx)
+    };
+    env.file("a.txt", "a");
+    env.file("b.txt", "b");
+    let before = env.tree();
+    {
+        let (ops, rx) = start();
+        ops.submit(Request::Rename { source: env.p("a.txt"), name: "c.txt".into() });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        ops.submit(Request::Trash { sources: vec![env.p("b.txt")] });
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+    let (ops, rx) = start();
+    assert_eq!(ops.undo_label().as_deref(), Some("Trash “b.txt”"));
+    ops.undo();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().error, None);
+    ops.undo();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().error, None);
+    assert_eq!(env.tree(), before);
+    drop(ops);
+
+    let (ops, _rx) = start();
+    assert_eq!(ops.redo_label().as_deref(), Some("Rename “a.txt”"), "redo survives too");
+    assert!(ops.undo_label().is_none());
+
+    // A damaged file is an empty history, not a crash.
+    fs::write(&history, "{not json").unwrap();
+    let (ops, _rx) = start();
+    assert!(ops.undo_label().is_none());
 }

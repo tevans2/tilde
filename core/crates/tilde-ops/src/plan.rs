@@ -4,22 +4,40 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::names::{keep_both, validate_name};
-use crate::{BatchItem, Request, Step};
+use crate::{BatchItem, Clash, Request, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub steps: Vec<Step>,
     /// Items given a "keep both" name because the destination was taken.
     pub renamed: u32,
-    /// Items left alone because there was nothing to do (moving into the folder they're in).
+    /// Existing items moved to the Trash to make way (`Clash::Replace`).
+    pub replaced: u32,
+    /// Items left alone: nothing to do (moving into the folder they're in, tags they
+    /// already have) or `Clash::Skip`.
     pub skipped: u32,
+}
+
+/// The sources of a move or copy whose name is already taken in the destination (the
+/// clashes `Clash` decides about). Copies into their own folder are duplicates and
+/// always keep both, so they aren't included.
+pub fn clashes(request: &Request) -> Vec<PathBuf> {
+    match request {
+        Request::Move { sources, into, .. } | Request::Copy { sources, into, .. } => sources
+            .iter()
+            .filter(|s| s.parent() != Some(into.as_path()))
+            .filter(|s| s.file_name().is_some_and(|n| into.join(n).symlink_metadata().is_ok()))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Plans `request`. Errors are written for the user.
 pub fn plan(request: &Request) -> Result<Plan, String> {
-    let mut p = Plan { steps: Vec::new(), renamed: 0, skipped: 0 };
+    let mut p = Plan { steps: Vec::new(), renamed: 0, replaced: 0, skipped: 0 };
     match request {
-        Request::Move { sources, into } | Request::Copy { sources, into } => {
+        Request::Move { sources, into, clash } | Request::Copy { sources, into, clash } => {
             let copying = matches!(request, Request::Copy { .. });
             require_dir(into)?;
             check_sources(sources)?;
@@ -32,11 +50,31 @@ pub fn plan(request: &Request) -> Result<Plan, String> {
                         name(src)
                     ));
                 }
-                if !copying && src.parent() == Some(into.as_path()) {
+                let in_place = src.parent() == Some(into.as_path());
+                if !copying && in_place {
                     p.skipped += 1;
                     continue;
                 }
-                let to = free_name(into, src, &mut reserved, &mut p.renamed);
+                let target = into.join(name(src));
+                // Duplicates in their own folder, and second items with the same name in
+                // one request, always keep both.
+                let decide = !in_place && !reserved.contains(&target) && target.symlink_metadata().is_ok();
+                let to = match (decide, clash) {
+                    (true, Clash::Skip) => {
+                        p.skipped += 1;
+                        continue;
+                    }
+                    (true, Clash::Replace) => {
+                        if src.starts_with(&target) {
+                            return Err(format!("Can't replace “{}” with an item inside it.", name(&target)));
+                        }
+                        p.steps.push(Step::Trash { path: target.clone() });
+                        p.replaced += 1;
+                        reserved.insert(target.clone());
+                        target
+                    }
+                    _ => free_name(into, src, &mut reserved, &mut p.renamed),
+                };
                 p.steps.push(if copying {
                     Step::Copy { from: src.clone(), to }
                 } else {
@@ -71,6 +109,28 @@ pub fn plan(request: &Request) -> Result<Plan, String> {
             p.steps.push(Step::MakeDir { path });
         }
         Request::Batch { items, .. } => plan_batch(items, &mut p)?,
+        Request::Tag { sources, add, remove } => {
+            check_sources(sources)?;
+            for tag in add {
+                validate_tag(tag)?;
+            }
+            let same = |a: &str, b: &str| a.trim().to_lowercase() == b.trim().to_lowercase();
+            for src in sources {
+                let current = crate::fsops::tags(src).map_err(|e| format!("“{}”: {e}", name(src)))?;
+                let mut tags: Vec<String> =
+                    current.iter().filter(|t| !remove.iter().any(|r| same(t, r))).cloned().collect();
+                for tag in add {
+                    if !tags.iter().any(|t| same(t, tag)) {
+                        tags.push(tag.trim().to_string());
+                    }
+                }
+                if tags == current {
+                    p.skipped += 1;
+                } else {
+                    p.steps.push(Step::SetTags { path: src.clone(), tags });
+                }
+            }
+        }
         Request::Compress { sources } => {
             check_sources(sources)?;
             let first = &sources[0];
@@ -195,6 +255,16 @@ fn plan_batch(items: &[BatchItem], p: &mut Plan) -> Result<(), String> {
         if let BatchItem::CreateFile { path } = item {
             p.steps.push(Step::CreateFile { path: path.clone() });
         }
+    }
+    Ok(())
+}
+
+fn validate_tag(tag: &str) -> Result<(), String> {
+    if tag.trim().is_empty() {
+        return Err("A tag can't be empty.".into());
+    }
+    if tag.contains('\n') || tag.contains(',') {
+        return Err("Tags can't contain commas or line breaks.".into());
     }
     Ok(())
 }

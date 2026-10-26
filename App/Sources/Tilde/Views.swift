@@ -101,7 +101,7 @@ final class PathBar: NSView {
     func setMode(_ mode: Mode) {
         field.placeholderString = switch mode {
         case .go: "type to search"
-        case .select: "press / to search"
+        case .select: "press \(Keymap.shared.key(.search, in: .select)) to search"
         case .edit: "editing this folder as text"
         }
         field.textColor = mode == .go ? Theme.shared.colors.text : Theme.shared.colors.textDim
@@ -475,16 +475,36 @@ final class StatusBar: NSView {
     }
 
     func update(mode: Mode, summary: String, inActivity: Bool = false) {
+        let keys = Keymap.shared
+        /// "m move   c copy" from the keymap, leaving out unbound actions.
+        func hint(_ items: [(KeyAction, String)], all: Bool = false, gap: String = "   ") -> String {
+            items.compactMap { action, label in
+                let key = all ? keys.keys(action, in: mode) : keys.key(action, in: mode)
+                return key.isEmpty ? nil : "\(key) \(label)"
+            }.joined(separator: gap)
+        }
         switch mode {
         case .select where inActivity:
             modePill.stringValue = "SELECT"
-            hints.stringValue = "1 all  2 downloads  3 screenshots  4 edited  5 airdrop  i inbox   tab reveal   m move   d trash   @ back"
+            hints.stringValue = hint([
+                (.filterAll, "all"), (.filterDownloads, "downloads"), (.filterScreenshots, "screenshots"),
+                (.filterEdited, "edited"), (.filterAirdrop, "airdrop"), (.inbox, "inbox"),
+            ], gap: "  ") + "   " + hint([(.enter, "reveal"), (.move, "move"), (.trash, "trash"), (.activity, "back")])
         case .go:
             modePill.stringValue = "GO"
-            hints.stringValue = "↑↓ ⌃j ⌃k move   ⏎ open   tab ⌃l go in   ⌫ ⌃h up   esc select"
+            let move = [keys.keys(.down, in: .go), keys.keys(.up, in: .go)].filter { !$0.isEmpty }.joined(separator: " ")
+            hints.stringValue = (move.isEmpty ? "" : "\(move) move   ")
+                + hint([(.open, "open"), (.enter, "go in")], all: true)
+                + "   ⌫ \(keys.keys(.parent, in: .go)) up   "
+                + hint([(.selectMode, "select")])
         case .select:
             modePill.stringValue = "SELECT"
-            hints.stringValue = "j k move   h l out / in   x collect   m move   c copy   d trash   r rename   e edit   u undo   / search"
+            let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select))"
+            let inOut = "\(keys.key(.parent, in: .select)) \(keys.key(.enter, in: .select))"
+            hints.stringValue = "\(move) move   \(inOut) out / in   " + hint([
+                (.shelf, "collect"), (.move, "move"), (.copy, "copy"), (.trash, "trash"), (.tag, "tag"),
+                (.rename, "rename"), (.edit, "edit"), (.undo, "undo"), (.search, "search"),
+            ])
         case .edit:
             modePill.stringValue = "EDIT"
             hints.stringValue = "rename: edit a name   trash: delete the line   move: type a path   copy: duplicate a line   new: add a line (end with / for a folder)"

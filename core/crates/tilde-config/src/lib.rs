@@ -3,8 +3,13 @@
 //! A missing file means defaults. A broken file also means defaults, plus an error
 //! message for the UI, so a typo never stops Tilde from starting.
 
+mod keys;
 mod theme;
 
+pub use keys::{
+    ActionSpec, Binding, Chord, GO_ACTIONS, KeyList, KeyMode, Keymap, KeysConfig, NAMED_KEYS, SELECT_ACTIONS, actions,
+    parse_chord,
+};
 pub use theme::{Appearance, COLOR_KEYS, PRESETS, ResolvedTheme, ThemeConfig, parse_hex, preset_bat_themes};
 
 use std::path::{Path, PathBuf};
@@ -25,6 +30,7 @@ pub struct Config {
     pub zoxide: ZoxideConfig,
     pub activity: ActivityConfig,
     pub edit: EditConfig,
+    pub keys: KeysConfig,
 }
 
 /// The preview pane on the right.
@@ -303,7 +309,8 @@ pub fn load(path: &Path) -> Loaded {
             }
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
             config.activity.days = config.activity.days.clamp(1, 3650);
-            let (_, problems) = config.theme.resolve();
+            let (_, mut problems) = config.theme.resolve();
+            problems.extend(config.keys.resolve().warnings);
             if !problems.is_empty() {
                 let msg = problems.join("; ");
                 error = Some(error.map_or(msg.clone(), |e| format!("{e}; {msg}")));
@@ -400,7 +407,91 @@ nvim_path = ""
 # "user" loads your nvim config. "clean" skips it and loads init.lua next to this file,
 # if there is one.
 nvim_config = "user"
+
+# Keys for GO (typing in the bar) and SELECT (the list). Give an action a key or a list
+# of keys; [] unbinds it. A key is the character it types (j, G, @) or a name (down, up,
+# left, right, return, tab, esc, space, backspace, delete, home, end, pageup, pagedown),
+# with ctrl+, alt+ or shift+ (names only) in front. GO keys need ctrl+ or alt+ unless
+# they're named keys, since plain characters are typed into the bar.
+# Settings (⌘,) › Keys lists every action and its current keys.
+[keys.go]
+# down = ["down", "ctrl+j"]
+# enter = ["tab", "ctrl+l"]
+
+[keys.select]
+# move = "m"
+# tag = "t"
+# redo = ["U", "ctrl+r"]
 "##;
+
+/// A value for `set_value`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Text(String),
+    List(Vec<String>),
+}
+
+/// Sets `section.….key` in the config file to `value`, keeping comments and formatting
+/// (including a comment after the old value). Creates the file from the template, and
+/// any missing tables, as needed.
+pub fn set_value(path: &Path, key_path: &[&str], value: Value) -> std::io::Result<()> {
+    let invalid = |m: String| std::io::Error::new(std::io::ErrorKind::InvalidData, m);
+    let (key, tables) = key_path.split_last().ok_or_else(|| invalid("empty key".into()))?;
+    ensure_file(path)?;
+    let text = std::fs::read_to_string(path)?;
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| invalid(format!("{e}")))?;
+    let mut table = doc.as_table_mut();
+    for name in tables {
+        table = table
+            .entry(name)
+            .or_insert_with(toml_edit::table)
+            .as_table_mut()
+            .ok_or_else(|| invalid(format!("{name} is not a table")))?;
+    }
+    let mut new = match value {
+        Value::Bool(b) => toml_edit::Value::from(b),
+        Value::Int(i) => toml_edit::Value::from(i),
+        Value::Float(f) => toml_edit::Value::from(f),
+        Value::Text(t) => toml_edit::Value::from(t),
+        Value::List(items) => toml_edit::Value::Array(items.iter().map(String::as_str).collect()),
+    };
+    match table.get_mut(key) {
+        // Replaced in place: the key keeps the comment above it.
+        Some(old) => {
+            if let Some(v) = old.as_value() {
+                *new.decor_mut() = v.decor().clone();
+            }
+            *old = toml_edit::Item::Value(new);
+        }
+        None => {
+            table.insert(key, toml_edit::Item::Value(new));
+        }
+    }
+    std::fs::write(path, doc.to_string())
+}
+
+/// Removes `section.….key` from the config file (so the default applies again), keeping
+/// everything else. Missing keys and files are fine.
+pub fn remove_value(path: &Path, key_path: &[&str]) -> std::io::Result<()> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
+    let Some((key, tables)) = key_path.split_last() else { return Ok(()) };
+    let mut table = doc.as_table_mut();
+    for name in tables {
+        match table.get_mut(name).and_then(|t| t.as_table_mut()) {
+            Some(t) => table = t,
+            None => return Ok(()),
+        }
+    }
+    if table.remove(key).is_some() {
+        std::fs::write(path, doc.to_string())?;
+    }
+    Ok(())
+}
 
 /// The two `[index]` lists an entry can be added to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,6 +661,40 @@ mod tests {
         assert!(l.config.index.exclude.contains(&"~/Movies".to_string()));
         assert_eq!(l.config.font.size, 14.0);
         assert!(std::fs::read_to_string(&p).unwrap().starts_with("# mine"));
+    }
+
+    #[test]
+    fn set_value_keeps_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        set_value(&p, &["font", "size"], Value::Float(15.0)).unwrap();
+        set_value(&p, &["theme", "preset"], Value::Text("nord".into())).unwrap();
+        set_value(&p, &["keys", "select", "move"], Value::List(vec!["M".into()])).unwrap();
+        set_value(&p, &["preview", "visible"], Value::Bool(false)).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("# Base size in points"), "comments kept");
+        let l = load(&p);
+        assert!(l.error.is_none(), "{:?}", l.error);
+        assert_eq!(l.config.font.size, 15.0);
+        assert_eq!(l.config.theme.preset, "nord");
+        assert!(!l.config.preview.visible);
+        assert_eq!(l.config.keys.select["move"], KeyList::Many(vec!["M".into()]));
+
+        std::fs::write(&p, "[edit]\neditor = \"builtin\" # or nvim\n").unwrap();
+        set_value(&p, &["edit", "editor"], Value::Text("nvim".into())).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "[edit]\neditor = \"nvim\" # or nvim\n");
+        set_value(&p, &["zoxide", "enabled"], Value::Bool(false)).unwrap();
+        assert!(!load(&p).config.zoxide.enabled);
+        remove_value(&p, &["zoxide", "enabled"]).unwrap();
+        assert!(load(&p).config.zoxide.enabled, "back to the default");
+        remove_value(&p, &["nope", "nothing"]).unwrap();
+    }
+
+    #[test]
+    fn key_warnings_are_reported_but_the_rest_loads() {
+        let l = load_str("[font]\nsize = 15\n[keys.select]\nmove = \"cmd+m\"\n");
+        assert_eq!(l.config.font.size, 15.0);
+        assert!(l.error.unwrap().contains("keys.select.move"));
     }
 
     #[test]

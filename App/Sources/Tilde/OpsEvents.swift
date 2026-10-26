@@ -5,6 +5,7 @@ import TildeFFI
 protocol OpsEventsDelegate: AnyObject {
     func operationStarted(id: UInt64, label: String, total: Int)
     func operationProgress(id: UInt64, done: Int, total: Int, current: String)
+    func operationBytes(id: UInt64, copied: UInt64, total: UInt64)
     func operationFinished(id: UInt64, outcome: OpOutcome)
 }
 
@@ -24,6 +25,12 @@ final class OpsEvents: OpsListener, @unchecked Sendable {
             MainActor.assumeIsolated {
                 self.delegate?.operationProgress(id: id, done: Int(done), total: Int(total), current: current)
             }
+        }
+    }
+
+    func bytes(id: UInt64, copied: UInt64, total: UInt64) {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self.delegate?.operationBytes(id: id, copied: copied, total: total) }
         }
     }
 

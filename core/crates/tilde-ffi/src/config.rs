@@ -80,3 +80,157 @@ pub fn ensure_config_file() -> Result<String, ConfigError> {
     tilde_config::ensure_file(&path).map_err(|e| ConfigError::Io { message: e.to_string() })?;
     Ok(path.to_string_lossy().into_owned())
 }
+
+/// Everything the Settings window edits, as currently in the config file.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Settings {
+    pub appearance: ThemeAppearance,
+    pub theme_preset: String,
+    /// Presets to choose from.
+    pub presets: Vec<String>,
+    pub font_family: String,
+    pub font_size: f64,
+    pub preview_visible: bool,
+    pub preview_width: f64,
+    pub preview_bat: bool,
+    pub editor_nvim: bool,
+    pub nvim_path: String,
+    /// `nvim_config = "clean"`.
+    pub nvim_clean: bool,
+    pub zoxide_enabled: bool,
+    pub zoxide_add_on_visit: bool,
+    pub activity_days: u32,
+    pub index_enabled: bool,
+    pub index_include_hidden: bool,
+    pub index_max_items: u64,
+}
+
+#[uniffi::export]
+pub fn load_settings() -> Settings {
+    let c = tilde_config::load(&tilde_config::config_path()).config;
+    Settings {
+        appearance: match c.theme.appearance.as_str() {
+            "light" => ThemeAppearance::Light,
+            "dark" => ThemeAppearance::Dark,
+            _ => ThemeAppearance::System,
+        },
+        theme_preset: c.theme.preset,
+        presets: tilde_config::PRESETS.iter().map(|p| p.to_string()).collect(),
+        font_family: c.font.family,
+        font_size: c.font.size,
+        preview_visible: c.preview.visible,
+        preview_width: c.preview.width,
+        preview_bat: c.preview.bat,
+        editor_nvim: c.edit.editor == tilde_config::EditorKind::Nvim,
+        nvim_path: c.edit.nvim_path,
+        nvim_clean: c.edit.nvim_config == tilde_config::NvimConfigMode::Clean,
+        zoxide_enabled: c.zoxide.enabled,
+        zoxide_add_on_visit: c.zoxide.add_on_visit,
+        activity_days: c.activity.days,
+        index_enabled: c.index.enabled,
+        index_include_hidden: c.index.include_hidden,
+        index_max_items: c.index.max_items,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum SettingValue {
+    Bool { value: bool },
+    Int { value: i64 },
+    Float { value: f64 },
+    Text { value: String },
+    List { value: Vec<String> },
+}
+
+/// Writes one setting to the config file, keeping its comments. `key` is dotted:
+/// `font.size`, `keys.select.move`.
+#[uniffi::export]
+pub fn set_setting(key: String, value: SettingValue) -> Result<(), ConfigError> {
+    let path: Vec<&str> = key.split('.').collect();
+    let value = match value {
+        SettingValue::Bool { value } => tilde_config::Value::Bool(value),
+        SettingValue::Int { value } => tilde_config::Value::Int(value),
+        SettingValue::Float { value } => tilde_config::Value::Float(value),
+        SettingValue::Text { value } => tilde_config::Value::Text(value),
+        SettingValue::List { value } => tilde_config::Value::List(value),
+    };
+    tilde_config::set_value(&tilde_config::config_path(), &path, value)
+        .map_err(|e| ConfigError::Io { message: e.to_string() })
+}
+
+/// Removes a setting from the config file, so its default applies (`keys.select.move`).
+#[uniffi::export]
+pub fn reset_setting(key: String) -> Result<(), ConfigError> {
+    let path: Vec<&str> = key.split('.').collect();
+    tilde_config::remove_value(&tilde_config::config_path(), &path)
+        .map_err(|e| ConfigError::Io { message: e.to_string() })
+}
+
+/// A key with modifiers, as the app matches it against key presses.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct KeyChord {
+    /// One character (`j`, `G`, `@`) or a name: down, up, left, right, return, tab, esc,
+    /// space, backspace, delete, home, end, pageup, pagedown.
+    pub key: String,
+    pub ctrl: bool,
+    pub alt: bool,
+    /// Only with named keys.
+    pub shift: bool,
+    /// `⌃J`, `⏎`.
+    pub display: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ActionKeys {
+    /// `move`, `down`: the name used in `[keys.go]` / `[keys.select]`.
+    pub action: String,
+    pub description: String,
+    pub keys: Vec<KeyChord>,
+    /// The default keys, for display.
+    pub defaults: Vec<String>,
+    /// Set in the config file.
+    pub customized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct KeymapInfo {
+    pub go: Vec<ActionKeys>,
+    pub select: Vec<ActionKeys>,
+}
+
+/// The key bindings from the config (warnings arrive with `load_config`).
+#[uniffi::export]
+pub fn load_keymap() -> KeymapInfo {
+    let keys = tilde_config::load(&tilde_config::config_path()).config.keys;
+    let map = keys.resolve();
+    let convert = |bindings: Vec<tilde_config::Binding>,
+                   user: &std::collections::BTreeMap<String, tilde_config::KeyList>| {
+        bindings
+            .into_iter()
+            .map(|b| ActionKeys {
+                action: b.action.name.to_string(),
+                description: b.action.description.to_string(),
+                keys: b
+                    .keys
+                    .iter()
+                    .map(|c| KeyChord {
+                        key: c.key.clone(),
+                        ctrl: c.ctrl,
+                        alt: c.alt,
+                        shift: c.shift,
+                        display: c.display(),
+                    })
+                    .collect(),
+                defaults: b
+                    .action
+                    .defaults
+                    .iter()
+                    .filter_map(|d| tilde_config::parse_chord(d).ok())
+                    .map(|c| c.display())
+                    .collect(),
+                customized: user.contains_key(b.action.name),
+            })
+            .collect()
+    };
+    KeymapInfo { go: convert(map.go, &keys.go), select: convert(map.select, &keys.select) }
+}

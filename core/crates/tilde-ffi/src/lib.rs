@@ -14,12 +14,15 @@ mod ops;
 mod preview;
 mod views;
 
-pub use config::{AppConfig, ConfigError, ConfigLoad, ThemeAppearance, ensure_config_file, load_config};
+pub use config::{
+    ActionKeys, AppConfig, ConfigError, ConfigLoad, KeyChord, KeymapInfo, SettingValue, Settings, ThemeAppearance,
+    ensure_config_file, load_config, load_keymap, load_settings, reset_setting, set_setting,
+};
 pub use edit::{EditLineError, EditPreview, EditSession, PendingChange};
 pub use engine::{ActivityFilter, ActivityInfo, Engine, EngineListener, OriginFilter, ResultsInfo, RowGroup};
 pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
-pub use nvim::{NvimEditor, NvimLaunch, NvimListener, NvimOpenMode};
-pub use ops::{FileOps, OpError, OpKind, OpOutcome, OpPhase, OpRequest, OpsListener};
+pub use nvim::{NvimEditor, NvimLaunch, NvimListener, NvimOpenMode, NvimStatus, find_nvim};
+pub use ops::{ClashPolicy, FileOps, OpError, OpKind, OpOutcome, OpPhase, OpRequest, OpsListener, common_tags};
 pub use preview::{TextPreview, TextSpan, bat_installed, bat_preview};
 pub use views::{ActivityOrigin, Category, HighlightRange, RowKind, RowView, Section};
 

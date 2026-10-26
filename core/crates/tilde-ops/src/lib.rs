@@ -1,14 +1,15 @@
-//! File operations: move, copy, trash, rename, new folder, compress. Every request is
-//! planned before anything is touched, run on a background thread with progress, and
-//! recorded so it can be undone and redone (see docs/SPEC.md §6.4).
+//! File operations: move, copy, trash, rename, new folder, compress, tags. Every request
+//! is planned before anything is touched, run on a background thread with progress, and
+//! recorded so it can be undone and redone, also after a restart (see docs/SPEC.md §6.4).
 
 mod fsops;
+mod history;
 mod names;
 mod plan;
 
-pub use fsops::{FolderTrash, SystemTrash, Trash};
+pub use fsops::{FolderTrash, SystemTrash, Trash, tags};
 pub use names::{keep_both, validate_name};
-pub use plan::{Plan, plan};
+pub use plan::{Plan, clashes, plan};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,18 +17,38 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
+use serde::{Deserialize, Serialize};
+
+use crate::fsops::Progress;
 use crate::plan::name;
 
+/// What to do when an item being moved or copied has the same name as something already
+/// in the destination.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Clash {
+    /// Give the arriving item a free name ("report 2.pdf").
+    #[default]
+    KeepBoth,
+    /// Move the existing item to the Trash first (undo puts it back).
+    Replace,
+    /// Leave that item where it is.
+    Skip,
+}
+
 /// What the user asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
     Move {
         sources: Vec<PathBuf>,
         into: PathBuf,
+        #[serde(default)]
+        clash: Clash,
     },
     Copy {
         sources: Vec<PathBuf>,
         into: PathBuf,
+        #[serde(default)]
+        clash: Clash,
     },
     Trash {
         sources: Vec<PathBuf>,
@@ -43,6 +64,12 @@ pub enum Request {
     Compress {
         sources: Vec<PathBuf>,
     },
+    /// Adds and removes Finder tags, keeping each item's other tags.
+    Tag {
+        sources: Vec<PathBuf>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
     /// A mix of changes applied together and undone together (text editing a folder).
     Batch {
         label: String,
@@ -51,7 +78,7 @@ pub enum Request {
 }
 
 /// One change in a `Request::Batch`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BatchItem {
     /// Rename or move.
     Move {
@@ -89,6 +116,7 @@ impl Request {
             Request::Rename { source, .. } => format!("Rename “{}”", name(source)),
             Request::NewFolder { name, .. } => format!("New Folder “{name}”"),
             Request::Compress { sources } => format!("Compress {}", items(sources)),
+            Request::Tag { sources, .. } => format!("Tag {}", items(sources)),
             Request::Batch { label, .. } => label.clone(),
         }
     }
@@ -103,14 +131,16 @@ pub enum Step {
     MakeDir { path: PathBuf },
     CreateFile { path: PathBuf },
     Compress { sources: Vec<PathBuf>, to: PathBuf },
+    SetTags { path: PathBuf, tags: Vec<String> },
 }
 
 /// A completed step, with what's needed to reverse it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum Done {
     Moved { from: PathBuf, to: PathBuf },
     Created { path: PathBuf },
     Trashed { original: PathBuf, in_trash: PathBuf },
+    Tagged { path: PathBuf, before: Vec<String> },
 }
 
 impl Done {
@@ -121,6 +151,7 @@ impl Done {
             Done::Moved { from, to } => Step::Move { from: to.clone(), to: from.clone() },
             Done::Created { path } => Step::Trash { path: path.clone() },
             Done::Trashed { original, in_trash } => Step::Move { from: in_trash.clone(), to: original.clone() },
+            Done::Tagged { path, before } => Step::SetTags { path: path.clone(), tags: before.clone() },
         }
     }
 }
@@ -142,6 +173,7 @@ pub struct Outcome {
     /// Why it stopped early or didn't start, for the user.
     pub error: Option<String>,
     pub renamed: u32,
+    pub replaced: u32,
     pub skipped: u32,
     /// The paths the operation created or moved things to (to select them afterwards).
     pub results: Vec<PathBuf>,
@@ -151,15 +183,21 @@ pub struct Outcome {
 pub trait Listener: Send + Sync {
     fn started(&self, id: u64, label: &str, total: u32);
     fn progress(&self, id: u64, done: u32, total: u32, current: &str);
+    /// Bytes copied of the current item, for copies that move data (to another volume).
+    fn bytes(&self, _id: u64, _copied: u64, _total: u64) {}
     fn finished(&self, id: u64, outcome: Outcome);
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
     request: Request,
     done: Vec<Done>,
+    /// When it ran (seconds since 1970), so old history can be dropped.
+    #[serde(default)]
+    at: u64,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Journal {
     undo: Vec<Entry>,
     redo: Vec<Request>,
@@ -180,11 +218,23 @@ pub struct Operations {
 }
 
 impl Operations {
+    /// History lasts as long as this value.
     pub fn new(trash: Box<dyn Trash>, listener: Arc<dyn Listener>) -> Operations {
+        Self::start(trash, listener, None)
+    }
+
+    /// History is loaded from `history` and saved there after every change, so undo works
+    /// across restarts.
+    pub fn with_history(trash: Box<dyn Trash>, listener: Arc<dyn Listener>, history: PathBuf) -> Operations {
+        Self::start(trash, listener, Some(history))
+    }
+
+    fn start(trash: Box<dyn Trash>, listener: Arc<dyn Listener>, history: Option<PathBuf>) -> Operations {
         let (tx, rx) = mpsc::channel::<Job>();
-        let journal = Arc::new(Mutex::new(Journal::default()));
+        let loaded = history.as_deref().map(history::load).unwrap_or_default();
+        let journal = Arc::new(Mutex::new(loaded));
         let cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>> = Arc::default();
-        let runner = Runner { trash, listener, journal: journal.clone(), cancels: cancels.clone() };
+        let runner = Runner { trash, listener, journal: journal.clone(), cancels: cancels.clone(), history };
         std::thread::Builder::new()
             .name("tilde-ops".into())
             .spawn(move || {
@@ -222,7 +272,8 @@ impl Operations {
         Some(self.enqueue(|id| Job::Redo { id }))
     }
 
-    /// Stops an operation between items. Finished items stay done (and undoable).
+    /// Stops an operation between items, or partway through copying one (the partial copy
+    /// is removed). Finished items stay done (and undoable).
     pub fn cancel(&self, id: u64) {
         if let Some(flag) = self.cancels.lock().unwrap().get(&id) {
             flag.store(true, Ordering::SeqCst);
@@ -236,6 +287,13 @@ impl Operations {
     pub fn redo_label(&self) -> Option<String> {
         self.journal.lock().unwrap().redo.last().map(Request::label)
     }
+
+    /// Operations waiting or running.
+    pub fn running(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.cancels.lock().unwrap().keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
 }
 
 struct Runner {
@@ -243,6 +301,7 @@ struct Runner {
     listener: Arc<dyn Listener>,
     journal: Arc<Mutex<Journal>>,
     cancels: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+    history: Option<PathBuf>,
 }
 
 impl Runner {
@@ -263,6 +322,9 @@ impl Runner {
             }
             Job::Undo { .. } => self.undo(id, &cancel),
         };
+        if let Some(path) = &self.history {
+            history::save(path, &self.journal.lock().unwrap());
+        }
         self.cancels.lock().unwrap().remove(&id);
         self.listener.finished(id, outcome);
     }
@@ -280,12 +342,22 @@ impl Runner {
         let completed = done.len() as u32;
         if !done.is_empty() {
             let mut journal = self.journal.lock().unwrap();
-            journal.undo.push(Entry { request, done });
+            journal.undo.push(Entry { request, done, at: history::now() });
             if kind == OutcomeKind::Done {
                 journal.redo.clear();
             }
         }
-        Outcome { kind, label, completed, total, error, renamed: plan.renamed, skipped: plan.skipped, results }
+        Outcome {
+            kind,
+            label,
+            completed,
+            total,
+            error,
+            renamed: plan.renamed,
+            replaced: plan.replaced,
+            skipped: plan.skipped,
+            results,
+        }
     }
 
     fn undo(&self, id: u64, cancel: &AtomicBool) -> Outcome {
@@ -305,25 +377,38 @@ impl Runner {
         } else {
             // Keep what couldn't be reversed undoable; drop the steps that were.
             let remaining = entry.done.len() - reversed.len();
-            journal.undo.push(Entry { request: entry.request, done: entry.done[..remaining].to_vec() });
+            journal.undo.push(Entry { done: entry.done[..remaining].to_vec(), ..entry });
         }
-        Outcome { kind: OutcomeKind::Undone, label, completed, total, error, renamed: 0, skipped: 0, results }
+        Outcome {
+            kind: OutcomeKind::Undone,
+            label,
+            completed,
+            total,
+            error,
+            renamed: 0,
+            replaced: 0,
+            skipped: 0,
+            results,
+        }
     }
 
     /// Runs steps in order, stopping at the first error or a cancel.
     fn execute(&self, id: u64, steps: &[Step], cancel: &AtomicBool) -> (Vec<Done>, Option<String>) {
         let total = steps.len() as u32;
         let mut done = Vec::new();
+        let report = |copied, total| self.listener.bytes(id, copied, total);
+        let progress = Progress { report: &report, cancel };
         for (i, step) in steps.iter().enumerate() {
             if cancel.load(Ordering::SeqCst) {
-                return (done, Some("Cancelled".into()));
+                return (done, Some(fsops::CANCELLED.into()));
             }
             self.listener.progress(id, i as u32, total, &step_name(step));
             let result = match step {
-                Step::Move { from, to } => {
-                    fsops::move_item(from, to).map(|_| Done::Moved { from: from.clone(), to: to.clone() })
+                Step::Move { from, to } => fsops::move_item(from, to, Some(&progress))
+                    .map(|_| Done::Moved { from: from.clone(), to: to.clone() }),
+                Step::Copy { from, to } => {
+                    fsops::copy_item(from, to, Some(&progress)).map(|_| Done::Created { path: to.clone() })
                 }
-                Step::Copy { from, to } => fsops::copy_item(from, to).map(|_| Done::Created { path: to.clone() }),
                 Step::MakeDir { path } => fsops::make_dir(path).map(|_| Done::Created { path: path.clone() }),
                 Step::CreateFile { path } => fsops::create_file(path).map(|_| Done::Created { path: path.clone() }),
                 Step::Compress { sources, to } => {
@@ -332,9 +417,13 @@ impl Runner {
                 Step::Trash { path } => {
                     self.trash.trash(path).map(|in_trash| Done::Trashed { original: path.clone(), in_trash })
                 }
+                Step::SetTags { path, tags } => fsops::tags(path).and_then(|before| {
+                    fsops::set_tags(path, tags).map(|_| Done::Tagged { path: path.clone(), before })
+                }),
             };
             match result {
                 Ok(d) => done.push(d),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return (done, Some(e.to_string())),
                 Err(e) => return (done, Some(format!("{}: {e}", step_name(step)))),
             }
         }
@@ -351,6 +440,7 @@ fn nothing(kind: OutcomeKind, label: &str) -> Outcome {
         total: 0,
         error: None,
         renamed: 0,
+        replaced: 0,
         skipped: 0,
         results: Vec::new(),
     }
@@ -359,7 +449,9 @@ fn nothing(kind: OutcomeKind, label: &str) -> Outcome {
 fn step_name(step: &Step) -> String {
     match step {
         Step::Move { from, .. } | Step::Copy { from, .. } => name(from),
-        Step::Trash { path } | Step::MakeDir { path } | Step::CreateFile { path } => name(path),
+        Step::Trash { path } | Step::MakeDir { path } | Step::CreateFile { path } | Step::SetTags { path, .. } => {
+            name(path)
+        }
         Step::Compress { to, .. } => name(to),
     }
 }
@@ -369,6 +461,7 @@ fn result_path(d: &Done) -> PathBuf {
         Done::Moved { to, .. } => to.clone(),
         Done::Created { path } => path.clone(),
         Done::Trashed { in_trash, .. } => in_trash.clone(),
+        Done::Tagged { path, .. } => path.clone(),
     }
 }
 

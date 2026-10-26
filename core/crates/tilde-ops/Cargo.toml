@@ -7,8 +7,10 @@ publish.workspace = true
 
 [dependencies]
 libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", features = ["NSFileManager", "NSURL", "NSError", "NSString"] }
+objc2-foundation = { version = "0.3.2", features = ["NSFileManager", "NSURL", "NSError", "NSString", "NSArray"] }
 
 [dev-dependencies]
 tempfile.workspace = true

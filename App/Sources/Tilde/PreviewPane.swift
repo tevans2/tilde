@@ -9,6 +9,9 @@ final class PreviewPane: NSView {
     private let quickLook = QLPreviewView(frame: .zero, style: .normal)!
     private let textScroll = NSScrollView()
     private let textView = NSTextView()
+    /// The item's Finder tags, under the preview (hidden when it has none).
+    private let tagLine = NSTextField(labelWithString: "")
+    private var tagHeight: NSLayoutConstraint!
     /// Bumped on every selection change, so a slow bat render for an earlier selection is
     /// ignored.
     private var generation = 0
@@ -37,16 +40,47 @@ final class PreviewPane: NSView {
         textScroll.drawsBackground = false
         textScroll.isHidden = true
 
+        tagLine.translatesAutoresizingMaskIntoConstraints = false
+        tagLine.lineBreakMode = .byTruncatingTail
+        addSubview(tagLine)
+        tagHeight = tagLine.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            tagLine.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            tagLine.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            tagLine.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            tagHeight,
+        ])
         for v in [quickLook, textScroll] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
             NSLayoutConstraint.activate([
                 v.topAnchor.constraint(equalTo: topAnchor),
-                v.bottomAnchor.constraint(equalTo: bottomAnchor),
+                v.bottomAnchor.constraint(equalTo: tagLine.topAnchor, constant: -4),
                 v.leadingAnchor.constraint(equalTo: leadingAnchor),
                 v.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
         }
+    }
+
+    /// Finder's colour tags, by name.
+    private static let tagColors: [String: NSColor] = [
+        "red": .systemRed, "orange": .systemOrange, "yellow": .systemYellow, "green": .systemGreen,
+        "blue": .systemBlue, "purple": .systemPurple, "gray": .systemGray, "grey": .systemGray,
+    ]
+
+    private func showTags(_ path: String?) {
+        let tags = path.map { commonTags(paths: [$0]) } ?? []
+        tagHeight.constant = tags.isEmpty ? 0 : 18
+        guard !tags.isEmpty else { return tagLine.stringValue = "" }
+        let theme = Theme.shared
+        let s = NSMutableAttributedString()
+        for (i, tag) in tags.enumerated() {
+            if i > 0 { s.append(NSAttributedString(string: "   ")) }
+            let dot = Self.tagColors[tag.lowercased()] ?? theme.colors.textDim
+            s.append(NSAttributedString(string: "● ", attributes: [.font: theme.small, .foregroundColor: dot]))
+            s.append(NSAttributedString(string: tag, attributes: [.font: theme.small, .foregroundColor: theme.colors.text]))
+        }
+        tagLine.attributedStringValue = s
     }
 
     @available(*, unavailable)
@@ -55,6 +89,7 @@ final class PreviewPane: NSView {
     func show(_ row: RowView?) {
         generation += 1
         let current = generation
+        showTags(row?.path)
         guard let row else { return showQuickLook(nil) }
         let theme = Theme.shared
         guard theme.previewBat, Self.usesBat(row) else { return showQuickLook(row.path) }

@@ -10,6 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var ops = FileOps(listener: opsEvents)
     private var windows: [BrowserWindowController] = []
     private lazy var indexWindow = IndexWindowController(index: index)
+    private lazy var settingsWindow = SettingsWindowController(
+        onChange: { [weak self] in self?.reloadConfig(nil) },
+        showIndex: { [weak self] in self?.showIndex(nil) })
+    private lazy var welcomeWindow = WelcomeWindowController(onChange: { [weak self] in self?.reloadConfig(nil) })
+
+    /// The key that stops a running operation (File › Stop Operation).
+    static let stopKey = "⌘."
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         opsEvents.delegate = self
@@ -18,8 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newWindow(nil)
         NSApp.activate()
         #if DEBUG
-        DebugSnapshot.runIfRequested()
+        if DebugSnapshot.runIfRequested() { return }
         #endif
+        if !WelcomeWindowController.seen { showWelcome(nil) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -65,7 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indexWindow.showWindow(nil)
     }
 
+    @objc func showSettings(_ sender: Any?) {
+        settingsWindow.show()
+    }
+
+    @objc func showKeys(_ sender: Any?) {
+        settingsWindow.show(tab: .keys)
+    }
+
+    @objc func showWelcome(_ sender: Any?) {
+        welcomeWindow.show()
+    }
+
     @objc func reloadConfig(_ sender: Any?) {
+        Keymap.reload()
         let theme = Theme.reload()
         NSApp.appearance = theme.appearance
         windows.removeAll { $0.window?.isVisible != true }
@@ -100,6 +121,10 @@ extension AppDelegate: OpsEventsDelegate {
         windows.forEach { $0.operationProgress(id: id, done: done, total: total, current: current) }
     }
 
+    func operationBytes(id: UInt64, copied: UInt64, total: UInt64) {
+        windows.forEach { $0.operationBytes(id: id, copied: copied, total: total) }
+    }
+
     func operationFinished(id: UInt64, outcome: OpOutcome) {
         windows.removeAll { $0.window?.isVisible != true }
         windows.forEach { $0.operationFinished(id: id, outcome: outcome) }
@@ -115,7 +140,9 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "About Tilde", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Open Config File…", action: #selector(AppDelegate.openConfig(_:)), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: ",")
+        let configFile = appMenu.addItem(withTitle: "Open Config File…", action: #selector(AppDelegate.openConfig(_:)), keyEquivalent: ",")
+        configFile.keyEquivalentModifierMask = [.command, .option]
         appMenu.addItem(withTitle: "Reload Config", action: #selector(AppDelegate.reloadConfig(_:)), keyEquivalent: "r")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide Tilde", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
@@ -128,6 +155,7 @@ enum MainMenu {
         fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
         let newFolder = fileMenu.addItem(withTitle: "New Folder…", action: #selector(BrowserWindowController.newFolder(_:)), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "Apply Edits", action: #selector(BrowserWindowController.applyEdits(_:)), keyEquivalent: "s")
+        // "Stop Operation" when not editing.
         fileMenu.addItem(withTitle: "Cancel Edit", action: #selector(BrowserWindowController.cancelEdits(_:)), keyEquivalent: ".")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(.separator())
@@ -162,6 +190,14 @@ enum MainMenu {
         indexItem.keyEquivalentModifierMask = [.command, .shift]
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
+
+        let helpItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpMenu.addItem(withTitle: "Welcome to Tilde", action: #selector(AppDelegate.showWelcome(_:)), keyEquivalent: "")
+        helpMenu.addItem(withTitle: "Keys…", action: #selector(AppDelegate.showKeys(_:)), keyEquivalent: "")
+        helpItem.submenu = helpMenu
+        main.addItem(helpItem)
+        NSApp.helpMenu = helpMenu
 
         return main
     }

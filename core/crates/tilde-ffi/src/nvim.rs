@@ -203,3 +203,20 @@ impl NvimEditor {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NvimStatus {
+    pub found: bool,
+    /// "Neovim 0.12.3 at /opt/homebrew/bin/nvim", or why it can't be used.
+    pub message: String,
+}
+
+/// Looks for nvim the way EDIT will (`configured` may be empty). Runs the login shell, so
+/// call it off the main thread.
+#[uniffi::export]
+pub fn find_nvim(configured: String) -> NvimStatus {
+    match tilde_nvim::find(&configured) {
+        Ok(f) => NvimStatus { found: true, message: format!("Neovim {} at {}", f.version, f.path.display()) },
+        Err(message) => NvimStatus { found: false, message },
+    }
+}

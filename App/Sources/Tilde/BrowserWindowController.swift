@@ -24,6 +24,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Operations started from this window: what to say when each finishes.
     private var myOperations: [UInt64: String] = [:]
     private var runningLabels: [UInt64: String] = [:]
+    /// "2/5 · file.dmg" for running operations with several steps.
+    private var runningSteps: [UInt64: String] = [:]
     private var overlay: PromptOverlay?
     private let listScroll = NSScrollView()
     // EDIT mode
@@ -109,10 +111,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         open(folder: start)
         setMode(.go)
         startIndexProgress()
-        // ⌃j ⌃k ⌃h ⌃l navigate in every mode. Caught before the search field, whose text
-        // editing would otherwise treat ⌃h as delete and ⌃k as kill-line.
+        // GO keys are caught before the search field, whose text editing would otherwise
+        // take them (⌃h as delete, ⌃k as kill-line, tab to the next field).
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let handled = MainActor.assumeIsolated { self?.handleControlNavigation(event) ?? false }
+            let handled = MainActor.assumeIsolated { self?.handleWindowKey(event) ?? false }
             return handled ? nil : event
         }
     }
@@ -399,72 +401,73 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     // MARK: SELECT keys
 
     private func handleSelectKey(_ event: NSEvent) -> Bool {
-        if event.modifierFlags.contains(.command) { return false }
-        if event.modifierFlags.contains(.control) {
-            if event.charactersIgnoringModifiers == "r" { redo(); return true }
+        guard let action = Keymap.shared.action(for: event, in: .select) else {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isDisjoint(with: [.command, .control, .option]),
+               let c = event.charactersIgnoringModifiers, c.count == 1, c.first!.isLetter {
+                statusBar.flash("\(c) does nothing in SELECT. Press \(Keymap.shared.key(.search, in: .select)) to search.")
+                return true
+            }
             return false
         }
-        switch event.keyCode {
-        case 125: moveSelection(by: 1); return true // down
-        case 126: moveSelection(by: -1); return true // up
-        case 123: goUp(); return true // left
-        case 124: goIntoOrActivate(); return true // right
-        case 36, 76: activateHighlighted(); return true // return, enter
-        case 53: // escape: clear the filter, then the shelf
+        perform(action)
+        return true
+    }
+
+    /// A SELECT action (from the keymap).
+    private func perform(_ action: KeyAction) {
+        switch action {
+        case .down: moveSelection(by: 1)
+        case .up: moveSelection(by: -1)
+        case .parent: goUp()
+        case .enter: goIntoOrActivate()
+        case .open: activateHighlighted()
+        case .top: select(row: 0)
+        case .bottom: select(row: results.tableRows - 1)
+        case .search, .selectMode: setMode(.go)
+        case .activity: toggleActivity()
+        case .home: open(folder: engine.homeDir())
+        case .clear:
+            // The filter first, then the shelf.
             if !pathBar.field.stringValue.isEmpty {
                 pathBar.field.stringValue = ""
                 queryChanged()
             } else if !shelf.isEmpty {
                 setShelf([])
             }
-            return true
-        case 49: toggleShelf(); return true // space
-        case 51: goUp(); return true // delete
-        default: break
-        }
-        switch event.charactersIgnoringModifiers ?? "" {
-        case "j": moveSelection(by: 1)
-        case "k": moveSelection(by: -1)
-        case "h": goUp()
-        case "l": goIntoOrActivate()
-        case "g": select(row: 0)
-        case "G": select(row: results.tableRows - 1)
-        case "/": setMode(.go)
-        case "@": toggleActivity()
-        case "1" where inActivity: setActivityFilter(origin: .all)
-        case "2" where inActivity: setActivityFilter(origin: .downloads)
-        case "3" where inActivity: setActivityFilter(origin: .screenshots)
-        case "4" where inActivity: setActivityFilter(origin: .edited)
-        case "5" where inActivity: setActivityFilter(origin: .airDrop)
-        case "i" where inActivity: setActivityFilter(toggleInbox: true)
-        case "e" where inActivity, "o" where inActivity, "n" where inActivity:
-            statusBar.flash("Activity isn't a folder. tab reveals the item in its folder.")
-        case "~": open(folder: engine.homeDir())
-        case "X": hideHighlightedFromSearch()
-        case "x": toggleShelf()
-        case "a": toggleShelfAll()
-        case "m": pickDestination(copy: false)
-        case "c": pickDestination(copy: true)
-        case "d": trashTargets()
-        case "y": copyPaths()
-        case "z": compressTargets()
-        case "r":
+        case .shelf: toggleShelf()
+        case .shelfAll: toggleShelfAll()
+        case .move: pickDestination(copy: false)
+        case .copy: pickDestination(copy: true)
+        case .trash: trashTargets()
+        case .tag: tagTargets()
+        case .copyPath: copyPaths()
+        case .compress: compressTargets()
+        case .hide: hideHighlightedFromSearch()
+        case .undo: undo()
+        case .redo: redo()
+        case .rename:
             // Everywhere results live in other folders: rename those with a prompt.
             if selectedRow?.section == .everywhere || inActivity {
                 renameHighlighted()
             } else {
                 enterEdit(focus: selectedRow?.name, selectName: true, newLine: false, quick: true)
             }
-        case "e": enterEdit(focus: selectedRow?.name, selectName: false, newLine: false, quick: false)
-        case "o": enterEdit(focus: selectedRow?.name, selectName: false, newLine: true, quick: true)
-        case "n": newFolder(nil)
-        case "u": undo()
-        case "U": redo()
-        case let c where c.count == 1 && c.first!.isLetter:
-            statusBar.flash("\(c) does nothing yet in SELECT. Press / to search.")
-        default: return false
+        case .edit where inActivity, .newItem where inActivity, .newFolder where inActivity:
+            statusBar.flash("Activity isn't a folder. \(Keymap.shared.key(.enter, in: .select)) reveals the item in its folder.")
+        case .edit: enterEdit(focus: selectedRow?.name, selectName: false, newLine: false, quick: false)
+        case .newItem: enterEdit(focus: selectedRow?.name, selectName: false, newLine: true, quick: true)
+        case .newFolder: newFolder(nil)
+        case .filterAll where !inActivity, .filterDownloads where !inActivity, .filterScreenshots where !inActivity,
+             .filterEdited where !inActivity, .filterAirdrop where !inActivity, .inbox where !inActivity:
+            statusBar.flash("That filter is for Activity (\(Keymap.shared.key(.activity, in: .select))).")
+        case .filterAll: setActivityFilter(origin: .all)
+        case .filterDownloads: setActivityFilter(origin: .downloads)
+        case .filterScreenshots: setActivityFilter(origin: .screenshots)
+        case .filterEdited: setActivityFilter(origin: .edited)
+        case .filterAirdrop: setActivityFilter(origin: .airDrop)
+        case .inbox: setActivityFilter(toggleInbox: true)
         }
-        return true
     }
 
     private func goIntoOrActivate() {
@@ -554,30 +557,30 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
-    /// ⌃j / ⌃k move down / up, ⌃h goes up a folder, ⌃l goes in (like `tab` or `l`).
-    private func handleControlNavigation(_ event: NSEvent) -> Bool {
-        guard event.window === window, mode != .edit,
-              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control,
-              let key = event.charactersIgnoringModifiers?.lowercased()
-        else { return false }
+    /// GO keys from the keymap while typing in the bar, and up / down in a folder picker.
+    private func handleWindowKey(_ event: NSEvent) -> Bool {
+        guard event.window === window, mode != .edit else { return false }
         if let overlay {
-            switch key {
-            case "j": overlay.moveSelection(by: 1)
-            case "k": overlay.moveSelection(by: -1)
+            guard overlay.hasList else { return false }
+            switch Keymap.shared.action(for: event, in: .go) {
+            case .down: overlay.moveSelection(by: 1)
+            case .up: overlay.moveSelection(by: -1)
             default: return false
             }
             return true
         }
-        switch key {
-        case "j": moveSelection(by: 1)
-        case "k": moveSelection(by: -1)
-        case "h": goUp()
-        case "l":
-            if mode == .go {
-                whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
-            } else {
-                goIntoOrActivate()
-            }
+        guard mode == .go, let editor = pathBar.field.currentEditor(), window?.firstResponder === editor,
+              (editor as? NSTextView)?.hasMarkedText() != true,
+              let action = Keymap.shared.action(for: event, in: .go)
+        else { return false }
+        switch action {
+        case .down: moveSelection(by: 1)
+        case .up: moveSelection(by: -1)
+        case .parent: goUp()
+        // Acting on the highlighted row waits for results to catch up with fast typing.
+        case .enter: whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
+        case .open: whenResultsCurrent { [weak self] in self?.activateHighlighted() }
+        case .selectMode: setMode(.select)
         default: return false
         }
         return true
@@ -657,20 +660,15 @@ extension BrowserWindowController: NSTextFieldDelegate {
         updateChrome()
     }
 
+    /// Keys bound in `[keys.go]` never get here (see `handleWindowKey`).
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
-        case #selector(NSResponder.moveDown(_:)):
-            moveSelection(by: 1)
-        case #selector(NSResponder.moveUp(_:)):
-            moveSelection(by: -1)
-        case #selector(NSResponder.insertNewline(_:)):
-            whenResultsCurrent { [weak self] in self?.activateHighlighted() }
-        case #selector(NSResponder.insertTab(_:)):
-            whenResultsCurrent { [weak self] in self?.goIntoHighlighted() }
-        case #selector(NSResponder.cancelOperation(_:)):
-            setMode(.select)
         case #selector(NSResponder.deleteBackward(_:)) where pathBar.field.stringValue.isEmpty:
             goUp()
+        // Unbound, these would end editing or move focus out of the bar.
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)),
+             #selector(NSResponder.insertBacktab(_:)), #selector(NSResponder.cancelOperation(_:)):
+            break
         default:
             return false
         }
@@ -860,17 +858,41 @@ extension BrowserWindowController: OpsEventsDelegate {
                 guard let self else { return }
                 let what = copy ? "Copied" : "Moved"
                 let folder = dest == here ? "this folder" : "“\((dest as NSString).lastPathComponent)”"
-                self.submit(
-                    OpRequest(kind: copy ? .copy : .move, sources: sources, destination: dest, name: nil),
-                    describing: "\(what) \(self.describe(sources)) to \(folder)")
+                let request = OpRequest(kind: copy ? .copy : .move, sources: sources, destination: dest, clash: .keepBoth)
                 self.setShelf([])
+                self.resolvingClashes(request, in: folder) { request in
+                    self.submit(request, describing: "\(what) \(self.describe(sources)) to \(folder)")
+                }
+            })))
+    }
+
+    /// Asks what to do when items being moved or copied have the same name as something
+    /// in the destination, then calls `go` with the answer. No clashes, no question.
+    private func resolvingClashes(_ request: OpRequest, in folder: String, go: @escaping (OpRequest) -> Void) {
+        let names = (try? ops.clashes(request: request)) ?? []
+        guard !names.isEmpty else { return go(request) }
+        let message: String
+        if names.count == 1 {
+            message = "“\(names[0])” already exists in \(folder)."
+        } else {
+            let listed = names.prefix(3).map { "“\($0)”" }.joined(separator: ", ")
+            message = "\(names.count) items already exist in \(folder): \(listed)\(names.count > 3 ? "…" : "")"
+        }
+        let replace = names.count == 1 ? "Replace it" : "Replace them"
+        let skip = names.count == 1 ? "Skip it" : "Skip those"
+        showOverlay(PromptOverlay(title: message, kind: .choice(
+            options: [("k", "Keep both"), ("r", replace + " (old to Trash)"), ("s", skip)],
+            onChoose: { choice in
+                var request = request
+                request.clash = [ClashPolicy.keepBoth, .replace, .skip][choice]
+                go(request)
             })))
     }
 
     private func trashTargets() {
         let sources = targets
         guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
-        submit(OpRequest(kind: .trash, sources: sources, destination: nil, name: nil),
+        submit(OpRequest(kind: .trash, sources: sources, clash: .keepBoth),
                describing: "Moved \(describe(sources)) to the Trash")
         setShelf([])
     }
@@ -878,7 +900,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     private func compressTargets() {
         let sources = targets
         guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
-        submit(OpRequest(kind: .compress, sources: sources, destination: nil, name: nil),
+        submit(OpRequest(kind: .compress, sources: sources, clash: .keepBoth),
                describing: "Compressed \(describe(sources))")
         setShelf([])
     }
@@ -889,6 +911,30 @@ extension BrowserWindowController: OpsEventsDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
         statusBar.flash("Copied \(paths.count == 1 ? "path" : "\(paths.count) paths")")
+    }
+
+    /// `t`: edit tags as a comma-separated list. With several items it shows the tags they
+    /// share; removing one removes it from all of them, and other tags are kept.
+    private func tagTargets() {
+        let paths = targets
+        guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        let current = commonTags(paths: paths)
+        let initial = current.joined(separator: ", ")
+        let length = (initial as NSString).length
+        let title = paths.count == 1 ? "Tags for \(describe(paths))" : "Tags for \(describe(paths)) (tags they all have)"
+        showOverlay(PromptOverlay(
+            title: title,
+            kind: .text(initial: initial, selection: NSRange(location: length, length: 0), onSubmit: { [weak self] text in
+                guard let self else { return }
+                let typed = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                let has = { (list: [String], tag: String) in list.contains { $0.caseInsensitiveCompare(tag) == .orderedSame } }
+                let add = typed.filter { !has(current, $0) }
+                let remove = current.filter { !has(typed, $0) }
+                guard !add.isEmpty || !remove.isEmpty else { return self.statusBar.flash("Tags unchanged") }
+                self.submit(OpRequest(kind: .tag, sources: paths, clash: .keepBoth, tagsAdd: add, tagsRemove: remove),
+                            describing: "Tagged \(self.describe(paths))")
+            }),
+            hint: "comma-separated, like  Work, Red   ⏎ save   esc cancel"))
     }
 
     private func renameHighlighted() {
@@ -905,7 +951,7 @@ extension BrowserWindowController: OpsEventsDelegate {
             title: "Rename “\(name)”",
             kind: .text(initial: name, selection: NSRange(location: 0, length: stem), onSubmit: { [weak self] newName in
                 guard let self, newName != name else { return }
-                self.submit(OpRequest(kind: .rename, sources: [row.path], destination: nil, name: newName),
+                self.submit(OpRequest(kind: .rename, sources: [row.path], name: newName, clash: .keepBoth),
                             describing: "Renamed to “\(newName)”")
             })))
     }
@@ -916,7 +962,7 @@ extension BrowserWindowController: OpsEventsDelegate {
         showOverlay(PromptOverlay(
             title: "New folder in \(display(parent))",
             kind: .text(initial: "untitled folder", selection: NSRange(location: 0, length: 15), onSubmit: { [weak self] name in
-                self?.submit(OpRequest(kind: .newFolder, sources: [], destination: parent, name: name),
+                self?.submit(OpRequest(kind: .newFolder, sources: [], destination: parent, name: name, clash: .keepBoth),
                              describing: "Created “\(name)”")
             })))
     }
@@ -971,7 +1017,19 @@ extension BrowserWindowController: OpsEventsDelegate {
 
     func operationProgress(id: UInt64, done: Int, total: Int, current: String) {
         guard reports(id), let label = runningLabels[id], total > 1, !current.isEmpty else { return }
-        statusBar.setActivity("\(label)… \(min(done + 1, total))/\(total) · \(current)")
+        runningSteps[id] = "\(min(done + 1, total))/\(total) · \(current)"
+        statusBar.setActivity("\(label)… \(runningSteps[id]!)")
+    }
+
+    /// Copies to another volume report bytes: "1.2 GB of 4 GB".
+    func operationBytes(id: UInt64, copied: UInt64, total: UInt64) {
+        guard reports(id), let label = runningLabels[id], total > 0 else { return }
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        let amount = "\(f.string(fromByteCount: Int64(copied))) of \(f.string(fromByteCount: Int64(total)))"
+        let step = runningSteps[id].map { " · \($0)" } ?? ""
+        let stop = AppDelegate.stopKey
+        statusBar.setActivity("\(label)… \(amount)\(step)   \(stop) stop")
     }
 
     func operationFinished(id: UInt64, outcome: OpOutcome) {
@@ -985,11 +1043,15 @@ extension BrowserWindowController: OpsEventsDelegate {
             }
         }
         let mine = myOperations.removeValue(forKey: id)
+        runningSteps[id] = nil
         if runningLabels.removeValue(forKey: id) != nil { statusBar.setActivity(nil) }
         guard mine != nil || window?.isKeyWindow == true else { return }
 
         if let error = outcome.error {
-            if outcome.completed > 0 {
+            if error == "Cancelled" {
+                let done = outcome.completed > 0 ? " after \(outcome.completed) of \(outcome.total)" : ""
+                statusBar.flash("Stopped \(outcome.label)\(done)\(outcome.completed > 0 ? " · u undo" : "")")
+            } else if outcome.completed > 0 {
                 statusBar.flash("\(outcome.label) stopped after \(outcome.completed) of \(outcome.total): \(error)")
             } else {
                 statusBar.flash(error)
@@ -1002,15 +1064,19 @@ extension BrowserWindowController: OpsEventsDelegate {
         case .undone: message = "Undid \(outcome.label)"
         case .redone: message = "Redid \(outcome.label)"
         }
-        if outcome.renamed > 0 {
-            message += " (\(outcome.renamed) renamed to keep both)"
-        }
+        var notes: [String] = []
+        if outcome.renamed > 0 { notes.append("\(outcome.renamed) renamed to keep both") }
+        if outcome.replaced > 0 { notes.append("\(outcome.replaced) replaced, old in the Trash") }
+        if outcome.skipped > 0, outcome.completed > 0 { notes.append("\(outcome.skipped) skipped") }
+        if !notes.isEmpty { message += " (\(notes.joined(separator: ", ")))" }
         if outcome.phase == .done, outcome.completed == 0, outcome.skipped > 0 {
-            message = "Already there, nothing to do"
+            message = "Nothing to do"
         } else if outcome.phase != .undone {
             message += " · u undo"
         }
         statusBar.flash(message)
+        // Tags show under the preview.
+        if outcome.label.hasPrefix("Tag ") { schedulePreview() }
 
         // Select what was just renamed or created when it's in this folder; the folder
         // refresh that follows picks it up.
@@ -1120,9 +1186,18 @@ extension BrowserWindowController {
         if editInNvim { nvim.write() } else { applyEdit() }
     }
 
-    /// File › Cancel Edit (⌘.): discards the edit, also from the middle of typing in Neovim.
+    /// File › Cancel Edit / Stop Operation (⌘.): discards the edit, also from the middle of
+    /// typing in Neovim; otherwise stops the operation this window started (or the oldest
+    /// running one), partway through a large copy if need be.
     @objc func cancelEdits(_ sender: Any?) {
-        guard mode == .edit else { return }
+        guard mode == .edit else {
+            let running = ops.running()
+            guard let id = running.first(where: { runningLabels[$0] != nil }) ?? running.first else {
+                return statusBar.flash("Nothing to stop")
+            }
+            ops.cancel(id: id)
+            return
+        }
         if editInNvim {
             nvim.close()
             exitEdit()
@@ -1232,7 +1307,14 @@ extension BrowserWindowController: NvimEventsDelegate {
 
 extension BrowserWindowController: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(applyEdits(_:)) || item.action == #selector(cancelEdits(_:)) { return mode == .edit }
-        return true
+        switch item.action {
+        case #selector(applyEdits(_:)):
+            return mode == .edit
+        case #selector(cancelEdits(_:)):
+            item.title = mode == .edit ? "Cancel Edit" : "Stop Operation"
+            return mode == .edit || !ops.running().isEmpty
+        default:
+            return true
+        }
     }
 }

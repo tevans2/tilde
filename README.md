@@ -37,29 +37,54 @@ cargo run --release -p tilde-index --example bench_index        # scans your hom
 ```
 
 Debug builds can render their window to a PNG without screen-recording access, optionally
-replaying keys first (`\t` tab, `\e` escape, `\r` return, `\b` delete):
+replaying keys first (`\t` tab, `\e` escape, `\r` return, `\b` delete, `^j` control,
+`@s` command, `\w` a one-second pause). `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome`
+snapshots that window instead:
 
 ```sh
 TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/debug/Tilde
 ```
 
-## Keys (so far)
+## First launch
+
+A welcome window covers Full Disk Access (with its status, updated as you grant it), asks
+for Desktop, Documents and Downloads up front if you'd rather not have macOS ask mid-search,
+picks the editor for EDIT, and shows the modes. Help › Welcome to Tilde opens it again.
+Run from a terminal instead of as an app, macOS asks about the terminal, and the window
+says which one.
+
+## Keys
+
+These are the defaults. Every GO and SELECT key can be changed in Settings › Keys (press
+the new key) or in the config file (see below).
 
 | Mode | Keys |
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `esc` → SELECT |
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `/` → GO · `esc` clear filter, then shelf |
-| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
+| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
-| Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` open config file · `⌘R` reload config |
+| Anywhere | `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (your most-visited zoxide
-folders show first), or type a path like `~/Documents/`. Name clashes are resolved like the
-Finder (`report 2.pdf`); copies on the same disk are instant APFS clones; trashed items can
-be put back with undo or from the Finder. Undo history lasts for the session and is shared
-by all windows.
+folders show first), or type a path like `~/Documents/`. If something with the same name is
+already there, Tilde asks: `k` keep both (`report 2.pdf`, like the Finder), `r` replace (the
+old one goes to the Trash, and undo brings it back) or `s` skip. Copies on the same disk
+are instant APFS clones; copies to another disk show progress in bytes and can be stopped
+with `⌘.` (the partial copy is removed). Trashed items can be put back with undo or from
+the Finder.
+
+`t` edits Finder tags as a comma-separated list (`Work, Red`; colour names show in colour
+in the Finder). With several items it shows the tags they share: removing one removes it
+from all of them, adding one adds it to all, and their other tags stay. Tags show under the
+preview.
+
+Undo history is shared by all windows and kept across restarts (the last 100 operations
+from the past 30 days, in `~/Library/Application Support/Tilde/undo.json`). Undoing
+something old works as long as the items are still where Tilde left them; if not, it says
+what's missing and changes nothing else.
 
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
 
@@ -148,8 +173,10 @@ everything else, including Markdown, through Quick Look.
 
 ## Config
 
-`~/.config/tilde/config.toml` (or `$XDG_CONFIG_HOME/tilde/config.toml`). `⌘,` creates it from a
-commented template and opens it; `⌘R` applies changes.
+`~/.config/tilde/config.toml` (or `$XDG_CONFIG_HOME/tilde/config.toml`). Settings (`⌘,`)
+edits it for you: each change is written to the file straight away, keeping your comments,
+and applied to open windows. `⌥⌘,` creates it from a commented template and opens it; `⌘R`
+applies changes made by hand.
 
 ```toml
 [font]
@@ -184,4 +211,20 @@ max_items = 1000000         # indexing stops here; ⌘⇧I shows what to exclude
 [zoxide]
 enabled = true              # rank by zoxide frecency, include its folders
 add_on_visit = true         # tell zoxide about folders opened in Tilde
+
+[keys.go]                   # while typing in the bar: needs ctrl+/alt+ unless a named key
+down = ["down", "ctrl+j"]
+select_mode = ["esc", "ctrl+g"]
+
+[keys.select]               # in the list
+move = "M"                  # replaces m
+tag = ["t", "#"]
+trash = []                  # unbound
 ```
+
+A key is the character it types (`j`, `G`, `@`) or a name (`down` `up` `left` `right`
+`return` `tab` `esc` `space` `backspace` `delete` `home` `end` `pageup` `pagedown`), with
+`ctrl+`, `alt+` or (for names) `shift+` in front. Setting an action replaces its default
+keys; a key you give one action is taken from any action that only had it by default.
+Settings › Keys lists every action with its keys. Mistakes (unknown actions, a key bound
+twice, `cmd+`) are reported in the status bar and skipped.

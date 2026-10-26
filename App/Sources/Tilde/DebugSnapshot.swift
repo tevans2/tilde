@@ -6,27 +6,37 @@ import SwiftTerm
 /// launch and quits. `TILDE_SNAPSHOT_KEYS` replays keystrokes first (`\e` is escape, `\t` tab,
 /// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause), so
 /// flows can be checked without screen-recording access.
-/// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead.
+/// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead;
+/// `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome` does the same for those windows.
 @MainActor
 enum DebugSnapshot {
-    static func runIfRequested() {
+    /// Returns whether a snapshot or benchmark is running (the welcome isn't shown then).
+    static func runIfRequested() -> Bool {
         let env = ProcessInfo.processInfo.environment
         if let steps = env["TILDE_SCROLL_BENCH"].flatMap(Int.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { scrollBench(steps: steps) }
-            return
+            return true
         }
-        guard let out = env["TILDE_SNAPSHOT"] else { return }
+        guard let out = env["TILDE_SNAPSHOT"] else { return false }
         let keys = decode(env["TILDE_SNAPSHOT_KEYS"] ?? "")
         let showIndex = env["TILDE_SNAPSHOT_INDEX"] == "1"
+        let other: Selector? = switch env["TILDE_SNAPSHOT_WINDOW"] {
+        case "settings": #selector(AppDelegate.showSettings(_:))
+        case "keys": #selector(AppDelegate.showKeys(_:))
+        case "welcome": #selector(AppDelegate.showWelcome(_:))
+        default: nil
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if let other { NSApp.sendAction(other, to: nil, from: nil) }
             type(Array(keys)) {
                 if showIndex { NSApp.sendAction(#selector(AppDelegate.showIndex(_:)), to: nil, from: nil) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + (showIndex ? 2.0 : 0.6)) {
-                    write(to: out, panel: showIndex)
+                DispatchQueue.main.asyncAfter(deadline: .now() + (showIndex || other != nil ? 2.0 : 0.6)) {
+                    write(to: out, panel: showIndex, other: other != nil)
                     NSApp.terminate(nil)
                 }
             }
         }
+        return true
     }
 
     /// `TILDE_SCROLL_BENCH=<steps>`: scrolls the results list down a screenful-ish at a time
@@ -146,9 +156,11 @@ enum DebugSnapshot {
         )
     }
 
-    private static func write(to path: String, panel: Bool) {
+    private static func write(to path: String, panel: Bool, other: Bool) {
         let window = panel
             ? NSApp.windows.first { $0 is NSPanel && $0.isVisible }
+            : other
+            ? NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController }
             : (NSApp.keyWindow ?? NSApp.windows.first)
         guard let window, let view = window.contentView?.superview else { return }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }

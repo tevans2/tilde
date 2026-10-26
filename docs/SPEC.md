@@ -588,7 +588,7 @@ Still to do for M2: Tilde's own frecency store, compaction of dead items, folder
 - Tests run against temporary folders with a stand-in Trash, including randomized sequences of operations that must undo back to the exact starting tree; one opt-in test uses the real Trash.
 - App: shelf (`x`, `space`, `a`, shown as dots and a shelf bar), actions (`m` `c` `d` `r` `n` `z` `y`), a folder picker (fuzzy over indexed folders, zoxide favourites when empty, typed-path completion), rename and new-folder prompts, progress and results in the status bar, `u` / `U` / `⌃R`, and Edit › Undo/Redo naming the operation. Folder views refresh through FSEvents, so results appear without a reload.
 
-Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent undo history, progress for single large copies.
+Finished later (see "M3, finished" below): tags, conflict prompts, persistent undo history, progress for single large copies.
 
 ### Navigation, preview and themes (done)
 
@@ -648,3 +648,18 @@ Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent und
 | 600 pt | 11.8 / 13.2 ms | 4.85 / 5.75 ms |
 
   Release build with the debug hooks (`swift build -c release -Xswiftc -DDEBUG`), 100,200-row folder; the 8.3 ms budget for 120 Hz now holds at p95 even for large steps. Fetching rows from Rust was ~2% of the time. Not measured: compositor frame pacing, which needs Instruments.
+
+### M3, finished
+
+- **Clashes**: Move and Copy carry a `Clash` policy (keep both, replace, skip). The app asks first (`FileOps.clashes` lists names already taken in the destination): `k` keep both, `r` replace, `s` skip. Replace trashes the existing item as its own step before the move or copy, so undo moves the new item back and restores the old one from the Trash. A folder can't be replaced by something inside it. Duplicates in their own folder and repeats within one request always keep both. Plan outcomes count renamed, replaced and skipped items.
+- **Tags** (`t`): `Request::Tag { add, remove }` plans one `SetTags` step per item from its current tags (case-insensitive; unchanged items are skipped) through `NSURLTagNamesKey`, recording the previous tags for undo. Several items show the tags they share; edits apply as adds and removes, so their other tags stay. Tags show under the preview.
+- **Persistent undo**: the journal (requests, completed steps and timestamps, plus redo) is JSON in `~/Library/Application Support/Tilde/undo.json`, rewritten atomically after every operation; the last 100 entries from the past 30 days are kept, and a damaged file is an empty history. Undoing old entries goes through the same checked steps, so moved-away items are reported, not guessed at. Tested across restarts.
+- **Large copies**: copies that move data (to another volume) use a `copyfile` status callback: bytes copied of the total (summed up front), reported at most every 100 ms and shown in the status bar ("1.2 GB of 4 GB"), and `⌘.` (File › Stop Operation) stops mid-file and removes the partial copy. Same-volume copies clone and skip the size walk. The randomized undo test now mixes in every clash policy and tags.
+
+### M7, first part: keys, settings, onboarding (done)
+
+- **Keymap**: `[keys.go]` and `[keys.select]` in config.toml bind actions (`move`, `down`, `select_mode`, …; the list is in `tilde-config/src/keys.rs` with descriptions and defaults) to one key or a list; `[]` unbinds. Keys are characters or names with `ctrl+`/`alt+`/`shift+` (names only); `cmd+` is refused (menus own it); plain characters in GO are refused (they're typed into the bar). A user key takes the key away from actions that only had it by default; collisions between user keys and bad specs are warnings, not errors. The app matches key presses by key code for named keys and by character otherwise, so letters follow the keyboard layout. GO keys are caught before the search field; SELECT keys go through the list. Status bar hints, the path bar placeholder and the welcome text read from the keymap.
+- **Settings** (`⌘,`, SwiftUI): General (appearance, theme preset, monospaced font family and size, Activity days, Full Disk Access status), Preview (visibility, width, bat), Editing (built-in or Neovim, path with live discovery status, clean config), Search (index on/off, hidden files, item limit, zoxide), Keys (every action with its keys; Set records the next key press, + adds one, Reset removes the override). Each change is written to config.toml with `toml_edit`, keeping comments and the comment beside the old value, then applied to open windows. Config problems show at the top. `⌥⌘,` opens the file.
+- **Welcome** (first launch, Help › Welcome to Tilde): Full Disk Access status polled every second with a button to the right Privacy pane; "Ask now" for Desktop, Documents and Downloads (read off the main thread so macOS asks while the reason is on screen); editor choice with Neovim discovery; the three modes with the current keys. Run unbundled, it names the terminal app (via `__CFBundleIdentifier`, so tmux reports the terminal hosting it) since macOS attributes permissions to it.
+- Remaining for M7: Sparkle, the signed and notarized app bundle, a performance pass on launch and EDIT entry.
+

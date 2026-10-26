@@ -2,8 +2,9 @@ import AppKit
 import TildeFFI
 
 /// A small panel over the window for one line of input: a folder picker (with fuzzy
-/// results) for move and copy, or a plain text prompt for rename and new folder.
-/// `⏎` confirms, `esc` cancels.
+/// results) for move and copy, a plain text prompt for rename, new folder and tags, or a
+/// choice of a few answers by key (what to do about name clashes). `⏎` confirms, `esc`
+/// cancels.
 @MainActor
 final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     enum Kind {
@@ -11,6 +12,9 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         case destination(search: (String) -> [Destination], onPick: (String) -> Void)
         /// Free text; `onSubmit` gets the text.
         case text(initial: String, selection: NSRange?, onSubmit: (String) -> Void)
+        /// One of `options` (key, label), chosen by its key or a click; `⏎` picks the
+        /// first. `onChoose` gets the option's index.
+        case choice(options: [(key: String, label: String)], onChoose: (Int) -> Void)
     }
 
     private let kind: Kind
@@ -24,10 +28,14 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private var results: [Destination] = []
+    private let buttons = NSStackView()
+    private let customHint: String?
 
-    init(title: String, kind: Kind, onClose: @escaping () -> Void = {}) {
+    /// `hint` replaces the usual line of keys under the field.
+    init(title: String, kind: Kind, hint: String? = nil, onClose: @escaping () -> Void = {}) {
         self.kind = kind
         self.onClose = onClose
+        customHint = hint
         super.init(frame: .zero)
         self.title.stringValue = title
         build()
@@ -37,7 +45,23 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         case let .text(initial, _, _):
             field.stringValue = initial
             scroll.isHidden = true
+        case let .choice(options, _):
+            field.isHidden = true
+            scroll.isHidden = true
+            for (i, option) in options.enumerated() {
+                let button = NSButton(title: "\(option.label)  \(option.key)", target: self, action: #selector(chose(_:)))
+                button.tag = i
+                button.bezelStyle = .rounded
+                button.keyEquivalent = i == 0 ? "\r" : ""
+                buttons.addArrangedSubview(button)
+            }
         }
+    }
+
+    /// Has a list of results that up and down move through.
+    var hasList: Bool {
+        if case .destination = kind { return true }
+        return false
     }
 
     @available(*, unavailable)
@@ -74,10 +98,18 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         }()
         hint.font = theme.small
         hint.textColor = .tertiaryLabelColor
-        hint.stringValue = {
-            if case .destination = kind { return "↑↓ choose   ⏎ confirm   esc cancel" }
-            return "⏎ confirm   esc cancel"
+        hint.stringValue = customHint ?? {
+            switch kind {
+            case .destination: return "↑↓ choose   ⏎ confirm   esc cancel"
+            case .text: return "⏎ confirm   esc cancel"
+            case .choice: return "press a key   esc cancel"
+            }
         }()
+        title.lineBreakMode = .byWordWrapping
+        title.maximumNumberOfLines = 3
+        title.preferredMaxLayoutWidth = 500
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("dest"))
         column.resizingMask = .autoresizingMask
@@ -98,14 +130,15 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         separator.boxType = .custom
         separator.borderWidth = 0
         separator.fillColor = Theme.shared.colors.border
-        for v in [title, field, separator, scroll, hint] as [NSView] {
+        for v in [title, field, separator, scroll, buttons, hint] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             box.addSubview(v)
         }
         box.translatesAutoresizingMaskIntoConstraints = false
         addSubview(box)
 
-        let isText: Bool = { if case .text = kind { return true }; return false }()
+        let isText: Bool = { if case .destination = kind { return false }; return true }()
+        let isChoice: Bool = { if case .choice = kind { return true }; return false }()
         NSLayoutConstraint.activate([
             box.centerXAnchor.constraint(equalTo: centerXAnchor),
             box.topAnchor.constraint(equalTo: topAnchor, constant: 70),
@@ -117,7 +150,11 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             field.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
             field.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
             field.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -14),
-            separator.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 8),
+            field.heightAnchor.constraint(equalToConstant: isChoice ? 0 : field.intrinsicContentSize.height),
+            buttons.topAnchor.constraint(equalTo: field.bottomAnchor, constant: isChoice ? 4 : 0),
+            buttons.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
+            buttons.heightAnchor.constraint(equalToConstant: isChoice ? 28 : 0),
+            separator.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 8),
             separator.leadingAnchor.constraint(equalTo: box.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: box.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 4),
@@ -132,10 +169,38 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
     /// Puts the cursor in the field (selecting part of the text for rename).
     func focus() {
+        if case .choice = kind {
+            window?.makeFirstResponder(self)
+            return
+        }
         window?.makeFirstResponder(field)
         if case let .text(_, selection?, _) = kind {
             field.currentEditor()?.selectedRange = selection
         }
+    }
+
+    override var acceptsFirstResponder: Bool {
+        if case .choice = kind { return true }
+        return false
+    }
+
+    /// Choices are picked by their key.
+    override func keyDown(with event: NSEvent) {
+        guard case let .choice(options, _) = kind else { return super.keyDown(with: event) }
+        if event.keyCode == 53 { return close() }
+        if event.keyCode == 36 || event.keyCode == 76 { return choose(0) }
+        let typed = event.charactersIgnoringModifiers?.lowercased()
+        if let i = options.firstIndex(where: { $0.key == typed }) { choose(i) } else { NSSound.beep() }
+    }
+
+    @objc private func chose(_ sender: NSButton) {
+        choose(sender.tag)
+    }
+
+    private func choose(_ index: Int) {
+        guard case let .choice(_, onChoose) = kind else { return }
+        close()
+        onChoose(index)
     }
 
     // Clicking outside the box cancels.
@@ -161,6 +226,8 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             let text = field.stringValue
             close()
             onSubmit(text)
+        case .choice:
+            choose(0)
         }
     }
 
