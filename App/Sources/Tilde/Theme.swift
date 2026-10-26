@@ -49,6 +49,9 @@ final class Theme {
     let batMaxLines: Int
     /// EDIT runs in Neovim.
     let editorNvim: Bool
+    /// The file-dialog helper's hotkey (nil when it's off).
+    let dialogHotkey: HotkeyInfo?
+    let dialogConfirm: Bool
 
     let colors: Colors
     /// `nil` follows the system.
@@ -88,6 +91,8 @@ final class Theme {
         batThemeDark = load.config.batThemeDark
         batMaxLines = Int(load.config.batMaxLines)
         editorNvim = load.config.editorNvim
+        dialogHotkey = load.config.dialogHotkey
+        dialogConfirm = load.config.dialogConfirm
 
         appearance = switch load.config.appearance {
         case .system: nil

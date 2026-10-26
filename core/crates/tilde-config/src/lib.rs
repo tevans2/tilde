@@ -7,8 +7,8 @@ mod keys;
 mod theme;
 
 pub use keys::{
-    ActionSpec, Binding, Chord, GO_ACTIONS, KeyList, KeyMode, Keymap, KeysConfig, NAMED_KEYS, SELECT_ACTIONS, actions,
-    parse_chord,
+    ActionSpec, Binding, Chord, GO_ACTIONS, Hotkey, KeyList, KeyMode, Keymap, KeysConfig, NAMED_KEYS, SELECT_ACTIONS,
+    actions, parse_chord, parse_hotkey,
 };
 pub use theme::{Appearance, COLOR_KEYS, PRESETS, ResolvedTheme, ThemeConfig, parse_hex, preset_bat_themes};
 
@@ -32,6 +32,25 @@ pub struct Config {
     pub edit: EditConfig,
     pub keys: KeysConfig,
     pub sort: SortConfig,
+    pub dialog: DialogConfig,
+}
+
+/// The file-dialog helper: a global hotkey that opens Tilde's search over another app's
+/// Open or Save dialog and takes the dialog to what's picked.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DialogConfig {
+    /// Needs the Accessibility permission (to see the dialog and type into it).
+    pub enabled: bool,
+    pub hotkey: String,
+    /// After picking a file in an Open dialog, press Open too.
+    pub confirm: bool,
+}
+
+impl Default for DialogConfig {
+    fn default() -> Self {
+        DialogConfig { enabled: false, hotkey: "ctrl+alt+space".into(), confirm: false }
+    }
 }
 
 /// How folders are sorted unless one has its own order (`s` in SELECT).
@@ -341,6 +360,9 @@ pub fn load(path: &Path) -> Loaded {
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
             config.activity.days = config.activity.days.clamp(1, 3650);
             let (_, mut problems) = config.theme.resolve();
+            if let Err(e) = parse_hotkey(&config.dialog.hotkey) {
+                problems.push(format!("dialog.hotkey: {e}"));
+            }
             if tilde_types::SortKey::parse(&config.sort.by).is_none() {
                 problems.push(format!(
                     "sort.by “{}” isn't one of name, modified, added, size, kind; using name",
@@ -455,6 +477,16 @@ reverse = false
 folders_first = true
 # Remember the order chosen for each folder.
 remember = true
+
+# The file-dialog helper: in any app's Open or Save dialog, press the hotkey to search
+# with Tilde, and the dialog goes to what you pick. Needs the Accessibility permission
+# (Settings › General shows it).
+[dialog]
+enabled = false
+# Works while other apps are in front, so it needs ctrl, alt or cmd.
+hotkey = "ctrl+alt+space"
+# After picking a file in an Open dialog, press Open too.
+confirm = false
 
 # Keys for GO (typing in the bar) and SELECT (the list). Give an action a key or a list
 # of keys; [] unbinds it. A key is the character it types (j, G, @) or a name (down, up,

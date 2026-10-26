@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import TildeFFI
 
@@ -51,6 +52,9 @@ final class SettingsModel {
     /// The binding waiting for a key press: (mode, action).
     var recording: (mode: String, action: String, add: Bool)?
     var hasFullDiskAccess = Permissions.hasFullDiskAccess
+    var hasAccessibility = AXIsProcessTrusted()
+    var recordingHotkey = false
+    var hotkeyError: String?
     private let onChange: @MainActor () -> Void
     let showIndex: @MainActor () -> Void
     @ObservationIgnored private var keyMonitor: Any?
@@ -67,6 +71,31 @@ final class SettingsModel {
         keymap = loadKeymap()
         configError = loadConfig().error
         hasFullDiskAccess = Permissions.hasFullDiskAccess
+        hasAccessibility = AXIsProcessTrusted()
+    }
+
+    /// Waits for the next key press with modifiers and makes it the file-dialog hotkey.
+    func recordHotkey() {
+        stopRecording()
+        recordingHotkey = true
+        hotkeyError = nil
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let spec = DialogHelper.spec(of: event)
+            MainActor.assumeIsolated { self?.recordedHotkey(spec) }
+            return nil
+        }
+    }
+
+    private func recordedHotkey(_ spec: String?) {
+        guard recordingHotkey else { return }
+        stopRecording()
+        guard let spec else { return NSSound.beep() }
+        do {
+            _ = try parseHotkey(spec: spec)
+            write("dialog.hotkey", .text(value: spec))
+        } catch {
+            hotkeyError = error.message
+        }
     }
 
     func write(_ key: String, _ value: SettingValue) {
@@ -139,6 +168,7 @@ final class SettingsModel {
 
     func stopRecording() {
         recording = nil
+        recordingHotkey = false
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
     }
@@ -244,6 +274,43 @@ private struct GeneralSettings: View {
                 ), in: 1...365) {
                     Text("Show the last \(model.settings.activityDays) days")
                 }
+            }
+            Section("File dialogs") {
+                Toggle("Search with Tilde in other apps' Open and Save dialogs", isOn: Binding(
+                    get: { model.settings.dialogEnabled },
+                    set: { on in
+                        model.write("dialog.enabled", .bool(value: on))
+                        // Ask macOS now, while the reason is on screen.
+                        if on, !AXIsProcessTrusted() {
+                            Permissions.askForAccessibility()
+                        }
+                    }))
+                LabeledContent("Hotkey") {
+                    HStack {
+                        if model.recordingHotkey {
+                            Text("Press the new hotkey…").foregroundStyle(.tint)
+                            Button("Cancel") { model.stopRecording() }
+                        } else {
+                            Text((try? parseHotkey(spec: model.settings.dialogHotkey))?.display ?? model.settings.dialogHotkey)
+                                .font(.system(.body, design: .monospaced))
+                            Button("Change") { model.recordHotkey() }
+                        }
+                    }
+                }
+                if let error = model.hotkeyError {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                }
+                Toggle("After picking a file in an Open dialog, press Open", isOn: model.bool("dialog.confirm") { $0.dialogConfirm })
+                LabeledContent("Accessibility") {
+                    HStack {
+                        Text(model.hasAccessibility ? "Allowed" : "Not allowed")
+                            .foregroundStyle(model.hasAccessibility ? .green : .orange)
+                        Button("Open Privacy & Security") { Permissions.openAccessibilitySettings() }
+                    }
+                }
+                Text("With an Open or Save dialog in front, press the hotkey, pick a file or folder, and the dialog goes there. Accessibility lets Tilde see the dialog and press its keys.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Permissions") {
                 LabeledContent("Full Disk Access") {

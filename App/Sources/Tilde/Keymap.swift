@@ -13,7 +13,9 @@ enum KeyAction: String {
     case newFolder = "new_folder"
     case compress
     case copyPath = "copy_path"
-    case hide, undo, redo, sort
+    case hide, undo, redo, sort, history
+    case quickLook = "quick_look"
+    case openWith = "open_with"
     case filterAll = "filter_all"
     case filterDownloads = "filter_downloads"
     case filterScreenshots = "filter_screenshots"
@@ -55,7 +57,11 @@ final class Keymap {
 
     /// The action `event` is bound to in `mode` (GO or SELECT).
     func action(for event: NSEvent, in mode: Mode) -> KeyAction? {
-        guard let id = Self.id(of: event) else { return nil }
+        Self.id(of: event).flatMap { action(id: $0, in: mode) }
+    }
+
+    /// The action for a key press already turned into its ID (`id(of:)`).
+    func action(id: String, in mode: Mode) -> KeyAction? {
         switch mode {
         case .go: return go[id]
         case .select: return select[id]

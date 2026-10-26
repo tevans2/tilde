@@ -161,6 +161,30 @@ final class ResultsTableView: NSTableView {
         return ok
     }
 
+    /// The paths to drag when a drag starts on the row showing `path`: the whole shelf if
+    /// the row is on it. `nil` drags just the row.
+    var dragGroup: ((String) -> [String]?)?
+
+    override func beginDraggingSession(
+        with items: [NSDraggingItem], event: NSEvent, source: NSDraggingSource
+    ) -> NSDraggingSession {
+        guard items.count == 1, let url = items[0].item as? NSURL, let path = url.path,
+              let group = dragGroup?(path), group.count > 1
+        else { return super.beginDraggingSession(with: items, event: event, source: source) }
+        // A pile of file icons under the pointer, one per shelved item.
+        let at = convert(event.locationInWindow, from: nil)
+        let pile = group.enumerated().map { i, p in
+            let item = NSDraggingItem(pasteboardWriter: URL(fileURLWithPath: p) as NSURL)
+            let offset = CGFloat(min(i, 4)) * 4
+            item.setDraggingFrame(NSRect(x: at.x - 16 + offset, y: at.y - 16 + offset, width: 32, height: 32),
+                                  contents: NSWorkspace.shared.icon(forFile: p))
+            return item
+        }
+        let session = super.beginDraggingSession(with: pile, event: event, source: source)
+        session.draggingFormation = .pile
+        return session
+    }
+
     override func keyDown(with event: NSEvent) {
         if onKey?(event) != true { super.keyDown(with: event) }
     }
@@ -417,7 +441,13 @@ final class ShelfBar: NSView {
             attributes: [.font: theme.badge, .foregroundColor: theme.colors.shelf])
         s.append(NSAttributedString(string: names + more, attributes: [.font: theme.small, .foregroundColor: theme.colors.text]))
         s.append(NSAttributedString(
-            string: "    m move  c copy  d trash  z zip  y paths  esc clear",
+            string: "    " + [(KeyAction.move, "move"), (.copy, "copy"), (.trash, "trash"), (.tag, "tag"),
+                                 (.compress, "zip"), (.copyPath, "paths"), (.clear, "clear")]
+                .compactMap { action, label in
+                    let key = Keymap.shared.key(action, in: .select)
+                    return key.isEmpty ? nil : "\(key) \(label)"
+                }
+                .joined(separator: "  "),
             attributes: [.font: theme.small, .foregroundColor: theme.colors.textDim]))
         label.attributedStringValue = s
     }

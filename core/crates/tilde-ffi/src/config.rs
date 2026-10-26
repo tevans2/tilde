@@ -25,6 +25,32 @@ pub struct AppConfig {
     pub bat_max_lines: u32,
     /// EDIT uses Neovim instead of the built-in editor.
     pub editor_nvim: bool,
+    /// The file-dialog helper's hotkey, when it's on (and the hotkey is valid).
+    pub dialog_hotkey: Option<HotkeyInfo>,
+    pub dialog_confirm: bool,
+}
+
+/// A global hotkey, for registering with the system.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HotkeyInfo {
+    /// One character, or a name: space, return, tab, esc, down, …
+    pub key: String,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub cmd: bool,
+    /// `⌃⌥Space`.
+    pub display: String,
+}
+
+/// Parses a hotkey as written in the config (`ctrl+alt+space`).
+#[uniffi::export]
+pub fn parse_hotkey(spec: String) -> Result<HotkeyInfo, ConfigError> {
+    tilde_config::parse_hotkey(&spec).map(hotkey_info).map_err(|message| ConfigError::Io { message })
+}
+
+fn hotkey_info(h: tilde_config::Hotkey) -> HotkeyInfo {
+    HotkeyInfo { display: h.display(), key: h.key, ctrl: h.ctrl, alt: h.alt, shift: h.shift, cmd: h.cmd }
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -67,6 +93,13 @@ pub fn load_config() -> ConfigLoad {
             bat_theme_dark,
             bat_max_lines: loaded.config.preview.max_lines,
             editor_nvim: loaded.config.edit.editor == tilde_config::EditorKind::Nvim,
+            dialog_hotkey: loaded
+                .config
+                .dialog
+                .enabled
+                .then(|| tilde_config::parse_hotkey(&loaded.config.dialog.hotkey).ok().map(hotkey_info))
+                .flatten(),
+            dialog_confirm: loaded.config.dialog.confirm,
         },
         path: path.to_string_lossy().into_owned(),
         error: loaded.error,
@@ -103,6 +136,10 @@ pub struct Settings {
     pub index_enabled: bool,
     pub index_include_hidden: bool,
     pub index_max_items: u64,
+    pub dialog_enabled: bool,
+    /// As written in the config: `ctrl+alt+space`.
+    pub dialog_hotkey: String,
+    pub dialog_confirm: bool,
 }
 
 #[uniffi::export]
@@ -130,6 +167,9 @@ pub fn load_settings() -> Settings {
         index_enabled: c.index.enabled,
         index_include_hidden: c.index.include_hidden,
         index_max_items: c.index.max_items,
+        dialog_enabled: c.dialog.enabled,
+        dialog_hotkey: c.dialog.hotkey,
+        dialog_confirm: c.dialog.confirm,
     }
 }
 

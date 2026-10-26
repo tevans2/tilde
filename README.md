@@ -74,10 +74,10 @@ the new key) or in the config file (see below).
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
 | SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
-| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
+| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `p` Quick Look · `w` open with · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
-| Anywhere | `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
+| Anywhere | `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (your most-visited zoxide
@@ -88,19 +88,53 @@ are instant APFS clones; copies to another disk show progress in bytes and can b
 with `⌘.` (the partial copy is removed). Trashed items can be put back with undo or from
 the Finder.
 
+**Drag and drop.** Drag a row to another app (Finder, Mail, a browser's upload area): it
+always arrives as a copy, so nothing moves without Tilde knowing. Drag a shelved row and
+the whole shelf goes. Drop files onto the list to bring them into the open folder, or
+onto a folder row to put them in that folder: a move on the same disk, a copy to another
+(hold ⌥ to copy). Drops ask about name clashes and undo like any move.
+
+**The preview pane** shows a quick thumbnail at once (with a spinner), then the full
+Quick Look preview (scrolling PDFs, playing video) once it's ready. Moving on cancels the
+loading, and the full preview only starts once the selection rests, so scrolling past
+files stays fast. Code and text use bat.
+
+**File dialogs.** Turn on Settings › General › File dialogs (or `[dialog] enabled = true`)
+and give Tilde the Accessibility permission. Then, in any app's Open or Save dialog,
+press `⌃⌥Space` (change it in Settings or `[dialog] hotkey`): Tilde's search opens over
+the dialog, with the folder open in Tilde first. Pick a folder and the dialog goes
+there; pick a file and an Open dialog selects it (`confirm = true` also presses Open),
+while a Save dialog goes to its folder and keeps the name you typed. It works with
+dialogs that use the standard macOS panel (most apps and browsers); apps with their own
+pickers aren't supported. You can also drag from Tilde onto any dialog.
+
+**Quick Look and Open With.** `p` (or `⌘Y`) opens the full Quick Look panel for the
+shelf or the highlighted item; it follows as you move with `j` / `k`, and `p` closes it.
+`w` lists the apps that can open the item, your default first; type to narrow it down.
+Right-click a row for Open, Open With, Quick Look, Show in Finder, Copy Path, Tags, Rename
+and Move to Trash. The shelf is kept when you quit, and comes back in the first window.
+
 `t` edits Finder tags as a comma-separated list (`Work, Red`; colour names show in colour
 in the Finder). With several items it shows the tags they share: removing one removes it
 from all of them, adding one adds it to all, and their other tags stay. Tags show under the
 preview.
 
-Undo history is shared by all windows and kept across restarts (the last 100 operations
-from the past 30 days, in `~/Library/Application Support/Tilde/undo.json`). Undoing
-something old works as long as the items are still where Tilde left them; if not, it says
-what's missing and changes nothing else.
+**History** (`H`, or Edit › History… `⌥⌘Z`) lists every operation, newest first, with what
+each one did, including ones you've undone. Select any of them and press `u` to undo just
+that one (not everything after it) or `r` to redo it. Nothing is lost when you undo and
+then do something new: the undone operation stays in the list and can still be redone.
+If a later change makes part of an undo impossible (the file moved again, its old name
+is taken), that part is reported and nothing is forced; the rest can be undone later.
+`u` / `⌘Z` and `U` / `⌘⇧Z` still undo and redo the latest. The history is shared by all
+windows and kept across restarts (the last 200 operations from the past 30 days, in
+`~/Library/Application Support/Tilde/undo.json`).
+
+While typing in the bar, `⌘⌫` and `⌃⌫` clear what's typed; Move to Trash (`⌘⌫`) only
+works from the list in SELECT.
 
 `⌃o` goes back to where you were before, like Vim's jump list or a browser's Back:
-the folder you came from (not necessarily the parent) with the item you had highlighted,
-or Activity. `⌃i` goes forward again. Every move counts (into a folder, up, `~`, a reveal
+the folder you came from (not necessarily the parent), with what you'd typed in the bar
+and the item you had highlighted, so the same view comes back; or Activity. `⌃i` goes forward again. Every move counts (into a folder, up, `~`, a reveal
 from Everywhere, `@`), and a new move after going back drops the forward history. Each
 window keeps its own list.
 

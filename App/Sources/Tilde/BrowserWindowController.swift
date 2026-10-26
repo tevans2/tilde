@@ -18,7 +18,10 @@ enum Place: Equatable {
 /// A jump list entry: where the window was, and the item highlighted there.
 struct Jump {
     let place: Place
+    /// Path of the highlighted item.
     let select: String?
+    /// What was typed in the bar, so the same view comes back.
+    let query: String
 }
 
 /// One browser window: path bar, results, preview, status bar.
@@ -77,6 +80,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// index fills in; those refreshes keep the selection.
     private var shownGeneration: UInt64 = 0
     private var currentFolder = ""
+    /// The folder showing (empty in Activity), for the file-dialog helper.
+    var folderShowing: String? { inActivity || currentFolder.isEmpty ? nil : currentFolder }
     /// Activity is showing (or has been asked for). `currentFolder` is where it was opened
     /// from, and where `⌫` / `h` / `@` go back to.
     private var inActivity = false
@@ -86,6 +91,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Row to select when the next results arrive (the folder we came up from, or a
     /// revealed file).
     private var pendingSelection: String?
+    /// Like `pendingSelection`, by path, for rows outside the folder (Everywhere).
+    private var pendingPath: String?
     /// Where the window is (or is going: set when navigation starts, before results).
     private var place: Place?
     /// `⌃o` / `⌃i`: places left, newest last, and places backed out of.
@@ -139,6 +146,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         #endif
         open(folder: start)
         setMode(.go)
+        restoreShelf()
         startIndexProgress()
         // GO keys are caught before the search field, whose text editing would otherwise
         // take them (⌃h as delete, ⌃k as kill-line, tab to the next field).
@@ -166,6 +174,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         tableView.doubleAction = #selector(doubleClicked)
         tableView.onFocus = { [weak self] in self?.modeDidFocus(.select) }
         tableView.onKey = { [weak self] event in self?.handleSelectKey(event) ?? false }
+        // Drag files out (to other apps: always a copy, so nothing moves behind Tilde's
+        // back) and in (onto the list or a folder row).
+        tableView.setDraggingSourceOperationMask(.copy, forLocal: false)
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+        tableView.registerForDraggedTypes([.fileURL])
+        tableView.dragGroup = { [weak self] path in
+            guard let self, self.shelfSet.contains(path) else { return nil }
+            return self.shelf
+        }
+        let rowMenu = NSMenu()
+        rowMenu.delegate = self
+        tableView.menu = rowMenu
 
         let scroll = listScroll
         scroll.documentView = tableView
@@ -323,14 +343,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// Shows `folder`, highlighting `select`. Recorded in the jump list unless it's a jump.
-    private func open(folder: String, select: String? = nil, record: Bool = true) {
+    private func open(folder: String, select: String? = nil, query: String = "", record: Bool = true) {
         if record { recordJump(to: .folder(folder)) }
         place = .folder(folder)
         inActivity = false
         pendingSelection = select
-        pathBar.field.stringValue = ""
+        pathBar.field.stringValue = query
         engine.openFolder(path: folder, generation: nextGeneration())
-        engine.setQuery(text: "", generation: nextGeneration())
+        engine.setQuery(text: query, generation: nextGeneration())
     }
 
     /// `@`: show Activity, or go back to the folder it was opened from.
@@ -339,14 +359,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         showActivity(record: true)
     }
 
-    private func showActivity(record: Bool) {
+    private func showActivity(record: Bool, query: String = "", select: String? = nil) {
         if record { recordJump(to: .activity) }
         place = .activity
         inActivity = true
-        pendingSelection = nil
-        pathBar.field.stringValue = ""
+        pendingSelection = select
+        pathBar.field.stringValue = query
         engine.openActivity(filter: activityFilter, generation: nextGeneration())
-        engine.setQuery(text: "", generation: nextGeneration())
+        engine.setQuery(text: query, generation: nextGeneration())
         updateChrome()
     }
 
@@ -356,7 +376,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// the places backed out of, as in a browser.
     private func recordJump(to target: Place) {
         guard let place, place != target else { return }
-        backJumps.append(Jump(place: place, select: selectedRow?.name))
+        backJumps.append(Jump(place: place, select: selectedRow?.path, query: pathBar.field.stringValue))
         if backJumps.count > Self.maxJumps { backJumps.removeFirst() }
         forwardJumps.removeAll()
     }
@@ -366,12 +386,22 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         guard let place else { return }
         while let target = back ? backJumps.popLast() : forwardJumps.popLast() {
             if case let .folder(path) = target.place, !FileManager.default.fileExists(atPath: path) { continue }
-            let here = Jump(place: place, select: selectedRow?.name)
+            let here = Jump(place: place, select: selectedRow?.path, query: pathBar.field.stringValue)
             if back { forwardJumps.append(here) } else { backJumps.append(here) }
+            let name = target.select.map { ($0 as NSString).lastPathComponent }
             switch target.place {
-            case let .folder(path): open(folder: path, select: target.select, record: false)
-            case .activity: showActivity(record: false)
+            case let .folder(path):
+                // In the folder: by name; elsewhere (an Everywhere result): by path.
+                let inFolder = target.select.map { ($0 as NSString).deletingLastPathComponent == path } ?? false
+                open(folder: path, select: inFolder ? name : nil, query: target.query, record: false)
+                if !inFolder { pendingPath = target.select }
+            case .activity:
+                showActivity(record: false, query: target.query, select: name)
             }
+            // Carry on typing after the restored text.
+            let end = (target.query as NSString).length
+            pathBar.field.currentEditor()?.selectedRange = NSRange(location: end, length: 0)
+            updateChrome()
             return
         }
         statusBar.flash(back ? "Nothing to go back to" : "Nothing to go forward to")
@@ -538,6 +568,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .compress: compressTargets()
         case .hide: hideHighlightedFromSearch()
         case .sort: chooseSort()
+        case .history: NSApp.sendAction(#selector(AppDelegate.showHistory(_:)), to: nil, from: nil)
+        case .quickLook: toggleQuickLook(nil)
+        case .openWith: openWith()
         case .undo: undo()
         case .redo: redo()
         case .rename:
@@ -617,6 +650,97 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         } else {
             setSort(Self.sortKeys[sender.tag].0)
         }
+    }
+
+    // MARK: Quick Look and Open With
+
+    /// What Quick Look shows: the shelf if it has anything, otherwise the highlighted row.
+    private var quickLookItems: [URL] = []
+
+    /// `p` / File › Quick Look (⌘Y): the full Quick Look panel, which follows the
+    /// highlighted row while it's open.
+    @objc func toggleQuickLook(_ sender: Any?) {
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if panel.isVisible {
+            panel.orderOut(nil)
+        } else {
+            guard !targets.isEmpty else { return statusBar.flash("Nothing selected") }
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func refreshQuickLook() {
+        guard QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
+              panel.isVisible, panel.dataSource === self
+        else { return }
+        quickLookItems = targets.map { URL(fileURLWithPath: $0) }
+        panel.reloadData()
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    // Quick Look calls these on the main thread.
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            quickLookItems = targets.map { URL(fileURLWithPath: $0) }
+            panel.dataSource = self
+            panel.delegate = self
+            panel.reloadData()
+        }
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = nil
+            panel.delegate = nil
+        }
+    }
+
+    /// `w`: pick an app (fuzzy, the default first) to open the targets with.
+    private func openWith() {
+        let paths = targets
+        guard let first = paths.first else { return statusBar.flash("Nothing selected") }
+        let urls = paths.map { URL(fileURLWithPath: $0) }
+        let apps = Self.apps(toOpen: URL(fileURLWithPath: first))
+        guard !apps.isEmpty else { return statusBar.flash("No app opens \(describe(paths))") }
+        showOverlay(PromptOverlay(
+            title: "Open \(describe(paths)) with…",
+            kind: .destination(
+                search: { query in
+                    apps.filter { Self.fuzzy(query, $0.name) }.map {
+                        Destination(path: $0.url.path, display: $0.isDefault ? "\($0.name)  (default)" : $0.name, highlights: [])
+                    }
+                },
+                onPick: { [weak self] app in self?.open(urls, with: URL(fileURLWithPath: app)) }),
+            hint: "↑↓ choose   ⏎ open   esc cancel",
+            placeholder: "Type an app's name"))
+    }
+
+    private func open(_ urls: [URL], with app: URL) {
+        NSWorkspace.shared.open(urls, withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        statusBar.flash("Opened \(describe(urls.map(\.path))) with \(FileManager.default.displayName(atPath: app.path))")
+    }
+
+    /// Apps that can open `url`: the default first, then by name.
+    private static func apps(toOpen url: URL) -> [(name: String, url: URL, isDefault: Bool)] {
+        let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: url)
+        var seen = Set<String>()
+        let all = NSWorkspace.shared.urlsForApplications(toOpen: url).compactMap { app -> (String, URL, Bool)? in
+            guard seen.insert(app.path).inserted else { return nil }
+            let name = FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
+            return (name, app, app == defaultApp)
+        }
+        return all.sorted { a, b in a.2 != b.2 ? a.2 : a.0.localizedCaseInsensitiveCompare(b.0) == .orderedAscending }
+    }
+
+    /// The query's letters appear in `name` in order ("vsc" matches "Visual Studio Code").
+    private static func fuzzy(_ query: String, _ name: String) -> Bool {
+        var rest = Substring(name.lowercased())
+        for c in query.lowercased() where c != " " {
+            guard let i = rest.firstIndex(of: c) else { return false }
+            rest = rest[rest.index(after: i)...]
+        }
+        return true
     }
 
     // MARK: Chrome
@@ -718,9 +842,20 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             return true
         }
         guard mode == .go, let editor = pathBar.field.currentEditor(), window?.firstResponder === editor,
-              (editor as? NSTextView)?.hasMarkedText() != true,
-              let action = Keymap.shared.action(for: event, in: .go)
+              (editor as? NSTextView)?.hasMarkedText() != true
         else { return false }
+        // ⌘⌫ and ⌃⌫ clear what's typed. They must never reach Move to Trash (⌘⌫ in the
+        // menu) while typing: the highlighted result isn't what's being deleted.
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 51, !flags.isDisjoint(with: [.command, .control]) {
+            if !pathBar.field.stringValue.isEmpty {
+                pathBar.field.stringValue = ""
+                queryChanged()
+                updateChrome()
+            }
+            return true
+        }
+        guard let action = Keymap.shared.action(for: event, in: .go) else { return false }
         switch action {
         case .down: moveSelection(by: 1)
         case .up: moveSelection(by: -1)
@@ -765,6 +900,11 @@ extension BrowserWindowController: EngineEventsDelegate {
         if let name = pendingSelection, let i = engine.indexOf(generation: generation, name: name) {
             select(row: results.tableRow(forHere: Int(i)))
             pendingSelection = nil
+            pendingPath = nil
+        } else if let path = pendingPath, let row = results.tableRow(forPath: path) {
+            // A jump back to an Everywhere result.
+            select(row: row)
+            pendingPath = nil
         } else if let keepPath {
             // Refreshes while the index fills in shouldn't move the selection.
             select(row: results.tableRow(forPath: keepPath) ?? min(max(keepRow, 0), results.tableRows - 1))
@@ -772,6 +912,7 @@ extension BrowserWindowController: EngineEventsDelegate {
             selectFirstResult()
         }
         if !isRefresh { pendingSelection = nil }
+        if !isRefresh, !(pendingPath.map { _ in index.status().state == .scanning } ?? false) { pendingPath = nil }
         // A refresh can put a different item under the same row (the old one moved away)
         // without a selection change, so the preview is updated here.
         if isRefresh, selectedRow?.path != keepPath { schedulePreview() }
@@ -860,6 +1001,77 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         schedulePreview()
+        refreshQuickLook()
+    }
+
+    // MARK: Drag and drop
+
+    func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        guard mode != .edit, let r = results.row(row) else { return nil }
+        return URL(fileURLWithPath: r.path) as NSURL
+    }
+
+    func tableView(
+        _ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
+        proposedDropOperation dropOperation: NSTableView.DropOperation
+    ) -> NSDragOperation {
+        guard let target = dropTarget(row: row, on: dropOperation) else { return [] }
+        if target.row == nil { tableView.setDropRow(-1, dropOperation: .on) }
+        return dragOperation(info, into: target.folder)
+    }
+
+    func tableView(
+        _ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
+        dropOperation: NSTableView.DropOperation
+    ) -> Bool {
+        guard let target = dropTarget(row: row, on: dropOperation) else { return false }
+        let operation = dragOperation(info, into: target.folder)
+        let sources = droppedPaths(info)
+        guard !operation.isEmpty, !sources.isEmpty else { return false }
+        let copy = operation == .copy
+        let folder = target.folder == currentFolder ? "this folder" : "“\((target.folder as NSString).lastPathComponent)”"
+        let request = OpRequest(kind: copy ? .copy : .move, sources: sources, destination: target.folder, clash: .keepBoth)
+        // After the drag ends, so a clash question can take the keyboard.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.resolvingClashes(request, in: folder) { request in
+                self.submit(request, describing: "\(copy ? "Copied" : "Moved") \(self.describe(sources)) to \(folder)")
+            }
+        }
+        return true
+    }
+
+    /// A folder row under the pointer, or else the open folder (not Activity).
+    private func dropTarget(row: Int, on dropOperation: NSTableView.DropOperation) -> (folder: String, row: Int?)? {
+        guard mode != .edit, overlay == nil else { return nil }
+        if dropOperation == .on, let r = results.row(row), let folder = folderPath(of: r) {
+            return (folder, row)
+        }
+        guard !inActivity, !currentFolder.isEmpty else { return nil }
+        return (currentFolder, nil)
+    }
+
+    private func droppedPaths(_ info: NSDraggingInfo) -> [String] {
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.map(\.path)
+    }
+
+    /// Like the Finder: a move on the same disk, a copy to another (or with ⌥ held, which
+    /// leaves only copy in the source's mask). Nothing when everything is there already.
+    private func dragOperation(_ info: NSDraggingInfo, into folder: String) -> NSDragOperation {
+        let paths = droppedPaths(info)
+        guard !paths.isEmpty else { return [] }
+        if paths.allSatisfy({ ($0 as NSString).deletingLastPathComponent == folder }) { return [] }
+        let volume = { (path: String) in
+            (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
+        }
+        let target = volume(folder)
+        let sameVolume = paths.allSatisfy { volume($0)?.isEqual(target) == true }
+        let mask = info.draggingSourceOperationMask
+        if sameVolume, mask.contains(.move) || mask.contains(.generic) { return .move }
+        if mask.contains(.copy) || mask.contains(.generic) { return .copy }
+        return []
     }
 }
 
@@ -953,7 +1165,20 @@ extension BrowserWindowController: OpsEventsDelegate {
 
     // MARK: Shelf
 
+    private static let shelfKey = "TildeShelf"
+    /// The first window gets the shelf from the last session.
+    private static var shelfRestored = false
+
+    private func restoreShelf() {
+        guard !Self.shelfRestored else { return }
+        Self.shelfRestored = true
+        let saved = UserDefaults.standard.stringArray(forKey: Self.shelfKey) ?? []
+        let existing = saved.filter { FileManager.default.fileExists(atPath: $0) }
+        if !existing.isEmpty { setShelf(existing) }
+    }
+
     private func setShelf(_ paths: [String]) {
+        UserDefaults.standard.set(paths, forKey: Self.shelfKey)
         shelf = paths
         shelfSet = Set(paths)
         shelfBar.update(paths: paths)
@@ -1466,6 +1691,12 @@ extension BrowserWindowController: NSMenuItemValidation {
         switch item.action {
         case #selector(applyEdits(_:)):
             return mode == .edit
+        case #selector(toggleQuickLook(_:)):
+            return mode != .edit
+        // Only while acting on the list: in the search bar, a prompt or the editor, ⌘⌫
+        // edits text instead.
+        case #selector(moveToTrash(_:)):
+            return mode == .select && overlay == nil && window?.firstResponder === tableView
         case #selector(goBack(_:)):
             return mode != .edit && !backJumps.isEmpty
         case #selector(goForward(_:)):
@@ -1484,4 +1715,77 @@ extension BrowserWindowController: NSMenuItemValidation {
             return true
         }
     }
+}
+
+extension BrowserWindowController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        MainActor.assumeIsolated { quickLookItems.count }
+    }
+
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> (any QLPreviewItem)! {
+        MainActor.assumeIsolated { quickLookItems[index] as NSURL }
+    }
+
+    /// The list's up and down keys keep working while the panel has the keyboard; the
+    /// Quick Look key closes it.
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        guard let event, event.type == .keyDown else { return false }
+        guard let id = Keymap.id(of: event) else { return false }
+        return MainActor.assumeIsolated {
+            guard let action = Keymap.shared.action(id: id, in: .select) else { return false }
+            switch action {
+            case .down: moveSelection(by: 1)
+            case .up: moveSelection(by: -1)
+            case .quickLook: panel.orderOut(nil)
+            default: return false
+            }
+            return true
+        }
+    }
+}
+
+extension BrowserWindowController: NSMenuDelegate {
+    /// The right-click menu, for the clicked row (which becomes the highlighted one).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let row = tableView.clickedRow
+        guard row >= 0, let r = results.row(row) else { return }
+        if tableView.selectedRow != row { select(row: row) }
+        let url = URL(fileURLWithPath: r.path)
+        func add(_ title: String, _ action: @escaping () -> Void) {
+            let item = menu.addItem(withTitle: title, action: #selector(MenuAction.run), keyEquivalent: "")
+            let target = MenuAction(action)
+            item.target = target
+            item.representedObject = target
+        }
+        add("Open") { [weak self] in self?.activateHighlighted() }
+        let withItem = menu.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
+        let withMenu = NSMenu()
+        for app in Self.apps(toOpen: url) {
+            let item = withMenu.addItem(withTitle: app.isDefault ? "\(app.name) (default)" : app.name,
+                                        action: #selector(MenuAction.run), keyEquivalent: "")
+            let target = MenuAction { [weak self] in self?.open([url], with: app.url) }
+            item.target = target
+            item.representedObject = target
+            item.image = NSWorkspace.shared.icon(forFile: app.url.path)
+            item.image?.size = NSSize(width: 16, height: 16)
+        }
+        withItem.submenu = withMenu
+        add("Quick Look") { [weak self] in self?.toggleQuickLook(nil) }
+        add("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        menu.addItem(.separator())
+        add("Copy Path") { [weak self] in self?.copyPaths() }
+        add("Tags…") { [weak self] in self?.tagTargets() }
+        add("Rename…") { [weak self] in self?.renameHighlighted() }
+        menu.addItem(.separator())
+        add("Move to Trash") { [weak self] in self?.trashTargets() }
+    }
+}
+
+/// A menu item's action as a closure (kept alive by the item's `representedObject`).
+@MainActor
+final class MenuAction: NSObject {
+    private let action: () -> Void
+    init(_ action: @escaping () -> Void) { self.action = action }
+    @objc func run() { action() }
 }

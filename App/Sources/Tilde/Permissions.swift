@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 /// Full Disk Access and the folders macOS asks about (docs/SPEC.md §7).
 enum Permissions {
@@ -15,6 +16,16 @@ enum Permissions {
 
     static func openFullDiskAccessSettings() {
         openPane("Privacy_AllFiles")
+    }
+
+    /// Asks macOS to show its Accessibility prompt (once; after that, Settings).
+    static func askForAccessibility() {
+        // The value of kAXTrustedCheckOptionPrompt.
+        AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+    }
+
+    static func openAccessibilitySettings() {
+        openPane("Privacy_Accessibility")
     }
 
     static func openFilesAndFoldersSettings() {

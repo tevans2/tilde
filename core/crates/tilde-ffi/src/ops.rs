@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tilde_ops::{Clash, Listener, Operations, Outcome, OutcomeKind, Request, SystemTrash};
+use tilde_ops::{Clash, Done, Listener, Operations, Outcome, OutcomeKind, RecordState, Request, SystemTrash};
 
 use crate::edit::EditSession;
 use crate::index::home_dir;
@@ -68,6 +68,29 @@ pub struct OpOutcome {
     pub skipped: u32,
     /// Where things ended up, to select them afterwards.
     pub results: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum HistoryState {
+    Applied,
+    Undone,
+    /// Undo stopped partway; the rest can still be undone.
+    PartlyUndone,
+}
+
+/// One operation in the History window.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HistoryEntry {
+    pub id: u64,
+    pub label: String,
+    /// When it first ran and when it last changed state (seconds since 1970).
+    pub at: i64,
+    pub changed: i64,
+    pub state: HistoryState,
+    /// What it did, one line per item: "Renamed ~/a.txt → b.txt".
+    pub changes: Vec<String>,
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -150,6 +173,39 @@ impl FileOps {
         self.inner.running()
     }
 
+    /// Every recorded operation, newest first, including undone ones.
+    pub fn history(&self) -> Vec<HistoryEntry> {
+        let home = home_dir();
+        self.inner
+            .history()
+            .into_iter()
+            .map(|h| HistoryEntry {
+                id: h.id,
+                label: h.label,
+                at: h.at as i64,
+                changed: h.changed as i64,
+                state: match h.state {
+                    RecordState::Applied => HistoryState::Applied,
+                    RecordState::Undone => HistoryState::Undone,
+                    RecordState::PartlyUndone => HistoryState::PartlyUndone,
+                },
+                changes: h.changes.iter().map(|d| describe(&home, d)).collect(),
+                can_undo: h.can_undo,
+                can_redo: h.can_redo,
+            })
+            .collect()
+    }
+
+    /// Undoes a history entry, whatever came after it. `None` if it has nothing to undo.
+    pub fn undo_entry(&self, entry: u64) -> Option<u64> {
+        self.inner.undo_record(entry)
+    }
+
+    /// Redoes an undone history entry. `None` if it isn't undone.
+    pub fn redo_entry(&self, entry: u64) -> Option<u64> {
+        self.inner.redo_record(entry)
+    }
+
     /// Starts an operation and returns its ID. Problems found while planning (a name
     /// that's taken, a folder moved into itself) arrive in `finished`.
     pub fn submit(&self, request: OpRequest) -> Result<u64, OpError> {
@@ -191,6 +247,26 @@ impl FileOps {
 
     pub fn redo_label(&self) -> Option<String> {
         self.inner.redo_label()
+    }
+}
+
+/// "Renamed ~/a.txt → b.txt", "Moved ~/a.txt → ~/Documents/", "Created ~/x".
+fn describe(home: &Path, done: &Done) -> String {
+    let show = |p: &Path| match p.strip_prefix(home) {
+        Ok(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+        Ok(rel) => format!("~/{}", rel.to_string_lossy()),
+        Err(_) => p.to_string_lossy().into_owned(),
+    };
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match done {
+        Done::Moved { from, to } if from.parent() == to.parent() => format!("Renamed {} → {}", show(from), name(to)),
+        Done::Moved { from, to } => match to.parent() {
+            Some(dir) if name(from) == name(to) => format!("Moved {} → {}/", show(from), show(dir)),
+            _ => format!("Moved {} → {}", show(from), show(to)),
+        },
+        Done::Created { path } => format!("Created {}", show(path)),
+        Done::Trashed { original, .. } => format!("Trashed {}", show(original)),
+        Done::Tagged { path, .. } => format!("Changed the tags of {}", show(path)),
     }
 }
 

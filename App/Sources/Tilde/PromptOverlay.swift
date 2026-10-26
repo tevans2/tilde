@@ -30,12 +30,21 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
     private var results: [Destination] = []
     private let buttons = NSStackView()
     private let customHint: String?
+    private let customPlaceholder: String?
+    /// In a panel of its own (the file-dialog helper): no dimming, filling the panel.
+    private let floating: Bool
 
-    /// `hint` replaces the usual line of keys under the field.
-    init(title: String, kind: Kind, hint: String? = nil, onClose: @escaping () -> Void = {}) {
+    /// `hint` replaces the usual line of keys under the field, `placeholder` the text in
+    /// the empty field.
+    init(
+        title: String, kind: Kind, hint: String? = nil, placeholder: String? = nil, floating: Bool = false,
+        onClose: @escaping () -> Void = {}
+    ) {
         self.kind = kind
         self.onClose = onClose
         customHint = hint
+        customPlaceholder = placeholder
+        self.floating = floating
         super.init(frame: .zero)
         self.title.stringValue = title
         build()
@@ -69,7 +78,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
     private func build() {
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
+        layer?.backgroundColor = floating ? NSColor.clear.cgColor : NSColor.black.withAlphaComponent(0.25).cgColor
 
         box.wantsLayer = true
         box.layer?.cornerRadius = 10
@@ -92,7 +101,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         field.cell?.wraps = false
         field.cell?.isScrollable = true
         field.delegate = self
-        field.placeholderString = {
+        field.placeholderString = customPlaceholder ?? {
             if case .destination = kind { return "Type a folder, or a path like ~/Documents" }
             return ""
         }()
@@ -141,8 +150,8 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         let isChoice: Bool = { if case .choice = kind { return true }; return false }()
         NSLayoutConstraint.activate([
             box.centerXAnchor.constraint(equalTo: centerXAnchor),
-            box.topAnchor.constraint(equalTo: topAnchor, constant: 70),
-            box.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.55),
+            box.topAnchor.constraint(equalTo: topAnchor, constant: floating ? 16 : 70),
+            box.widthAnchor.constraint(equalTo: widthAnchor, multiplier: floating ? 0.94 : 0.55),
             box.widthAnchor.constraint(greaterThanOrEqualToConstant: 380),
             title.topAnchor.constraint(equalTo: box.topAnchor, constant: 10),
             title.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),

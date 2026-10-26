@@ -7,7 +7,8 @@ import SwiftTerm
 /// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause), so
 /// flows can be checked without screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead;
-/// `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome` does the same for those windows.
+/// `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome` does the same for those windows, and
+/// `panel` snapshots a panel the keys opened (Quick Look).
 @MainActor
 enum DebugSnapshot {
     /// Returns whether a snapshot or benchmark is running (the welcome isn't shown then).
@@ -19,17 +20,19 @@ enum DebugSnapshot {
         }
         guard let out = env["TILDE_SNAPSHOT"] else { return false }
         let keys = decode(env["TILDE_SNAPSHOT_KEYS"] ?? "")
-        let showIndex = env["TILDE_SNAPSHOT_INDEX"] == "1"
+        // `panel`: snapshot whatever panel is showing (Quick Look) after the keys.
+        let showIndex = env["TILDE_SNAPSHOT_INDEX"] == "1" || env["TILDE_SNAPSHOT_WINDOW"] == "panel"
         let other: Selector? = switch env["TILDE_SNAPSHOT_WINDOW"] {
         case "settings": #selector(AppDelegate.showSettings(_:))
         case "keys": #selector(AppDelegate.showKeys(_:))
         case "welcome": #selector(AppDelegate.showWelcome(_:))
+        case "history": #selector(AppDelegate.showHistory(_:))
         default: nil
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             if let other { NSApp.sendAction(other, to: nil, from: nil) }
             type(Array(keys)) {
-                if showIndex { NSApp.sendAction(#selector(AppDelegate.showIndex(_:)), to: nil, from: nil) }
+                if env["TILDE_SNAPSHOT_INDEX"] == "1" { NSApp.sendAction(#selector(AppDelegate.showIndex(_:)), to: nil, from: nil) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + (showIndex || other != nil ? 2.0 : 0.6)) {
                     write(to: out, panel: showIndex, other: other != nil)
                     NSApp.terminate(nil)
@@ -89,6 +92,9 @@ enum DebugSnapshot {
             s = s.replacingOccurrences(of: "@\(c)", with: String(UnicodeScalar(commandBase + UInt32(c.asciiValue!))!))
         }
         s = s.replacingOccurrences(of: "@.", with: String(UnicodeScalar(commandBase + 46)!))
+        // ⌘⌫ and ⌃⌫.
+        s = s.replacingOccurrences(of: "@\\b", with: String(UnicodeScalar(commandBase + 127)!))
+        s = s.replacingOccurrences(of: "^\\b", with: String(UnicodeScalar(controlBase + 127)!))
         return s.replacingOccurrences(of: "\\e", with: "\u{1b}")
             .replacingOccurrences(of: "\\w", with: String(pause))
             .replacingOccurrences(of: "\\t", with: "\t")
@@ -160,7 +166,8 @@ enum DebugSnapshot {
         let window = panel
             ? NSApp.windows.first { $0 is NSPanel && $0.isVisible }
             : other
-            ? NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController }
+            ? NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController
+                || $0.windowController is HistoryWindowController }
             : (NSApp.keyWindow ?? NSApp.windows.first)
         guard let window, let view = window.contentView?.superview else { return }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }

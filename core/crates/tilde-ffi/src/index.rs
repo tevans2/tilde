@@ -142,7 +142,17 @@ impl IndexService {
     /// comes first; an empty query lists zoxide's most-visited folders; anything else is a
     /// fuzzy search over indexed folders.
     pub fn destinations(&self, query: String, limit: u32) -> Vec<Destination> {
-        let limit = limit as usize;
+        self.lookup(&query, limit as usize, true)
+    }
+
+    /// Like `destinations`, with files too (the file-dialog helper).
+    pub fn find(&self, query: String, limit: u32) -> Vec<Destination> {
+        self.lookup(&query, limit as usize, false)
+    }
+}
+
+impl IndexService {
+    fn lookup(&self, query: &str, limit: usize, folders_only: bool) -> Vec<Destination> {
         let q = query.trim();
         let mut out = Vec::new();
         if q.starts_with('/') || q.starts_with('~') {
@@ -164,7 +174,7 @@ impl IndexService {
             }
             return out;
         }
-        let query = Query::parse(&format!("{q} kind:folder"));
+        let query = Query::parse(&if folders_only { format!("{q} kind:folder") } else { q.to_string() });
         for hit in index.search(&query, None, None, 0, limit) {
             let path = index.absolute(&hit.key);
             let display = display_path(&self.home, &path);
@@ -180,7 +190,10 @@ impl IndexService {
         out.truncate(limit.max(1));
         out
     }
+}
 
+#[uniffi::export]
+impl IndexService {
     /// Re-reads the config and builds the index from scratch.
     pub fn rebuild(&self) {
         self.start(true);

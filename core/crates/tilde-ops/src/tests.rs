@@ -510,3 +510,94 @@ fn history_survives_a_restart() {
     let (ops, _rx) = start();
     assert!(ops.undo_label().is_none());
 }
+
+#[test]
+fn any_operation_in_the_history_can_be_undone_or_redone() {
+    let env = Env::new();
+    env.file("a.txt", "a");
+    env.file("b.txt", "b");
+    env.file("c.txt", "c");
+    env.run(Request::Rename { source: env.p("a.txt"), name: "a2.txt".into() });
+    env.run(Request::Trash { sources: vec![env.p("b.txt")] });
+    env.run(Request::Rename { source: env.p("c.txt"), name: "c2.txt".into() });
+
+    let h = env.ops.history();
+    assert_eq!(
+        h.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+        ["Rename “c.txt”", "Trash “b.txt”", "Rename “a.txt”"]
+    );
+    assert!(h.iter().all(|i| i.state == RecordState::Applied && i.can_undo && !i.can_redo));
+
+    // Undo the oldest one, leaving the later ones in place.
+    let first = h[2].id;
+    env.ops.undo_record(first).unwrap();
+    assert_eq!(env.wait().error, None);
+    assert!(env.p("a.txt").exists() && env.p("c2.txt").exists() && !env.p("b.txt").exists());
+    assert_eq!(env.ops.undo_label().as_deref(), Some("Rename “c.txt”"), "⌘Z still undoes the newest");
+
+    // A new operation clears quick redo, but the undone record can still be redone.
+    env.run(Request::NewFolder { parent: env.root.clone(), name: "new".into() });
+    assert!(env.ops.redo_label().is_none());
+    let undone = env.ops.history().into_iter().find(|i| i.id == first).unwrap();
+    assert_eq!((undone.state, undone.can_redo), (RecordState::Undone, true));
+    assert!(matches!(&undone.changes[..], [Done::Moved { .. }]), "it still shows what it did");
+    env.ops.redo_record(first).unwrap();
+    assert_eq!(env.wait().error, None);
+    assert!(env.p("a2.txt").exists());
+
+    // Undoing what later operations depend on is refused step by step, not forced.
+    env.run(Request::Rename { source: env.p("a2.txt"), name: "a3.txt".into() });
+    env.ops.undo_record(first).unwrap();
+    assert!(env.wait().error.unwrap().contains("no longer exists"));
+    assert!(env.p("a3.txt").exists(), "nothing was changed");
+    assert!(env.ops.redo_record(first).is_none(), "still applied, so nothing to redo");
+}
+
+#[test]
+fn a_partly_undone_operation_can_finish_later() {
+    let env = Env::new();
+    env.file("x/1.txt", "1");
+    env.file("x/2.txt", "2");
+    env.file("y/.keep", "");
+    env.run(Request::Move {
+        sources: vec![env.p("x/1.txt"), env.p("x/2.txt")],
+        into: env.p("y"),
+        clash: Clash::KeepBoth,
+    });
+    // Something else takes 2.txt's old place, so it can't go back yet.
+    env.file("x/2.txt", "other");
+    let out = env.undo();
+    assert!(out.error.is_some());
+    let item = env.ops.history().remove(0);
+    assert_eq!((item.state, item.can_undo, item.can_redo), (RecordState::PartlyUndone, true, false));
+    fs::remove_file(env.p("x/2.txt")).unwrap();
+    assert_eq!(env.undo().error, None);
+    assert_eq!(env.ops.history()[0].state, RecordState::Undone);
+    assert_eq!(fs::read_to_string(env.p("x/2.txt")).unwrap(), "2");
+}
+
+#[test]
+fn the_first_history_format_is_upgraded() {
+    let env = Env::new();
+    env.file("b.txt", "b");
+    let history = env.root.parent().unwrap().join("undo.json");
+    let trashed = env.trash.join("b.txt");
+    fs::rename(env.p("b.txt"), &trashed).unwrap();
+    let old = serde_json::json!({
+        "undo": [{"request": {"Trash": {"sources": [env.p("b.txt")]}},
+                  "done": [{"Trashed": {"original": env.p("b.txt"), "in_trash": trashed}}], "at": history::now()}],
+        "redo": [{"NewFolder": {"parent": env.root, "name": "gone"}}]
+    });
+    fs::write(&history, old.to_string()).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let ops = Operations::with_history(
+        Box::new(FolderTrash(env.trash.clone())),
+        Arc::new(Collect(Mutex::new(tx))),
+        history.clone(),
+    );
+    assert_eq!(ops.undo_label().as_deref(), Some("Trash “b.txt”"));
+    assert_eq!(ops.redo_label().as_deref(), Some("New Folder “gone”"));
+    ops.undo();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap().error, None);
+    assert!(env.p("b.txt").exists());
+}

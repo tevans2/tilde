@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var ops = FileOps(listener: opsEvents)
     private var windows: [BrowserWindowController] = []
     private lazy var indexWindow = IndexWindowController(index: index)
+    private lazy var historyWindow = HistoryWindowController(ops: ops)
     private lazy var settingsWindow = SettingsWindowController(
         onChange: { [weak self] in self?.reloadConfig(nil) },
         showIndex: { [weak self] in self?.showIndex(nil) })
@@ -30,6 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         newWindow(nil)
         NSApp.activate()
+        DialogHelper.shared.index = index
+        DialogHelper.shared.currentFolder = { [weak self] in
+            self?.windows.first { $0.window?.isVisible == true }?.folderShowing
+        }
+        DialogHelper.shared.configure(hotkey: Theme.shared.dialogHotkey, confirm: Theme.shared.dialogConfirm)
         #if DEBUG
         if DebugSnapshot.runIfRequested() { return }
         #endif
@@ -89,6 +95,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         indexWindow.showWindow(nil)
     }
 
+    @objc func showHistory(_ sender: Any?) {
+        historyWindow.show()
+    }
+
     @objc func showSettings(_ sender: Any?) {
         settingsWindow.show()
     }
@@ -104,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func reloadConfig(_ sender: Any?) {
         Keymap.reload()
         let theme = Theme.reload()
+        DialogHelper.shared.configure(hotkey: theme.dialogHotkey, confirm: theme.dialogConfirm)
         NSApp.appearance = theme.appearance
         windows.removeAll { $0.window?.isVisible != true }
         for w in windows { w.applyTheme(theme) }
@@ -144,6 +155,7 @@ extension AppDelegate: OpsEventsDelegate {
     func operationFinished(id: UInt64, outcome: OpOutcome) {
         windows.removeAll { $0.window?.isVisible != true }
         windows.forEach { $0.operationFinished(id: id, outcome: outcome) }
+        historyWindow.operationFinished(id: id, outcome: outcome)
     }
 }
 
@@ -175,6 +187,8 @@ enum MainMenu {
         fileMenu.addItem(withTitle: "Cancel Edit", action: #selector(BrowserWindowController.cancelEdits(_:)), keyEquivalent: ".")
         newFolder.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Quick Look", action: #selector(BrowserWindowController.toggleQuickLook(_:)), keyEquivalent: "y")
+        fileMenu.addItem(.separator())
         let trash = fileMenu.addItem(withTitle: "Move to Trash", action: #selector(BrowserWindowController.moveToTrash(_:)),
                                      keyEquivalent: String(Character(UnicodeScalar(NSBackspaceCharacter)!)))
         trash.keyEquivalentModifierMask = [.command]
@@ -189,6 +203,8 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Undo", action: #selector(AppDelegate.undoFileOperation(_:)), keyEquivalent: "z")
         let redo = editMenu.addItem(withTitle: "Redo", action: #selector(AppDelegate.redoFileOperation(_:)), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
+        let history = editMenu.addItem(withTitle: "History…", action: #selector(AppDelegate.showHistory(_:)), keyEquivalent: "z")
+        history.keyEquivalentModifierMask = [.command, .option]
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")

@@ -136,7 +136,7 @@ pub enum Step {
 
 /// A completed step, with what's needed to reverse it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum Done {
+pub enum Done {
     Moved { from: PathBuf, to: PathBuf },
     Created { path: PathBuf },
     Trashed { original: PathBuf, in_trash: PathBuf },
@@ -188,25 +188,99 @@ pub trait Listener: Send + Sync {
     fn finished(&self, id: u64, outcome: Outcome);
 }
 
+/// Whether a recorded operation's changes are in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordState {
+    Applied,
+    Undone,
+    /// Undo stopped partway (something had changed since); the rest can still be undone.
+    PartlyUndone,
+}
+
+/// One operation in the history. Records are never dropped by undo or by new operations
+/// (only by age and count), so every branch stays reachable: anything undone can be
+/// redone later, and anything applied can be undone, not just the latest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Entry {
+struct Record {
+    id: u64,
     request: Request,
+    /// The steps in place now: what undoing reverses.
     done: Vec<Done>,
-    /// When it ran (seconds since 1970), so old history can be dropped.
-    #[serde(default)]
+    /// What it did when last applied, kept for the history list after undoing.
+    log: Vec<Done>,
+    /// When it first ran, and when it last changed state (seconds since 1970).
     at: u64,
+    changed: u64,
+    state: RecordState,
+}
+
+/// An entry of `Operations::history`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryItem {
+    pub id: u64,
+    pub label: String,
+    pub at: u64,
+    pub changed: u64,
+    pub state: RecordState,
+    /// What it did when last applied.
+    pub changes: Vec<Done>,
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Journal {
-    undo: Vec<Entry>,
-    redo: Vec<Request>,
+    /// Oldest first.
+    #[serde(default)]
+    records: Vec<Record>,
+    /// What redo (⌘⇧Z) brings back: records undone since the last new operation, newest
+    /// last. Older undone records are redone from the history list.
+    #[serde(default)]
+    redo: Vec<u64>,
+    #[serde(default)]
+    next: u64,
+}
+
+impl Journal {
+    fn get(&mut self, id: u64) -> Option<&mut Record> {
+        self.records.iter_mut().find(|r| r.id == id)
+    }
+
+    /// The most recently applied record that still has something to undo.
+    fn latest_applied(&self) -> Option<&Record> {
+        self.records.iter().filter(|r| !r.done.is_empty()).max_by_key(|r| (r.changed, r.id))
+    }
+
+    fn add(&mut self, request: Request, done: Vec<Done>) {
+        let now = history::now();
+        self.next += 1;
+        self.records.push(Record {
+            id: self.next,
+            request,
+            log: done.clone(),
+            done,
+            at: now,
+            changed: now,
+            state: RecordState::Applied,
+        });
+        self.redo.clear();
+    }
 }
 
 enum Job {
-    Run { id: u64, request: Request },
-    Undo { id: u64 },
-    Redo { id: u64 },
+    Run {
+        id: u64,
+        request: Request,
+    },
+    /// `target`: a record from the history; `None` is the latest.
+    Undo {
+        id: u64,
+        target: Option<u64>,
+    },
+    Redo {
+        id: u64,
+        target: Option<u64>,
+    },
 }
 
 /// Runs operations one at a time on a background thread and keeps the undo history.
@@ -259,17 +333,29 @@ impl Operations {
 
     /// Undoes the most recent operation. `None` if there's nothing to undo.
     pub fn undo(&self) -> Option<u64> {
-        if self.journal.lock().unwrap().undo.is_empty() {
-            return None;
-        }
-        Some(self.enqueue(|id| Job::Undo { id }))
+        self.journal.lock().unwrap().latest_applied()?;
+        Some(self.enqueue(|id| Job::Undo { id, target: None }))
     }
 
+    /// Redoes the last undo, if nothing new has been done since.
     pub fn redo(&self) -> Option<u64> {
         if self.journal.lock().unwrap().redo.is_empty() {
             return None;
         }
-        Some(self.enqueue(|id| Job::Redo { id }))
+        Some(self.enqueue(|id| Job::Redo { id, target: None }))
+    }
+
+    /// Undoes record `record` from `history`, whatever came after it. Steps that later
+    /// operations made impossible are reported, not forced.
+    pub fn undo_record(&self, record: u64) -> Option<u64> {
+        let ok = self.journal.lock().unwrap().records.iter().any(|r| r.id == record && !r.done.is_empty());
+        ok.then(|| self.enqueue(|id| Job::Undo { id, target: Some(record) }))
+    }
+
+    /// Redoes an undone record from `history` (planned afresh, as when it first ran).
+    pub fn redo_record(&self, record: u64) -> Option<u64> {
+        let ok = self.journal.lock().unwrap().records.iter().any(|r| r.id == record && r.state == RecordState::Undone);
+        ok.then(|| self.enqueue(|id| Job::Redo { id, target: Some(record) }))
     }
 
     /// Stops an operation between items, or partway through copying one (the partial copy
@@ -281,11 +367,33 @@ impl Operations {
     }
 
     pub fn undo_label(&self) -> Option<String> {
-        self.journal.lock().unwrap().undo.last().map(|e| e.request.label())
+        self.journal.lock().unwrap().latest_applied().map(|r| r.request.label())
     }
 
     pub fn redo_label(&self) -> Option<String> {
-        self.journal.lock().unwrap().redo.last().map(Request::label)
+        let mut journal = self.journal.lock().unwrap();
+        let id = *journal.redo.last()?;
+        journal.get(id).map(|r| r.request.label())
+    }
+
+    /// Every recorded operation, newest first.
+    pub fn history(&self) -> Vec<HistoryItem> {
+        let journal = self.journal.lock().unwrap();
+        journal
+            .records
+            .iter()
+            .rev()
+            .map(|r| HistoryItem {
+                id: r.id,
+                label: r.request.label(),
+                at: r.at,
+                changed: r.changed,
+                state: r.state,
+                changes: r.log.clone(),
+                can_undo: !r.done.is_empty(),
+                can_redo: r.state == RecordState::Undone,
+            })
+            .collect()
     }
 
     /// Operations waiting or running.
@@ -307,20 +415,13 @@ struct Runner {
 impl Runner {
     fn run(&self, job: Job) {
         let id = match &job {
-            Job::Run { id, .. } | Job::Undo { id } | Job::Redo { id } => *id,
+            Job::Run { id, .. } | Job::Undo { id, .. } | Job::Redo { id, .. } => *id,
         };
         let cancel = self.cancels.lock().unwrap().get(&id).cloned().unwrap_or_default();
         let outcome = match job {
-            Job::Run { request, .. } => self.perform(id, request, OutcomeKind::Done, &cancel),
-            Job::Redo { .. } => {
-                // Pop in its own statement so the journal lock is released before running.
-                let request = self.journal.lock().unwrap().redo.pop();
-                match request {
-                    Some(request) => self.perform(id, request, OutcomeKind::Redone, &cancel),
-                    None => nothing(OutcomeKind::Redone, "Nothing to redo"),
-                }
-            }
-            Job::Undo { .. } => self.undo(id, &cancel),
+            Job::Run { request, .. } => self.perform(id, request, &cancel),
+            Job::Redo { target, .. } => self.redo(id, target, &cancel),
+            Job::Undo { target, .. } => self.undo(id, target, &cancel),
         };
         if let Some(path) = &self.history {
             history::save(path, &self.journal.lock().unwrap());
@@ -329,55 +430,88 @@ impl Runner {
         self.listener.finished(id, outcome);
     }
 
-    fn perform(&self, id: u64, request: Request, kind: OutcomeKind, cancel: &AtomicBool) -> Outcome {
+    /// Plans and runs `request`, returning the outcome and the steps that completed.
+    fn apply(&self, id: u64, request: &Request, kind: OutcomeKind, cancel: &AtomicBool) -> (Outcome, Vec<Done>) {
         let label = request.label();
-        let plan = match plan(&request) {
+        let plan = match plan(request) {
             Ok(p) => p,
-            Err(e) => return Outcome { error: Some(e), ..nothing(kind, &label) },
+            Err(e) => return (Outcome { error: Some(e), ..nothing(kind, &label) }, Vec::new()),
         };
         let total = plan.steps.len() as u32;
         self.listener.started(id, &label, total);
         let (done, error) = self.execute(id, &plan.steps, cancel);
-        let results = done.iter().map(result_path).collect();
-        let completed = done.len() as u32;
-        if !done.is_empty() {
-            let mut journal = self.journal.lock().unwrap();
-            journal.undo.push(Entry { request, done, at: history::now() });
-            if kind == OutcomeKind::Done {
-                journal.redo.clear();
-            }
-        }
-        Outcome {
+        let outcome = Outcome {
             kind,
             label,
-            completed,
+            completed: done.len() as u32,
             total,
             error,
             renamed: plan.renamed,
             replaced: plan.replaced,
             skipped: plan.skipped,
-            results,
-        }
+            results: done.iter().map(result_path).collect(),
+        };
+        (outcome, done)
     }
 
-    fn undo(&self, id: u64, cancel: &AtomicBool) -> Outcome {
-        let Some(entry) = self.journal.lock().unwrap().undo.pop() else {
-            return nothing(OutcomeKind::Undone, "Nothing to undo");
+    fn perform(&self, id: u64, request: Request, cancel: &AtomicBool) -> Outcome {
+        let (outcome, done) = self.apply(id, &request, OutcomeKind::Done, cancel);
+        if !done.is_empty() {
+            self.journal.lock().unwrap().add(request, done);
+        }
+        outcome
+    }
+
+    fn redo(&self, id: u64, target: Option<u64>, cancel: &AtomicBool) -> Outcome {
+        // Look up in its own statement so the journal lock is released before running.
+        let found = {
+            let mut journal = self.journal.lock().unwrap();
+            let record = target.or_else(|| journal.redo.last().copied());
+            record.and_then(|r| {
+                journal.get(r).filter(|r| r.state == RecordState::Undone).map(|r| (r.id, r.request.clone()))
+            })
         };
-        let label = entry.request.label();
-        let steps: Vec<Step> = entry.done.iter().rev().map(Done::inverse).collect();
+        let Some((record, request)) = found else { return nothing(OutcomeKind::Redone, "Nothing to redo") };
+        let (outcome, done) = self.apply(id, &request, OutcomeKind::Redone, cancel);
+        if !done.is_empty() {
+            let mut journal = self.journal.lock().unwrap();
+            journal.redo.retain(|&r| r != record);
+            if let Some(r) = journal.get(record) {
+                r.log = done.clone();
+                r.done = done;
+                r.state = RecordState::Applied;
+                r.changed = history::now();
+            }
+        }
+        outcome
+    }
+
+    fn undo(&self, id: u64, target: Option<u64>, cancel: &AtomicBool) -> Outcome {
+        let found = {
+            let mut journal = self.journal.lock().unwrap();
+            let record = target.or_else(|| journal.latest_applied().map(|r| r.id));
+            record.and_then(|r| {
+                journal.get(r).filter(|r| !r.done.is_empty()).map(|r| (r.id, r.request.label(), r.done.clone()))
+            })
+        };
+        let Some((record, label, done)) = found else { return nothing(OutcomeKind::Undone, "Nothing to undo") };
+        let steps: Vec<Step> = done.iter().rev().map(Done::inverse).collect();
         let total = steps.len() as u32;
         self.listener.started(id, &label, total);
         let (reversed, error) = self.execute(id, &steps, cancel);
         let results = reversed.iter().map(result_path).collect();
         let completed = reversed.len() as u32;
         let mut journal = self.journal.lock().unwrap();
-        if error.is_none() {
-            journal.redo.push(entry.request);
-        } else {
-            // Keep what couldn't be reversed undoable; drop the steps that were.
-            let remaining = entry.done.len() - reversed.len();
-            journal.undo.push(Entry { done: entry.done[..remaining].to_vec(), ..entry });
+        // Steps not reversed stay undoable.
+        let remaining = done.len() - reversed.len();
+        if let Some(r) = journal.get(record) {
+            r.done.truncate(remaining);
+            r.changed = history::now();
+            r.state = if remaining == 0 { RecordState::Undone } else { RecordState::PartlyUndone };
+        }
+        if remaining == 0 {
+            journal.redo.retain(|&r| r != record);
+            journal.redo.push(record);
         }
         Outcome {
             kind: OutcomeKind::Undone,
@@ -403,6 +537,18 @@ impl Runner {
                 return (done, Some(fsops::CANCELLED.into()));
             }
             self.listener.progress(id, i as u32, total, &step_name(step));
+            // An item moved or deleted since (outside Tilde, or by a later operation when
+            // undoing an older one) is reported plainly.
+            let source = match step {
+                Step::Move { from, .. } | Step::Copy { from, .. } => Some(from),
+                Step::Trash { path } | Step::SetTags { path, .. } => Some(path),
+                _ => None,
+            };
+            if let Some(source) = source
+                && source.symlink_metadata().is_err()
+            {
+                return (done, Some(format!("“{}” no longer exists where Tilde left it", name(source))));
+            }
             let result = match step {
                 Step::Move { from, to } => fsops::move_item(from, to, Some(&progress))
                     .map(|_| Done::Moved { from: from.clone(), to: to.clone() }),

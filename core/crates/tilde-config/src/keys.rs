@@ -94,9 +94,12 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("compress", "Compress to zip", &["z"]),
     a("copy_path", "Copy the path", &["y"]),
     a("sort", "Sort the folder (again to reverse)", &["s"]),
+    a("quick_look", "Quick Look (⌘Y)", &["p"]),
+    a("open_with", "Open with another app", &["w"]),
     a("hide", "Leave out of search", &["X"]),
     a("undo", "Undo", &["u"]),
     a("redo", "Redo", &["U", "ctrl+r"]),
+    a("history", "History: undo or redo any operation", &["H"]),
     a("filter_all", "Activity: everything", &["1"]),
     a("filter_downloads", "Activity: downloads", &["2"]),
     a("filter_screenshots", "Activity: screenshots", &["3"]),
@@ -238,6 +241,56 @@ pub fn parse_chord(spec: &str) -> Result<Chord, String> {
     }
 }
 
+/// A global hotkey (works while other apps are in front), like `ctrl+alt+space`. Unlike
+/// in-app keys it may use `cmd`, and needs at least one of ctrl, alt or cmd.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hotkey {
+    /// One character, or a name from `NAMED_KEYS`.
+    pub key: String,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub cmd: bool,
+}
+
+impl Hotkey {
+    /// `⌃⌥Space`.
+    pub fn display(&self) -> String {
+        let mut s = String::new();
+        for (on, sym) in [(self.ctrl, '⌃'), (self.alt, '⌥'), (self.shift, '⇧'), (self.cmd, '⌘')] {
+            if on {
+                s.push(sym);
+            }
+        }
+        let chord = Chord { key: self.key.clone(), ctrl: false, alt: false, shift: false };
+        let key = if self.key == "space" { "Space".to_string() } else { chord.display().to_uppercase() };
+        s + &key
+    }
+}
+
+pub fn parse_hotkey(spec: &str) -> Result<Hotkey, String> {
+    let mut rest = Vec::new();
+    let mut cmd = false;
+    for part in spec.trim().split('+') {
+        if matches!(part.trim().to_lowercase().as_str(), "cmd" | "command") {
+            cmd = true;
+        } else {
+            rest.push(part);
+        }
+    }
+    let chord = parse_chord(&rest.join("+"))?;
+    // parse_chord turns shift+letter into an uppercase letter; a hotkey keeps the letter.
+    let (key, shift) = match chord.key.chars().next() {
+        Some(c) if chord.key.chars().count() == 1 && c.is_uppercase() => (c.to_lowercase().to_string(), true),
+        _ => (chord.key, chord.shift),
+    };
+    let hotkey = Hotkey { key, ctrl: chord.ctrl, alt: chord.alt, shift, cmd };
+    if !(hotkey.ctrl || hotkey.alt || hotkey.cmd) {
+        return Err(format!("“{spec}” needs ctrl, alt or cmd, or it would take the key from every app"));
+    }
+    Ok(hotkey)
+}
+
 /// The resolved bindings for one mode, in the order of `actions(mode)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
@@ -341,6 +394,18 @@ mod tests {
         assert!(parse_chord("hyper+k").is_err());
         assert!(parse_chord("shift+1").is_err());
         assert!(parse_chord("bogus").is_err());
+    }
+
+    #[test]
+    fn parses_hotkeys() {
+        let h = parse_hotkey("ctrl+alt+space").unwrap();
+        assert_eq!((h.key.as_str(), h.ctrl, h.alt, h.cmd), ("space", true, true, false));
+        assert_eq!(h.display(), "⌃⌥Space");
+        let h = parse_hotkey("cmd+shift+G").unwrap();
+        assert_eq!((h.key.as_str(), h.shift, h.cmd), ("g", true, true));
+        assert_eq!(h.display(), "⇧⌘G");
+        assert!(parse_hotkey("space").unwrap_err().contains("needs"));
+        assert!(parse_hotkey("shift+k").is_err());
     }
 
     #[test]
