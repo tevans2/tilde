@@ -120,11 +120,13 @@ while a Save dialog goes to its folder and keeps the name you typed. It works wi
 dialogs that use the standard macOS panel (most apps and browsers); apps with their own
 pickers aren't supported. You can also drag from Tilde onto any dialog.
 
-**Quick Look and Open With.** `p` shows the full preview in the pane (for code and text
-too, instead of bat); once it's showing, `p` again opens the Quick Look window, which follows as you move with `j` / `k` and closes with `p`. With items on the
-shelf, or the preview pane turned off, `p` opens the window directly. `⌘Y` always opens
-the window, as in the Finder.
-`w` lists the apps that can open the item, your default first; type to narrow it down.
+**Quick Look and Open With.** `p` toggles **PREVIEW**: the full preview fills 75% of the
+window and has the keyboard, so `j` / `k` scroll, `space` / `⇧space` page and `g` / `G`
+jump to the top or bottom; `p` again, `esc`, `h` or a click on the list goes back. PDFs,
+code and text scroll in small steps; documents Quick Look draws (Office, Pages and so on)
+move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
+Quick Look window; with items on the shelf, or the preview pane turned off, `p` opens it
+too. `w` lists the apps that can open the item, your default first; type to narrow it down.
 Right-click a row for Open, Open With, Quick Look, Show in Finder, Copy Path, Tags, Rename
 and Move to Trash. The shelf is kept when you quit, and comes back in the first window.
 

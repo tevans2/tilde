@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import QuickLookThumbnailing
 import Quartz
 import TildeFFI
@@ -15,6 +16,16 @@ import TildeFFI
 @MainActor
 final class PreviewPane: NSView {
     private let quickLook = QLPreviewView(frame: .zero, style: .normal)!
+    /// PDFs' full preview, drawn here rather than by Quick Look (which runs in another
+    /// process and only moves a page at a time), so j / k can scroll smoothly.
+    private let pdfView = PDFView()
+    /// The full preview of the item showing is the PDF view.
+    private var usingPDF = false
+    /// Just shown: keep the PDF at the top while it settles (it rescales when the pane
+    /// widens for PREVIEW, which would leave it partway down). Ends on the first scroll.
+    private var pinPDFToTop = false
+    /// Whichever view shows the full preview.
+    private var fullView: NSView { usingPDF ? pdfView : quickLook }
     private let textScroll = NSScrollView()
     private let textView = NSTextView()
     /// The item's Finder tags, under the preview (hidden when it has none).
@@ -70,6 +81,19 @@ final class PreviewPane: NSView {
         super.init(frame: frame)
         quickLook.autostarts = true
         quickLook.shouldCloseWithWindow = true
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displaysPageBreaks = true
+        pdfView.isHidden = true
+        NotificationCenter.default.addObserver(
+            forName: .PDFViewScaleChanged, object: pdfView, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.pinPDFToTop, let scroll = self.pdfView.documentView?.enclosingScrollView else { return }
+                // After PDFKit's own layout for the new scale.
+                DispatchQueue.main.async { if self.pinPDFToTop { Self.scrollToTop(scroll) } }
+            }
+        }
 
         textView.isEditable = false
         textView.isSelectable = true
@@ -130,7 +154,7 @@ final class PreviewPane: NSView {
         ])
         // Back to front: the thumbnail, the full preview fading in over it, text; then
         // the loading note on top.
-        for v in [thumbnail, quickLook, textScroll] as [NSView] {
+        for v in [thumbnail, quickLook, pdfView, textScroll] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
             NSLayoutConstraint.activate([
@@ -219,6 +243,89 @@ final class PreviewPane: NSView {
     }
     #endif
 
+    /// Called when the full preview has appeared (after `p`).
+    var onFullShown: (() -> Void)?
+
+    /// What takes the keyboard when the preview is focused: the full preview, or bat's
+    /// text. `nil` while the full preview is still loading.
+    var focusTarget: NSView? {
+        if full == .shown { return usingPDF ? pdfView : quickLook }
+        if !textScroll.isHidden { return textView }
+        return nil
+    }
+
+    enum Scroll { case down, up, pageDown, pageUp, top, bottom }
+
+    /// Scrolls the focused preview. Quick Look draws in another process, so it gets the
+    /// arrow and page keys it understands; bat's text is scrolled directly.
+    func scroll(_ how: Scroll) {
+        pinPDFToTop = false
+        if full == .shown, usingPDF, let scroll = pdfView.documentView?.enclosingScrollView {
+            return Self.scroll(scroll, how)
+        }
+        if full == .shown, let window {
+            let (code, char): (UInt16, Int) = switch how {
+            case .down: (125, NSDownArrowFunctionKey)
+            case .up: (126, NSUpArrowFunctionKey)
+            case .pageDown: (121, NSPageDownFunctionKey)
+            case .pageUp: (116, NSPageUpFunctionKey)
+            case .top: (115, NSHomeFunctionKey)
+            case .bottom: (119, NSEndFunctionKey)
+            }
+            let chars = String(UnicodeScalar(char)!)
+            for type in [NSEvent.EventType.keyDown, .keyUp] {
+                if let e = NSEvent.keyEvent(
+                    with: type, location: .zero, modifierFlags: [.function, .numericPad], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
+                    isARepeat: false, keyCode: code)
+                {
+                    // Straight to the window (to the focused preview), not back through the
+                    // app's key handling.
+                    window.sendEvent(e)
+                }
+            }
+            return
+        }
+        guard !textScroll.isHidden else { return }
+        Self.scroll(textScroll, how)
+    }
+
+    private static func scrollToTop(_ scroll: NSScrollView) {
+        guard let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let maxY = max(document.frame.height - clip.bounds.height, 0)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: document.isFlipped ? 0 : maxY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Scrolls a scroll view by a few lines, a screen, or to an end, with a short glide.
+    private static func scroll(_ scroll: NSScrollView, _ how: Scroll) {
+        guard let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let line: CGFloat = 56
+        let page = max(clip.bounds.height - line, line)
+        let maxY = max(document.frame.height - clip.bounds.height, 0)
+        // In an unflipped document the top is at the far end.
+        let sign: CGFloat = document.isFlipped ? 1 : -1
+        let top: CGFloat = document.isFlipped ? 0 : maxY
+        var y = clip.bounds.origin.y
+        switch how {
+        case .down: y += line * sign
+        case .up: y -= line * sign
+        case .pageDown: y += page * sign
+        case .pageUp: y -= page * sign
+        case .top: y = top
+        case .bottom: y = maxY - top
+        }
+        let target = NSPoint(x: clip.bounds.origin.x, y: min(max(y, 0), maxY))
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = how == .down || how == .up ? 0.08 : 0.15
+            clip.animator().setBoundsOrigin(target)
+        } completionHandler: {
+            MainActor.assumeIsolated { scroll.reflectScrolledClipView(clip) }
+        }
+    }
+
     /// The next `show` redraws even the same item (new tags, a new theme).
     func invalidate() {
         shownPath = nil
@@ -270,6 +377,10 @@ final class PreviewPane: NSView {
         resizeWork?.cancel()
         full = .none
         revealWhenReady = false
+        usingPDF = false
+        pdfView.document = nil
+        pdfView.isHidden = true
+        pinPDFToTop = false
         hint.isHidden = true
         info.isHidden = true
         if let request = thumbnailRequest { QLThumbnailGenerator.shared.cancel(request) }
@@ -291,6 +402,7 @@ final class PreviewPane: NSView {
     /// Straight to the full Quick Look view, for items where there's nothing to stage.
     private func showQuickLookNow(_ path: String) {
         textScroll.isHidden = true
+        pdfView.isHidden = true
         thumbnail.isHidden = true
         thumbnail.image = nil
         quickLook.autostarts = true
@@ -440,6 +552,20 @@ final class PreviewPane: NSView {
     private func loadFull(_ url: URL, generation current: Int) {
         guard full == .none else { return }
         full = .loading
+        if url.pathExtension.lowercased() == "pdf", let document = PDFDocument(url: url), !document.isLocked {
+            usingPDF = true
+            pdfView.backgroundColor = Theme.shared.colors.background
+            pdfView.document = document
+            pdfView.alphaValue = 0
+            pdfView.isHidden = false
+            // Drawn in this process: ready after a layout pass.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, current == self.generation, self.full == .loading else { return }
+                self.full = .ready
+                if self.revealWhenReady { self.crossfadeToFull(url, generation: current) }
+            }
+            return
+        }
         // Nothing plays until it's shown.
         quickLook.autostarts = revealWhenReady
         quickLook.previewItem = url as NSURL
@@ -476,11 +602,21 @@ final class PreviewPane: NSView {
         hint.isHidden = true
         info.isHidden = true
         quickLook.autostarts = true
+        // Laid out while hidden (and maybe at another width), the PDF can sit partway down:
+        // start at the top of the first page.
+        if usingPDF, let scroll = pdfView.documentView?.enclosingScrollView {
+            window?.layoutIfNeeded()
+            pdfView.layoutDocumentView()
+            Self.scrollToTop(scroll)
+            pinPDFToTop = true
+            // Settled by then; never fight the reader after that.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.pinPDFToTop = false }
+        }
         let thumbnailShowing = !thumbnail.isHidden && thumbnail.image != nil
         NSAnimationContext.runAnimationGroup { context in
             context.duration = thumbnailShowing ? Self.crossfade : 0.1
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            self.quickLook.animator().alphaValue = 1
+            self.fullView.animator().alphaValue = 1
             self.loading.animator().alphaValue = 0
         } completionHandler: {
             MainActor.assumeIsolated {
@@ -491,6 +627,7 @@ final class PreviewPane: NSView {
                 self.thumbnail.isHidden = true
                 self.textScroll.isHidden = true
                 self.info.isHidden = true
+                self.onFullShown?()
                 self.spinner.stopAnimation(nil)
                 self.loading.isHidden = true
             }
@@ -501,6 +638,7 @@ final class PreviewPane: NSView {
         cancelQuickLook()
         quickLook.previewItem = nil
         quickLook.isHidden = true
+        pdfView.isHidden = true
         thumbnail.isHidden = true
         textScroll.isHidden = false
         textView.textStorage?.setAttributedString(Self.attributed(preview))

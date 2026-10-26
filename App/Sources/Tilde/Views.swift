@@ -524,7 +524,7 @@ final class StatusBar: NSView {
         right.font = theme.small
     }
 
-    func update(mode: Mode, summary: String, inActivity: Bool = false, inHistory: Bool = false) {
+    func update(mode: Mode, summary: String, inActivity: Bool = false, inHistory: Bool = false, inPreview: Bool = false) {
         let keys = Keymap.shared
         /// "m move   c copy" from the keymap, leaving out unbound actions.
         func hint(_ items: [(KeyAction, String)], all: Bool = false, gap: String = "   ") -> String {
@@ -534,6 +534,9 @@ final class StatusBar: NSView {
             }.joined(separator: gap)
         }
         switch mode {
+        case .select where inPreview:
+            modePill.stringValue = "PREVIEW"
+            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) scroll   space page   \(keys.key(.top, in: .select)) \(keys.key(.bottom, in: .select)) top / bottom   \(keys.key(.quickLookWindow, in: .select)) Quick Look   \(keys.key(.quickLook, in: .select)) or esc back"
         case .select where inHistory:
             modePill.stringValue = "HISTORY"
             hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move   u undo   r redo   ⏎ go to that state   esc back"

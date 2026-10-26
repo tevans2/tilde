@@ -51,6 +51,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var editInNvim = false
     private var keyMonitor: Any?
     private var focusObservation: NSKeyValueObservation?
+    /// PREVIEW: the preview has the keyboard (first `p`), j / k scroll it, and the pane
+    /// takes most of the window.
+    private var previewFocused = false
+    private static let focusedPreviewShare: CGFloat = 0.75
     private let engine: Engine
     private let results: ResultsCache
 
@@ -311,7 +315,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         previewWidth?.isActive = false
         let editing = mode == .edit
         let visible = theme.previewVisible || editing
-        let share = theme.previewVisible ? CGFloat(theme.previewWidth) : (editing ? 0.4 : 0)
+        let share = theme.previewVisible
+            ? (previewFocused ? max(Self.focusedPreviewShare, CGFloat(theme.previewWidth)) : CGFloat(theme.previewWidth))
+            : (editing ? 0.4 : 0)
         previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
         previewWidth?.isActive = true
         preview.isHidden = !theme.previewVisible || editing
@@ -351,6 +357,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Shows `folder`, highlighting `select`. Recorded in the jump list unless it's a jump.
     private func open(folder: String, select: String? = nil, query: String = "", record: Bool = true) {
         leaveHistory()
+        endPreviewFocus(refocus: false)
         if record { recordJump(to: .folder(folder)) }
         place = .folder(folder)
         inActivity = false
@@ -368,6 +375,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     private func showActivity(record: Bool, query: String = "", select: String? = nil) {
         leaveHistory()
+        endPreviewFocus(refocus: false)
         if record { recordJump(to: .activity) }
         place = .activity
         inActivity = true
@@ -582,6 +590,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .sort: chooseSort()
         case .history: showHistory()
         case .quickLook: quickLookKey()
+        case .quickLookWindow: toggleQuickLook(nil)
         case .openWith: openWith()
         case .undo: undo()
         case .redo: redo()
@@ -618,6 +627,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// `H` / Edit › History: the undo tree in place of the list and preview.
     func showHistory() {
         guard mode != .edit, overlay == nil else { return }
+        endPreviewFocus(refocus: false)
         if !inHistory {
             inHistory = true
             listScroll.isHidden = true
@@ -774,22 +784,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// `p` / File › Quick Look (⌘Y): the full Quick Look panel, which follows the
     /// highlighted row while it's open.
-    /// `p`: first the full preview in the pane; once it's showing, `p` again opens the
-    /// Quick Look window (and closes it). Straight to the window when the pane can't show
-    /// it: preview hidden, or the shelf has items (the window shows the shelf).
+    /// `p` in SELECT: PREVIEW, with the full preview (loaded now if it wasn't). Straight
+    /// to the Quick Look window when the pane can't show it: preview hidden, or the shelf
+    /// has items (the window shows the shelf).
     private func quickLookKey() {
         if let panel = QLPreviewPanel.shared(), panel.isVisible { return panel.orderOut(nil) }
-        if shelf.isEmpty, Theme.shared.previewVisible, selectedRow != nil {
-            // The pane follows the selection after a moment: bring it up to date first.
-            if preview.shownPath != selectedRow?.path {
-                previewWork?.cancel()
-                preview.show(selectedRow)
-            }
-            if preview.loadFull(for: selectedRow?.path) {
-                return statusBar.flash("Full preview · \(Keymap.shared.key(.quickLook, in: .select)) again for Quick Look")
-            }
+        guard shelf.isEmpty, Theme.shared.previewVisible, selectedRow != nil else { return toggleQuickLook(nil) }
+        // The pane follows the selection after a moment: bring it up to date first.
+        if preview.shownPath != selectedRow?.path {
+            previewWork?.cancel()
+            preview.show(selectedRow)
         }
-        toggleQuickLook(nil)
+        _ = preview.loadFull(for: selectedRow?.path)
+        startPreviewFocus()
     }
 
     /// File › Quick Look (⌘Y): the Quick Look window, as in the Finder.
@@ -895,7 +902,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             pathBar.setFolder(currentFolder, home: engine.homeDir())
         }
         pathBar.setMode(mode)
-        statusBar.update(mode: mode, summary: summary(), inActivity: inActivity)
+        statusBar.update(mode: mode, summary: summary(), inActivity: inActivity, inPreview: previewFocused)
         if inActivity {
             window?.title = "Activity"
             window?.representedURL = nil
@@ -975,6 +982,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// GO keys from the keymap while typing in the bar, and up / down in a folder picker.
     private func handleWindowKey(_ event: NSEvent) -> Bool {
         guard event.window === window, mode != .edit else { return false }
+        if previewFocused, overlay == nil { return handlePreviewKey(event) }
         if let overlay {
             guard overlay.hasList else { return false }
             switch Keymap.shared.action(for: event, in: .go) {
@@ -1016,15 +1024,72 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// Puts the keyboard back on the bar or the list if the preview took it on its own.
     private func keepFocusOutOfPreview() {
-        guard let window, mode != .edit, overlay == nil,
-              let responder = window.firstResponder as? NSView, responder.isDescendant(of: preview)
-        else { return }
+        guard let window, mode != .edit, overlay == nil else { return }
+        let inPreview = (window.firstResponder as? NSView)?.isDescendant(of: preview) == true
+        // Focus left the preview (a click on the list, a prompt): PREVIEW ends.
+        if previewFocused {
+            if !inPreview, window.firstResponder !== window { endPreviewFocus(refocus: false) }
+            return
+        }
+        guard inPreview else { return }
         if let event = NSApp.currentEvent, event.window === window,
            [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
            preview.frame.contains(preview.superview?.convert(event.locationInWindow, from: nil) ?? .zero) {
             return
         }
         setMode(mode)
+    }
+
+    // MARK: PREVIEW
+
+    /// After the first `p`: the preview gets the keyboard and most of the window. The full
+    /// preview may still be loading; it takes focus when it appears.
+    private func startPreviewFocus() {
+        guard !previewFocused, Theme.shared.previewVisible else { return }
+        previewFocused = true
+        updateSidePane(Theme.shared)
+        focusPreviewContent()
+        preview.onFullShown = { [weak self] in self?.focusPreviewContent() }
+        updateChrome()
+    }
+
+    private func focusPreviewContent() {
+        guard previewFocused, let target = preview.focusTarget else { return }
+        window?.makeFirstResponder(target)
+    }
+
+    /// Back to the list (the full preview stays). The keyboard never stays in the preview
+    /// once PREVIEW is over, or keys would go nowhere.
+    private func endPreviewFocus(refocus: Bool = true) {
+        guard previewFocused else { return }
+        previewFocused = false
+        preview.onFullShown = nil
+        updateSidePane(Theme.shared)
+        let stuck = (window?.firstResponder as? NSView)?.isDescendant(of: preview) == true
+        if refocus || stuck { setMode(.select) }
+        updateChrome()
+    }
+
+    /// Keys while the preview is focused, from the SELECT keymap: move keys scroll, top /
+    /// bottom jump, space pages, Quick Look opens the window, esc / h / back return.
+    private func handlePreviewKey(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) { return false }
+        if event.keyCode == 49, flags.isDisjoint(with: [.control, .option]) {
+            preview.scroll(flags.contains(.shift) ? .pageUp : .pageDown)
+            return true
+        }
+        guard let action = Keymap.shared.action(for: event, in: .select) else { return false }
+        switch action {
+        case .down: preview.scroll(.down)
+        case .up: preview.scroll(.up)
+        case .top: preview.scroll(.top)
+        case .bottom: preview.scroll(.bottom)
+        case .quickLook, .clear, .parent, .back, .search: endPreviewFocus()
+        case .quickLookWindow: toggleQuickLook(nil)
+        default: return false
+        }
+        return true
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -1156,6 +1221,8 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        // A folder refresh re-selects the same row; only another item ends PREVIEW.
+        if selectedRow?.path != preview.shownPath { endPreviewFocus(refocus: false) }
         schedulePreview()
         refreshQuickLook()
     }
@@ -1898,7 +1965,7 @@ extension BrowserWindowController: QLPreviewPanelDataSource, QLPreviewPanelDeleg
             switch action {
             case .down: moveSelection(by: 1)
             case .up: moveSelection(by: -1)
-            case .quickLook: panel.orderOut(nil)
+            case .quickLook, .quickLookWindow: panel.orderOut(nil)
             default: return false
             }
             return true
