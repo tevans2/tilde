@@ -297,7 +297,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         historyView.applyTheme(theme)
         tableView.rowHeight = theme.rowHeight
         tableView.reloadData()
-        if tableView.selectedRow < 0 { selectFirstResult() }
+        preview.invalidate()
+        if tableView.selectedRow < 0 { selectFirstResult() } else { schedulePreview() }
         updateChrome()
         if !theme.warnings.isEmpty { statusBar.flash(theme.warnings.joined(separator: " ")) }
     }
@@ -1615,7 +1616,10 @@ extension BrowserWindowController: OpsEventsDelegate {
         }
         statusBar.flash(message)
         // Tags show under the preview.
-        if outcome.label.hasPrefix("Tag ") { schedulePreview() }
+        if outcome.label.hasPrefix("Tag ") {
+            preview.invalidate()
+            schedulePreview()
+        }
 
         // Select what was just renamed or created when it's in this folder; the folder
         // refresh that follows picks it up.

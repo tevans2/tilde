@@ -7,9 +7,9 @@ import TildeFFI
 /// highlighted, with line numbers), everything else, including Markdown, through Quick Look.
 ///
 /// Quick Look comes in two stages: a thumbnail straight away (with a spinner), then the
-/// full, interactive preview once Quick Look has rendered the file at full size. Moving
-/// on cancels both; the full stage only starts once the selection has rested, so scrolling
-/// past files never starts heavy loads.
+/// full, interactive preview, crossfaded in once Quick Look has attached its content (it
+/// renders in another process). Moving on cancels both; the full stage only starts once
+/// the selection has rested, so scrolling past files never starts heavy loads.
 @MainActor
 final class PreviewPane: NSView {
     private let quickLook = QLPreviewView(frame: .zero, style: .normal)!
@@ -28,6 +28,9 @@ final class PreviewPane: NSView {
     private var rested = false
     /// The item showing, and the one whose full Quick Look preview is in place (faded in).
     private(set) var shownPath: String?
+    /// The showing item's size and modification time, to tell a real change from a refresh
+    /// of the same row.
+    private var shownStamp: (UInt64, Int64)?
     private(set) var fullPath: String?
     /// `p` asked for the full preview of the item showing: a late bat render mustn't
     /// replace it.
@@ -35,9 +38,12 @@ final class PreviewPane: NSView {
     private var fullSizeReady = false
 
     /// How long the selection must rest before the full preview starts loading.
-    private static let restBeforeFull: TimeInterval = 0.25
-    /// The full preview shows after this even if no full-size thumbnail arrives.
+    private static let restBeforeFull: TimeInterval = 0.12
+    /// After Quick Look attaches its content view, time for its first frame to draw.
+    private static let settle: TimeInterval = 0.12
+    /// The full preview fades in after this even if no content view shows up.
     private static let fullTimeout: TimeInterval = 1.5
+    private static let crossfade: TimeInterval = 0.2
     /// Bumped on every selection change, so a slow bat render for an earlier selection is
     /// ignored.
     private var generation = 0
@@ -99,7 +105,9 @@ final class PreviewPane: NSView {
             loading.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             loading.topAnchor.constraint(equalTo: topAnchor, constant: 8),
         ])
-        for v in [quickLook, textScroll, thumbnail] as [NSView] {
+        // Back to front: the thumbnail, the full preview fading in over it, text; then
+        // the loading note on top.
+        for v in [thumbnail, quickLook, textScroll] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
             NSLayoutConstraint.activate([
@@ -109,6 +117,7 @@ final class PreviewPane: NSView {
                 v.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
         }
+        addSubview(loading, positioned: .above, relativeTo: nil)
     }
 
     /// Finder's colour tags, by name.
@@ -136,9 +145,15 @@ final class PreviewPane: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ row: RowView?) {
+        // The list re-selects the same row whenever its folder is re-listed (something else
+        // in it changed). Starting over would show "Loading" again for nothing.
+        if let row, row.path == shownPath, shownStamp.map({ $0 == (row.size, row.modified) }) == true {
+            return
+        }
         generation += 1
         cancelQuickLook()
         shownPath = row?.path
+        shownStamp = row.map { ($0.size, $0.modified) }
         fullPath = nil
         fullRequested = false
         let current = generation
@@ -162,6 +177,11 @@ final class PreviewPane: NSView {
                 if let preview { self.showText(preview) } else { self.showQuickLook(path) }
             }
         }
+    }
+
+    /// The next `show` redraws even the same item (new tags, a new theme).
+    func invalidate() {
+        shownPath = nil
     }
 
     func close() {
@@ -251,25 +271,18 @@ final class PreviewPane: NSView {
                 // Only real thumbnails: a file icon stretched to fill the pane would just
                 // shrink back when the full preview (which shows it at icon size) arrives.
                 if let image { self.thumbnail.image = image }
-                if final {
-                    self.fullSizeReady = true
-                    self.startFull(url, generation: current)
-                }
+                _ = final
             })
-        // Stage two waits for the selection to rest, and for the full-size thumbnail (or
-        // a timeout, for files Quick Look has no thumbnail for).
+        // Stage two starts loading once the selection rests; the thumbnail keeps showing
+        // until it's drawn.
         let rest = DispatchWorkItem { [weak self] in
             guard let self, current == self.generation else { return }
             self.rested = true
+            self.fullSizeReady = true
             self.startFull(url, generation: current)
         }
         fullWork = rest
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.restBeforeFull, execute: rest)
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.fullTimeout) { [weak self] in
-            guard let self, current == self.generation else { return }
-            self.fullSizeReady = true
-            self.startFull(url, generation: current)
-        }
     }
 
     /// The thumbnail callback, which Quick Look calls on its own queue: hands each image to
@@ -293,8 +306,10 @@ final class PreviewPane: NSView {
         showFullPreview(url, generation: current)
     }
 
-    /// Stage two: the interactive preview (scrolling PDFs, playing video), faded in over
-    /// the thumbnail once it has had a moment to draw.
+    /// Stage two: the interactive preview (scrolling PDFs, playing video). It loads
+    /// invisibly under the thumbnail, and the two crossfade once Quick Look's content view
+    /// (drawn by another process) is attached and has had a moment to draw: fading in
+    /// sooner shows an empty frame, which is what flickered.
     private func showFullPreview(_ url: URL, generation current: Int) {
         guard quickLook.previewItem == nil || (quickLook.previewItem as? NSURL)?.path != url.path else { return }
         quickLook.previewItem = url as NSURL
@@ -306,19 +321,40 @@ final class PreviewPane: NSView {
             window?.makeFirstResponder(quickLook)
         }
         #endif
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self, current == self.generation else { return }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.12
-                self.quickLook.animator().alphaValue = 1
-            } completionHandler: {
-                MainActor.assumeIsolated {
-                    guard current == self.generation else { return }
-                    self.fullPath = url.path
-                    self.thumbnail.isHidden = true
-                    self.spinner.stopAnimation(nil)
-                    self.loading.isHidden = true
+        let started = Date()
+        func waitForContent() {
+            guard current == generation else { return }
+            let attached = quickLook.subviews.contains { !$0.subviews.isEmpty }
+            if attached || Date().timeIntervalSince(started) > Self.fullTimeout {
+                DispatchQueue.main.asyncAfter(deadline: .now() + (attached ? Self.settle : 0)) { [weak self] in
+                    self?.crossfadeToFull(url, generation: current)
                 }
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { waitForContent() }
+        }
+        waitForContent()
+    }
+
+    /// The full preview fades in over the opaque thumbnail (which goes once it's covered),
+    /// so nothing dims partway through.
+    private func crossfadeToFull(_ url: URL, generation current: Int) {
+        guard current == generation else { return }
+        let thumbnailShowing = !thumbnail.isHidden && thumbnail.image != nil
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = thumbnailShowing ? Self.crossfade : 0.1
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.quickLook.animator().alphaValue = 1
+            self.loading.animator().alphaValue = 0
+        } completionHandler: {
+            MainActor.assumeIsolated {
+                // Ready for the next item whatever happened meanwhile.
+                self.loading.alphaValue = 1
+                guard current == self.generation else { return }
+                self.fullPath = url.path
+                self.thumbnail.isHidden = true
+                self.spinner.stopAnimation(nil)
+                self.loading.isHidden = true
             }
         }
     }
