@@ -31,5 +31,11 @@ let package = Package(
             dependencies: ["TildeFFI", .product(name: "SwiftTerm", package: "SwiftTerm")],
             path: "Sources/Tilde"
         ),
+        // The app's own logic (keys, jump list, history graph). Run with `swift test`.
+        .testTarget(
+            name: "TildeTests",
+            dependencies: ["Tilde"],
+            path: "Tests/TildeTests"
+        ),
     ]
 )

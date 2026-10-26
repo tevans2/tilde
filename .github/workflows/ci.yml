@@ -45,3 +45,6 @@ jobs:
 
       - name: Build app
         run: swift build --package-path App
+
+      - name: Test app
+        run: swift test --package-path App

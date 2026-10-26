@@ -9,20 +9,6 @@ enum Mode {
     case edit
 }
 
-/// Somewhere the window can show.
-enum Place: Equatable {
-    case folder(String)
-    case activity
-}
-
-/// A jump list entry: where the window was, and the item highlighted there.
-struct Jump {
-    let place: Place
-    /// Path of the highlighted item.
-    let select: String?
-    /// What was typed in the bar, so the same view comes back.
-    let query: String
-}
 
 /// One browser window: path bar, results, preview, status bar.
 @MainActor
@@ -99,9 +85,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Where the window is (or is going: set when navigation starts, before results).
     private var place: Place?
     /// `⌃o` / `⌃i`: places left, newest last, and places backed out of.
-    private var backJumps: [Jump] = []
-    private var forwardJumps: [Jump] = []
-    private static let maxJumps = 100
+    private var jumps = JumpList()
     private var showHidden = false
     /// The open folder's order, from the latest results.
     private var sort = FolderSort(by: .name, reverse: false, custom: false)
@@ -390,19 +374,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Leaving the current place for `target`: remember where we were. A new move drops
     /// the places backed out of, as in a browser.
     private func recordJump(to target: Place) {
-        guard let place, place != target else { return }
-        backJumps.append(Jump(place: place, select: selectedRow?.path, query: pathBar.field.stringValue))
-        if backJumps.count > Self.maxJumps { backJumps.removeFirst() }
-        forwardJumps.removeAll()
+        guard let here else { return }
+        jumps.leave(here, for: target)
+    }
+
+    /// The view now, as a jump list entry.
+    private var here: Jump? {
+        place.map { Jump(place: $0, select: selectedRow?.path, query: pathBar.field.stringValue) }
     }
 
     /// `⌃o` (back) and `⌃i` (forward). Folders that no longer exist are skipped.
     private func jump(back: Bool) {
-        guard let place else { return }
-        while let target = back ? backJumps.popLast() : forwardJumps.popLast() {
-            if case let .folder(path) = target.place, !FileManager.default.fileExists(atPath: path) { continue }
-            let here = Jump(place: place, select: selectedRow?.path, query: pathBar.field.stringValue)
-            if back { forwardJumps.append(here) } else { backJumps.append(here) }
+        guard let here else { return }
+        let exists = { (place: Place) -> Bool in
+            guard case let .folder(path) = place else { return true }
+            return FileManager.default.fileExists(atPath: path)
+        }
+        if let target = jumps.step(back: back, from: here, exists: exists) {
             let name = target.select.map { ($0 as NSString).lastPathComponent }
             switch target.place {
             case let .folder(path):
@@ -852,7 +840,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The query's letters appear in `name` in order ("vsc" matches "Visual Studio Code").
-    private static func fuzzy(_ query: String, _ name: String) -> Bool {
+    static func fuzzy(_ query: String, _ name: String) -> Bool {
         var rest = Substring(name.lowercased())
         for c in query.lowercased() where c != " " {
             guard let i = rest.firstIndex(of: c) else { return false }
@@ -1054,7 +1042,7 @@ extension BrowserWindowController: EngineEventsDelegate {
         // Still in the folder we were in: undo the jump list entry for the failed move.
         if place == .folder(folder) {
             place = .folder(currentFolder)
-            if backJumps.last?.place == place { backJumps.removeLast() }
+            jumps.moveFailed(stayingAt: .folder(currentFolder))
         }
         let name = (folder as NSString).lastPathComponent
         let hint = message.contains("ermission") ? " Tilde may need Full Disk Access." : ""
@@ -1828,9 +1816,9 @@ extension BrowserWindowController: NSMenuItemValidation {
         case #selector(moveToTrash(_:)):
             return mode == .select && overlay == nil && window?.firstResponder === tableView
         case #selector(goBack(_:)):
-            return mode != .edit && !backJumps.isEmpty
+            return mode != .edit && jumps.canGoBack
         case #selector(goForward(_:)):
-            return mode != .edit && !forwardJumps.isEmpty
+            return mode != .edit && jumps.canGoForward
         case #selector(sortByMenu(_:)):
             if item.tag >= 0 {
                 item.state = Self.sortKeys[item.tag].0 == sort.by ? .on : .off

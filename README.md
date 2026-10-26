@@ -43,6 +43,7 @@ Re-run `scripts/build-core.sh` after changing anything under `core/`.
 
 ```sh
 cd core && cargo test --workspace
+swift test --package-path App      # the app's own logic: keys, jump list, history graph
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run --release -p tilde-fs --example bench_list -- 10000
 cargo run --release -p tilde-index --example bench_index        # scans your home folder
