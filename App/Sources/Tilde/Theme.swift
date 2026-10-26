@@ -40,8 +40,9 @@ final class Theme {
     let rowHeight: CGFloat
 
     let previewVisible: Bool
-    /// Share of the window's width.
+    /// Share of the window's width, normally and in PREVIEW.
     let previewWidth: Double
+    let previewModeWidth: Double
     let previewBat: Bool
     let batThemeLight: String
     /// Empty uses bat's own config.
@@ -86,6 +87,7 @@ final class Theme {
 
         previewVisible = load.config.previewVisible
         previewWidth = load.config.previewWidth
+        previewModeWidth = load.config.previewModeWidth
         previewBat = load.config.previewBat
         batThemeLight = load.config.batThemeLight
         batThemeDark = load.config.batThemeDark

@@ -17,6 +17,8 @@ pub struct AppConfig {
     pub font_size: f64,
     pub preview_visible: bool,
     pub preview_width: f64,
+    /// Width in PREVIEW (`p`).
+    pub preview_mode_width: f64,
     pub preview_bat: bool,
     /// bat theme for light appearance.
     pub bat_theme_light: String,
@@ -88,6 +90,7 @@ pub fn load_config() -> ConfigLoad {
             font_size: loaded.config.font.size,
             preview_visible: loaded.config.preview.visible,
             preview_width: loaded.config.preview.width,
+            preview_mode_width: loaded.config.preview.mode_width,
             preview_bat: loaded.config.preview.bat,
             bat_theme_light,
             bat_theme_dark,
@@ -125,6 +128,7 @@ pub struct Settings {
     pub font_size: f64,
     pub preview_visible: bool,
     pub preview_width: f64,
+    pub preview_mode_width: f64,
     pub preview_bat: bool,
     pub editor_nvim: bool,
     pub nvim_path: String,
@@ -157,6 +161,7 @@ pub fn load_settings() -> Settings {
         font_size: c.font.size,
         preview_visible: c.preview.visible,
         preview_width: c.preview.width,
+        preview_mode_width: c.preview.mode_width,
         preview_bat: c.preview.bat,
         editor_nvim: c.edit.editor == tilde_config::EditorKind::Nvim,
         nvim_path: c.edit.nvim_path,

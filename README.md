@@ -121,8 +121,10 @@ dialogs that use the standard macOS panel (most apps and browsers); apps with th
 pickers aren't supported. You can also drag from Tilde onto any dialog.
 
 **Quick Look and Open With.** `p` toggles **PREVIEW**: the full preview fills 75% of the
-window and has the keyboard, so `j` / `k` scroll, `space` / `⇧space` page and `g` / `G`
-jump to the top or bottom; `p` again, `esc`, `h` or a click on the list goes back. PDFs,
+window (`[preview] mode_width`, or Settings › Preview) and has the keyboard, so `j` / `k`
+scroll, `space` / `⇧space` page and `g` / `G` jump to the top or bottom; `f` gives it the
+whole window, hiding the list, and `f` again brings the list back (`f` from the list goes
+straight there). `p` again, `esc`, `h` or a click on the list goes back. PDFs,
 code and text scroll in small steps; documents Quick Look draws (Office, Pages and so on)
 move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
 Quick Look window; with items on the shelf, or the preview pane turned off, `p` opens it
@@ -281,6 +283,7 @@ preset = "default"          # default (macOS colours), catppuccin, gruvbox, nord
 [preview]
 visible = true
 width = 0.5                 # share of the window (0.15–0.85)
+mode_width = 0.75           # in preview mode (p), 0.3–0.95; f there takes the whole window
 bat = true                  # syntax-highlight code and text with bat; Markdown uses Quick Look
 bat_theme_light = ""        # empty: matches the preset, else "GitHub"
 bat_theme_dark = ""         # empty: matches the preset, else your bat config

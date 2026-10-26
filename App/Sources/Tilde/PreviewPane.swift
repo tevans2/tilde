@@ -24,6 +24,9 @@ final class PreviewPane: NSView {
     /// Just shown: keep the PDF at the top while it settles (it rescales when the pane
     /// widens for PREVIEW, which would leave it partway down). Ends on the first scroll.
     private var pinPDFToTop = false
+    /// How far down the PDF the top of the view was (0–1) before the pane changed width.
+    /// It fits the width, so it scales evenly: the same fraction shows the same spot.
+    private var pdfSpot: CGFloat?
     /// Whichever view shows the full preview.
     private var fullView: NSView { usingPDF ? pdfView : quickLook }
     private let textScroll = NSScrollView()
@@ -89,9 +92,15 @@ final class PreviewPane: NSView {
             forName: .PDFViewScaleChanged, object: pdfView, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.pinPDFToTop, let scroll = self.pdfView.documentView?.enclosingScrollView else { return }
+                guard let self else { return }
                 // After PDFKit's own layout for the new scale.
-                DispatchQueue.main.async { if self.pinPDFToTop { Self.scrollToTop(scroll) } }
+                DispatchQueue.main.async {
+                    if let spot = self.pdfSpot {
+                        self.restorePDFSpot(spot)
+                    } else if self.pinPDFToTop, let scroll = self.pdfView.documentView?.enclosingScrollView {
+                        Self.scrollToTop(scroll)
+                    }
+                }
             }
         }
 
@@ -243,6 +252,37 @@ final class PreviewPane: NSView {
     }
     #endif
 
+    /// The pane is about to change width (PREVIEW, `f`): keep the PDF on the same spot
+    /// rather than wherever rescaling leaves it.
+    func holdPosition() {
+        guard usingPDF, full == .shown, !pinPDFToTop,
+              let scroll = pdfView.documentView?.enclosingScrollView, let document = scroll.documentView,
+              document.frame.height > 0
+        else { return }
+        let clip = scroll.contentView.bounds
+        let fromTop = document.isFlipped ? clip.minY : document.frame.height - clip.maxY
+        let spot = fromTop / document.frame.height
+        pdfSpot = spot
+        // Also after this layout pass, in case the scale doesn't change (same width).
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pdfSpot != nil else { return }
+            self.window?.layoutIfNeeded()
+            self.restorePDFSpot(spot)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.pdfSpot = nil }
+    }
+
+    private func restorePDFSpot(_ spot: CGFloat) {
+        guard let scroll = pdfView.documentView?.enclosingScrollView, let document = scroll.documentView else { return }
+        let clip = scroll.contentView
+        let height = document.frame.height
+        let fromTop = spot * height
+        let maxY = max(height - clip.bounds.height, 0)
+        let y = document.isFlipped ? fromTop : height - fromTop - clip.bounds.height
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: min(max(y, 0), maxY)))
+        scroll.reflectScrolledClipView(clip)
+    }
+
     /// Called when the full preview has appeared (after `p`).
     var onFullShown: (() -> Void)?
 
@@ -260,6 +300,7 @@ final class PreviewPane: NSView {
     /// arrow and page keys it understands; bat's text is scrolled directly.
     func scroll(_ how: Scroll) {
         pinPDFToTop = false
+        pdfSpot = nil
         if full == .shown, usingPDF, let scroll = pdfView.documentView?.enclosingScrollView {
             return Self.scroll(scroll, how)
         }

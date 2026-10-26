@@ -96,6 +96,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("sort", "Sort the folder (again to reverse)", &["s"]),
     a("quick_look", "Preview mode: the full preview, scrollable (again to leave)", &["p"]),
     a("quick_look_window", "Quick Look window (⌘Y)", &["P"]),
+    a("preview_full", "In preview mode: the whole window (again for the list)", &["f"]),
     a("open_with", "Open with another app", &["w"]),
     a("hide", "Leave out of search", &["X"]),
     a("undo", "Undo", &["u"]),

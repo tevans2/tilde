@@ -90,6 +90,9 @@ pub struct PreviewConfig {
     pub visible: bool,
     /// Share of the window's width (0.15–0.85).
     pub width: f64,
+    /// Share of the window's width in PREVIEW (`p`), 0.3–0.95. `f` there takes the whole
+    /// window.
+    pub mode_width: f64,
     /// Render code and other text files with `bat` (if installed). Markdown and
     /// everything else use Quick Look.
     pub bat: bool,
@@ -102,6 +105,7 @@ pub struct PreviewConfig {
 }
 
 const PREVIEW_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 0.15..=0.85;
+const PREVIEW_MODE_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 0.3..=0.95;
 
 impl Config {
     /// The bat themes to use: (light, dark). An empty dark theme means "bat's own config".
@@ -122,6 +126,7 @@ impl Default for PreviewConfig {
         PreviewConfig {
             visible: true,
             width: 0.5,
+            mode_width: 0.75,
             bat: true,
             bat_theme_light: String::new(),
             bat_theme_dark: String::new(),
@@ -357,6 +362,17 @@ pub fn load(path: &Path) -> Loaded {
                 error = Some(error.map_or(msg.clone(), |e| format!("{e}; {msg}")));
                 config.preview.width = PreviewConfig::default().width;
             }
+            if !PREVIEW_MODE_WIDTH_RANGE.contains(&config.preview.mode_width) {
+                let msg = format!(
+                    "preview.mode_width {} is outside {}–{}; using {}",
+                    config.preview.mode_width,
+                    PREVIEW_MODE_WIDTH_RANGE.start(),
+                    PREVIEW_MODE_WIDTH_RANGE.end(),
+                    PreviewConfig::default().mode_width
+                );
+                error = Some(error.map_or(msg.clone(), |e| format!("{e}; {msg}")));
+                config.preview.mode_width = PreviewConfig::default().mode_width;
+            }
             config.preview.max_lines = config.preview.max_lines.clamp(1, 100_000);
             config.activity.days = config.activity.days.clamp(1, 3650);
             let (_, mut problems) = config.theme.resolve();
@@ -416,6 +432,8 @@ preset = "default"
 visible = true
 # Share of the window the preview takes (0.15–0.85).
 width = 0.5
+# Share it takes in preview mode (p), 0.3–0.95; f there takes the whole window.
+mode_width = 0.75
 # Syntax-highlight code and other text files with bat (if installed). Markdown and
 # everything else use Quick Look.
 bat = true
@@ -690,6 +708,14 @@ mod tests {
         assert_eq!(l.config.preview.width, 0.5);
         assert_eq!(l.config.bat_themes(), ("GitHub".to_string(), "Nord".to_string()));
         assert!(l.error.unwrap().contains("preview.width"));
+    }
+
+    #[test]
+    fn preview_mode_width_is_checked() {
+        assert_eq!(load_str("[preview]\nmode_width = 0.9\n").config.preview.mode_width, 0.9);
+        let l = load_str("[preview]\nmode_width = 1.5\n");
+        assert_eq!(l.config.preview.mode_width, 0.75);
+        assert!(l.error.unwrap().contains("preview.mode_width"));
     }
 
     #[test]

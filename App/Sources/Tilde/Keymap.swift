@@ -16,6 +16,7 @@ enum KeyAction: String {
     case hide, undo, redo, sort, history
     case quickLook = "quick_look"
     case quickLookWindow = "quick_look_window"
+    case previewFull = "preview_full"
     case openWith = "open_with"
     case filterAll = "filter_all"
     case filterDownloads = "filter_downloads"

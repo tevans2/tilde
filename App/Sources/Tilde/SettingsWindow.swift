@@ -341,6 +341,7 @@ private struct GeneralSettings: View {
 private struct PreviewSettings: View {
     @Bindable var model: SettingsModel
     @State private var width: Double?
+    @State private var modeWidth: Double?
 
     var body: some View {
         Form {
@@ -358,6 +359,19 @@ private struct PreviewSettings: View {
                     Text("\(Int(((width ?? model.settings.previewWidth) * 100).rounded()))%").monospacedDigit().frame(width: 40)
                 }
                 .disabled(!model.settings.previewVisible)
+                LabeledContent("Width in preview mode (p)") {
+                    Slider(value: Binding(get: { modeWidth ?? model.settings.previewModeWidth }, set: { modeWidth = $0 }),
+                           in: 0.3...0.95) { editing in
+                        if !editing, let w = modeWidth {
+                            model.write("preview.mode_width", .float(value: (w * 100).rounded() / 100))
+                            modeWidth = nil
+                        }
+                    }
+                    Text("\(Int(((modeWidth ?? model.settings.previewModeWidth) * 100).rounded()))%").monospacedDigit().frame(width: 40)
+                }
+                .disabled(!model.settings.previewVisible)
+                Text("In preview mode, f gives the preview the whole window.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Highlight code and text with bat", isOn: model.bool("preview.bat") { $0.previewBat })
                 Text(batInstalled() ? "bat is installed." : "bat isn't installed (brew install bat); Quick Look is used instead.")
                     .font(.caption).foregroundStyle(.secondary)

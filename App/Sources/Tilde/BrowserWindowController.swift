@@ -54,7 +54,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// PREVIEW: the preview has the keyboard (first `p`), j / k scroll it, and the pane
     /// takes most of the window.
     private var previewFocused = false
-    private static let focusedPreviewShare: CGFloat = 0.75
+    /// `f` in PREVIEW: the preview takes the whole window. Kept for the window's next
+    /// PREVIEW too.
+    private var previewWhole = false
     private let engine: Engine
     private let results: ResultsCache
 
@@ -315,13 +317,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         previewWidth?.isActive = false
         let editing = mode == .edit
         let visible = theme.previewVisible || editing
+        let focusedShare = previewWhole ? 1 : CGFloat(theme.previewModeWidth)
         let share = theme.previewVisible
-            ? (previewFocused ? max(Self.focusedPreviewShare, CGFloat(theme.previewWidth)) : CGFloat(theme.previewWidth))
+            ? (previewFocused ? focusedShare : CGFloat(theme.previewWidth))
             : (editing ? 0.4 : 0)
+        // With the whole window to the preview, the list (and its edge) step aside.
+        let whole = previewFocused && previewWhole && !editing
+        listScroll.isHidden = whole || inHistory || editing
+        if whole { previewSeparator.isHidden = true }
         previewWidth = preview.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: share)
         previewWidth?.isActive = true
         preview.isHidden = !theme.previewVisible || editing
-        previewSeparator.isHidden = !visible
+        if !whole { previewSeparator.isHidden = !visible }
     }
 
     // MARK: Modes
@@ -591,6 +598,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .history: showHistory()
         case .quickLook: quickLookKey()
         case .quickLookWindow: toggleQuickLook(nil)
+        case .previewFull:
+            // Straight into PREVIEW with the whole window.
+            previewWhole = true
+            quickLookKey()
         case .openWith: openWith()
         case .undo: undo()
         case .redo: redo()
@@ -1047,6 +1058,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private func startPreviewFocus() {
         guard !previewFocused, Theme.shared.previewVisible else { return }
         previewFocused = true
+        preview.holdPosition()
         updateSidePane(Theme.shared)
         focusPreviewContent()
         preview.onFullShown = { [weak self] in self?.focusPreviewContent() }
@@ -1064,6 +1076,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         guard previewFocused else { return }
         previewFocused = false
         preview.onFullShown = nil
+        preview.holdPosition()
         updateSidePane(Theme.shared)
         let stuck = (window?.firstResponder as? NSView)?.isDescendant(of: preview) == true
         if refocus || stuck { setMode(.select) }
@@ -1087,6 +1100,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .bottom: preview.scroll(.bottom)
         case .quickLook, .clear, .parent, .back, .search: endPreviewFocus()
         case .quickLookWindow: toggleQuickLook(nil)
+        case .previewFull:
+            previewWhole.toggle()
+            preview.holdPosition()
+            updateSidePane(Theme.shared)
+            updateChrome()
         default: return false
         }
         return true
