@@ -102,10 +102,14 @@ the whole shelf goes. Drop files onto the list to bring them into the open folde
 onto a folder row to put them in that folder: a move on the same disk, a copy to another
 (hold ⌥ to copy). Drops ask about name clashes and undo like any move.
 
-**The preview pane** shows a quick thumbnail at once (with a spinner), then the full
-Quick Look preview (scrolling PDFs, playing video) once it's ready. Moving on cancels the
-loading, and the full preview only starts once the selection rests, so scrolling past
-files stays fast. Code and text use bat.
+**The preview pane** is instant: a thumbnail rendered for the pane (images, the first
+page of PDFs and documents, a frame of video), the icon and details for files without
+one, bat for code and text, Quick Look's view for folders and apps. The full, interactive
+preview (every page of a PDF, video playback, zoom) comes on request with `p`. To make that
+quick, it's loaded invisibly once you rest on a file for a moment, and dropped when you
+move on; so `p` usually shows it at once. That background load is skipped where it would
+cost something: files only in iCloud (they'd be downloaded), on network drives, video and
+audio, and anything over 50 MB. Those load when you press `p`, with a spinner.
 
 **File dialogs.** Turn on Settings › General › File dialogs (or `[dialog] enabled = true`)
 and give Tilde the Accessibility permission. Then, in any app's Open or Save dialog,
@@ -116,9 +120,8 @@ while a Save dialog goes to its folder and keeps the name you typed. It works wi
 dialogs that use the standard macOS panel (most apps and browsers); apps with their own
 pickers aren't supported. You can also drag from Tilde onto any dialog.
 
-**Quick Look and Open With.** `p` loads the full preview in the pane straight away (for
-code and text too, instead of bat); once it's showing, `p` again opens the Quick Look
-window, which follows as you move with `j` / `k` and closes with `p`. With items on the
+**Quick Look and Open With.** `p` shows the full preview in the pane (for code and text
+too, instead of bat); once it's showing, `p` again opens the Quick Look window, which follows as you move with `j` / `k` and closes with `p`. With items on the
 shelf, or the preview pane turned off, `p` opens the window directly. `⌘Y` always opens
 the window, as in the Finder.
 `w` lists the apps that can open the item, your default first; type to narrow it down.

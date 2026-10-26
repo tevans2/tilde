@@ -40,6 +40,8 @@ enum DebugSnapshot {
                     if env["TILDE_SNAPSHOT_FOCUS"] == "1" {
                         let responder = NSApp.keyWindow?.firstResponder ?? NSApp.windows.first?.firstResponder
                         let popup = QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+                        let pane = (NSApp.windows.compactMap { $0.contentView.flatMap { find(PreviewPane.self, in: $0) } }.first)?.debugState ?? "-"
+                        FileHandle.standardError.write("PREVIEW \(pane)\n".data(using: .utf8)!)
                         FileHandle.standardError.write("FOCUS \(responder.map { String(describing: Swift.type(of: $0)) } ?? "none") popup=\(popup)\n".data(using: .utf8)!)
                     }
                     NSApp.terminate(nil)

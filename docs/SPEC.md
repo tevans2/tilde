@@ -701,3 +701,8 @@ Finished later (see "M3, finished" below): tags, conflict prompts, persistent un
 - Runs are one queued job of undo/redo moves that stops at the first failure; each move updates its record and the head as it goes. Previews (`preview_undo/redo/goto`) feed the UI. Tests: branching and restoring, dependency cascades, prerequisites, and a randomized walk (operations, undos, redos, go-tos across branches) that must return to the exact original tree.
 - History is now a page in the browser window (replacing the separate window): a lane graph (nodes by state, the head ringed, branches joining where they started, a Start node), the details and the effect of `u` / `r` / `⏎` beside it, confirmation for anything involving more than one operation, theme fonts and colours throughout.
 
+### Preview on request (done)
+
+- The pane shows an instant preview only: a `QLThumbnailGenerator` thumbnail sized to the pane (re-rendered when the pane resizes), the icon at icon size with name, kind, size and date when there's no thumbnail, bat for code and text, and Quick Look's own view for folders and packages. A dim "p full preview" hint sits in the corner.
+- The full `QLPreviewView` preview is shown only on `p`. After 300 ms of rest it's loaded invisibly underneath (with `autostarts` off) for local files up to 50 MB that aren't video or audio, cloud-only (`ubiquitousItemDownloadingStatus`), dataless (`SF_DATALESS`) or on non-local volumes; moving on drops it. `p` reveals it at once if ready, else shows a spinner and reveals it once Quick Look's content view has attached. A second `p` opens the Quick Look window.
+
