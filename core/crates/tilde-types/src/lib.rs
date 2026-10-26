@@ -57,9 +57,38 @@ pub fn extension_of(name: &str) -> String {
     }
 }
 
+/// Calls `f` with the lowercase extension of `name` (empty if none), like
+/// [`extension_of`] but without allocating for the usual short ASCII extension. Used where
+/// it runs for every item in the index.
+pub fn with_extension<R>(name: &str, f: impl FnOnce(&str) -> R) -> R {
+    let ext = match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => &name[i + 1..],
+        _ => "",
+    };
+    let mut buf = [0u8; 16];
+    if ext.len() <= buf.len() && ext.is_ascii() {
+        let lower = &mut buf[..ext.len()];
+        lower.copy_from_slice(ext.as_bytes());
+        lower.make_ascii_lowercase();
+        // SAFETY: lowercased ASCII is still ASCII.
+        f(unsafe { std::str::from_utf8_unchecked(lower) })
+    } else {
+        f(&ext.to_lowercase())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_extension_matches_extension_of() {
+        for name in
+            ["a.PDF", "archive.tar.GZ", ".zshrc", "noext", "x.", "photo.HÉIC", "long.abcdefghijklmnopqrstuvwxyz"]
+        {
+            assert_eq!(with_extension(name, str::to_string), extension_of(name), "{name}");
+        }
+    }
 
     fn entry(name: &str) -> Entry {
         Entry {

@@ -11,6 +11,10 @@ import SwiftTerm
 enum DebugSnapshot {
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
+        if let steps = env["TILDE_SCROLL_BENCH"].flatMap(Int.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { scrollBench(steps: steps) }
+            return
+        }
         guard let out = env["TILDE_SNAPSHOT"] else { return }
         let keys = decode(env["TILDE_SNAPSHOT_KEYS"] ?? "")
         let showIndex = env["TILDE_SNAPSHOT_INDEX"] == "1"
@@ -23,6 +27,42 @@ enum DebugSnapshot {
                 }
             }
         }
+    }
+
+    /// `TILDE_SCROLL_BENCH=<steps>`: scrolls the results list down a screenful-ish at a time
+    /// (as a fast trackpad flick does), forcing layout and drawing after each step, and
+    /// prints how long each step took. A step over 8.3 ms would drop a frame at 120 Hz.
+    private static func scrollBench(steps: Int) {
+        guard let window = NSApp.keyWindow ?? NSApp.windows.first,
+              let table = window.contentView.flatMap({ find(NSTableView.self, in: $0) }),
+              let clip = table.enclosingScrollView?.contentView
+        else { return }
+        let rows = table.numberOfRows
+        let step = ProcessInfo.processInfo.environment["TILDE_SCROLL_STEP"].flatMap { Double($0) }.map { CGFloat($0) }
+            ?? clip.bounds.height * 0.75
+        var times: [Double] = []
+        var layoutTimes: [Double] = []
+        var y: CGFloat = 0
+        let ms = { (a: UInt64, b: UInt64) in Double(b - a) / 1e6 }
+        for _ in 0..<steps {
+            y = min(y + step, max(table.bounds.height - clip.bounds.height, 0))
+            let start = DispatchTime.now().uptimeNanoseconds
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            table.enclosingScrollView?.reflectScrolledClipView(clip)
+            window.contentView?.layoutSubtreeIfNeeded()
+            let laidOut = DispatchTime.now().uptimeNanoseconds
+            window.displayIfNeeded()
+            let end = DispatchTime.now().uptimeNanoseconds
+            times.append(ms(start, end))
+            layoutTimes.append(ms(start, laidOut))
+        }
+        layoutTimes.sort()
+        print(String(format: "  layout (row views, data): p50 %.2f ms", layoutTimes[layoutTimes.count / 2]))
+        times.sort()
+        let pct = { (p: Double) in times[min(times.count - 1, Int(Double(times.count) * p))] }
+        print(String(format: "scroll bench: %d rows, %d steps of %.0f pt: p50 %.2f ms  p95 %.2f ms  max %.2f ms  over 8.3 ms: %d",
+                     rows, steps, step, pct(0.5), pct(0.95), times.last ?? 0, times.filter { $0 > 8.3 }.count))
+        NSApp.terminate(nil)
     }
 
     /// Control keys are encoded as a private-use character just above U+E000.

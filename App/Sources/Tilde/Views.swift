@@ -172,154 +172,178 @@ final class AlwaysEmphasizedRowView: NSTableRowView {
 final class RowCellView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("RowCell")
 
-    private let shelfDot = NSTextField(labelWithString: "●")
-    /// Activity rows: where the item came from.
-    private let origin = NSTextField(labelWithString: "")
-    private var originWidth: NSLayoutConstraint!
-    private let badge = Badge()
-    private let name = NSTextField(labelWithString: "")
-    /// Where an Everywhere result lives; trimmed from the start so the nearest folders stay.
-    private let location = NSTextField(labelWithString: "")
-    private let meta = NSTextField(labelWithString: "")
-    private let age = NSTextField(labelWithString: "")
+    // Drawn directly rather than built from text fields: Auto Layout measuring a handful
+    // of fields per row cost ~0.5 ms a row, enough to drop frames when a fast scroll
+    // brings in a screenful at once.
     private var row: RowView?
+    private var onShelf = false
+    // Built in configure and when the selection changes; draw only lays them out.
+    private var name = NSAttributedString()
+    private var nameWidth: CGFloat = 0
+    private var location = NSAttributedString()
+    private var origin = NSAttributedString()
+    private var badgeText = NSAttributedString()
+    private var badgeColor = NSColor.systemGray
+    private var meta = NSAttributedString()
+    private var metaWidth: CGFloat = 0
+    private var age = NSAttributedString()
+    private var ageWidth: CGFloat = 0
+
+    private static let shelfWidth: CGFloat = 12
+    private static let badgeWidth: CGFloat = 40
 
     init() {
         super.init(frame: .zero)
         identifier = Self.identifier
-        name.lineBreakMode = .byTruncatingTail
-        name.maximumNumberOfLines = 1
-        name.cell?.wraps = false
-        name.cell?.truncatesLastVisibleLine = true
-        // The name gives way only after the location has.
-        name.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(740), for: .horizontal)
-        location.lineBreakMode = .byTruncatingHead
-        location.maximumNumberOfLines = 1
-        location.cell?.wraps = false
-        location.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(250), for: .horizontal)
-        location.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        for f in [meta, age] {
-            f.textColor = .secondaryLabelColor
-            f.alignment = .right
-            f.setContentCompressionResistancePriority(.required, for: .horizontal)
-        }
-        shelfDot.textColor = Theme.shared.colors.shelf
-        shelfDot.font = .systemFont(ofSize: 8)
-        shelfDot.alignment = .center
-        origin.lineBreakMode = .byClipping
-        for v in [shelfDot, origin, badge, name, location, meta, age] as [NSView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-        }
-        NSLayoutConstraint.activate([
-            shelfDot.leadingAnchor.constraint(equalTo: leadingAnchor),
-            shelfDot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            shelfDot.widthAnchor.constraint(equalToConstant: 12),
-            origin.leadingAnchor.constraint(equalTo: shelfDot.trailingAnchor, constant: 2),
-            origin.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badge.leadingAnchor.constraint(equalTo: origin.trailingAnchor, constant: 2),
-            badge.centerYAnchor.constraint(equalTo: centerYAnchor),
-            badge.widthAnchor.constraint(equalToConstant: 40),
-            badge.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.62),
-            name.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 10),
-            name.centerYAnchor.constraint(equalTo: centerYAnchor),
-            location.leadingAnchor.constraint(equalTo: name.trailingAnchor, constant: 10),
-            location.firstBaselineAnchor.constraint(equalTo: name.firstBaselineAnchor),
-            meta.leadingAnchor.constraint(greaterThanOrEqualTo: location.trailingAnchor, constant: 12),
-            meta.centerYAnchor.constraint(equalTo: centerYAnchor),
-            age.leadingAnchor.constraint(equalTo: meta.trailingAnchor, constant: 12),
-            age.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            age.centerYAnchor.constraint(equalTo: centerYAnchor),
-            age.widthAnchor.constraint(greaterThanOrEqualToConstant: 34),
-        ])
-        originWidth = origin.widthAnchor.constraint(equalToConstant: 0)
-        originWidth.isActive = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    override var isFlipped: Bool { true }
+
     func configure(with row: RowView, onShelf: Bool = false) {
         self.row = row
-        shelfDot.isHidden = !onShelf
-        let theme = Theme.shared
-        meta.font = theme.small
-        age.font = theme.small
-        origin.font = theme.small
-        if let o = row.origin {
-            origin.stringValue = Format.originName(o)
-            // Wide enough for the longest label, so names line up.
-            originWidth.constant = ("Screenshot " as NSString).size(withAttributes: [.font: theme.small]).width.rounded(.up)
-        } else {
-            origin.stringValue = ""
-            originWidth.constant = 0
-        }
-        badge.set(text: Format.badgeText(row), color: Format.badgeColor(row.category), font: theme.badge)
-        meta.stringValue = Format.meta(row)
-        age.stringValue = Format.age(row.modified)
-        renderName()
+        self.onShelf = onShelf
+        setAccessibilityLabel(row.name)
+        render()
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
-        didSet { renderName() }
+        didSet { if oldValue != backgroundStyle { render() } }
     }
 
-    private func renderName() {
+    private func render() {
         guard let row else { return }
+        let theme = Theme.shared
+        let c = theme.colors
         let selected = backgroundStyle == .emphasized
-        let c = Theme.shared.colors
-        shelfDot.textColor = c.shelf
-        // Attributed strings ignore the field's line break mode, so set it here too.
-        let oneLine = NSMutableParagraphStyle()
-        oneLine.lineBreakMode = .byTruncatingTail
-        let base: [NSAttributedString.Key: Any] = [
-            .font: Theme.shared.list,
-            .foregroundColor: selected ? c.selectionText : c.text,
-            .paragraphStyle: oneLine,
-        ]
-        let s = NSMutableAttributedString(string: row.name + (row.kind == .folder ? "/" : ""), attributes: base)
+
+        let s = NSMutableAttributedString(
+            string: row.name + (row.kind == .folder ? "/" : ""),
+            attributes: [.font: theme.list, .foregroundColor: selected ? c.selectionText : c.text])
         let hit: [NSAttributedString.Key: Any] = [
-            .font: Theme.shared.listBold,
-            .foregroundColor: selected ? c.matchSelected : c.match,
+            .font: theme.listBold, .foregroundColor: selected ? c.matchSelected : c.match,
         ]
         let length = (row.name as NSString).length
         for r in row.highlights where Int(r.start + r.length) <= length {
             s.addAttributes(hit, range: NSRange(location: Int(r.start), length: Int(r.length)))
         }
-        if let o = row.origin { origin.textColor = selected ? c.selectionText : Format.originColor(o) }
-        location.isHidden = row.location.isEmpty
-        if !row.location.isEmpty {
+        name = s
+        nameWidth = s.size().width.rounded(.up)
+
+        if row.location.isEmpty {
+            location = NSAttributedString()
+        } else {
             // Everywhere and Activity rows show where the item lives, dimmed, with matched
             // characters.
-            let truncateHead = NSMutableParagraphStyle()
-            truncateHead.lineBreakMode = .byTruncatingHead
             let dim: [NSAttributedString.Key: Any] = [
-                .font: Theme.shared.small,
+                .font: theme.small,
                 .foregroundColor: selected ? c.selectionText.withAlphaComponent(0.7) : c.textDim,
-                .paragraphStyle: truncateHead,
             ]
-            let location = NSMutableAttributedString(string: row.location, attributes: dim)
+            let l = NSMutableAttributedString(string: row.location, attributes: dim)
             let locationHit: [NSAttributedString.Key: Any] = [
-                .font: Theme.shared.small.bold,
-                .foregroundColor: selected ? c.matchSelected : c.match,
+                .font: theme.small.bold, .foregroundColor: selected ? c.matchSelected : c.match,
             ]
             let locationLength = (row.location as NSString).length
             for r in row.locationHighlights where Int(r.start + r.length) <= locationLength {
-                location.addAttributes(locationHit, range: NSRange(location: Int(r.start), length: Int(r.length)))
+                l.addAttributes(locationHit, range: NSRange(location: Int(r.start), length: Int(r.length)))
             }
             if !row.source.isEmpty {
-                location.append(NSAttributedString(string: " · \(row.source)", attributes: dim))
+                l.append(NSAttributedString(string: " · \(row.source)", attributes: dim))
             }
             if row.filed {
                 var filed = dim
                 filed[.foregroundColor] = selected ? c.selectionText : c.select
-                location.append(NSAttributedString(string: " · filed", attributes: filed))
+                l.append(NSAttributedString(string: " · filed", attributes: filed))
             }
-            self.location.attributedStringValue = location
+            location = l
         }
-        name.attributedStringValue = s
-        meta.textColor = selected ? c.selectionText : c.textDim
-        age.textColor = meta.textColor
+
+        origin = row.origin.map {
+            NSAttributedString(string: Format.originName($0), attributes: [
+                .font: theme.small, .foregroundColor: selected ? c.selectionText : Format.originColor($0),
+            ])
+        } ?? NSAttributedString()
+        badgeText = NSAttributedString(string: Format.badgeText(row), attributes: [
+            .font: theme.badge, .foregroundColor: c.badgeLabel,
+        ])
+        badgeColor = Format.badgeColor(row.category)
+        let dimText: [NSAttributedString.Key: Any] = [
+            .font: theme.small, .foregroundColor: selected ? c.selectionText : c.textDim,
+        ]
+        meta = NSAttributedString(string: Format.meta(row), attributes: dimText)
+        metaWidth = meta.size().width.rounded(.up)
+        age = NSAttributedString(string: Format.age(row.modified), attributes: dimText)
+        ageWidth = max(age.size().width.rounded(.up), 34)
+        needsDisplay = true
+    }
+
+    /// Wide enough for the longest origin label, so names line up in Activity.
+    private static var originWidth: (font: NSFont, width: CGFloat)?
+    private func originColumnWidth(_ font: NSFont) -> CGFloat {
+        if let cached = Self.originWidth, cached.font == font { return cached.width }
+        let width = ("Screenshot " as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
+        Self.originWidth = (font, width)
+        return width
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let row else { return }
+        let theme = Theme.shared
+        let h = bounds.height
+        // Every text shares the name's baseline, centred in the row.
+        let font = theme.list
+        let baseline = ((h - (font.ascender - font.descender)) / 2 + font.ascender).rounded()
+        func draw(_ text: NSAttributedString, x: CGFloat, width: CGFloat, truncateHead: Bool = false) {
+            guard width > 4, text.length > 0 else { return }
+            let f = text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont ?? font
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = truncateHead ? .byTruncatingHead : .byTruncatingTail
+            let t = NSMutableAttributedString(attributedString: text)
+            t.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: t.length))
+            let rect = NSRect(x: x, y: baseline - f.ascender, width: width, height: f.ascender - f.descender + 2)
+            t.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
+
+        var x: CGFloat = 0
+        if onShelf {
+            let dot = NSRect(x: (Self.shelfWidth - 6) / 2, y: (h - 6) / 2, width: 6, height: 6)
+            theme.colors.shelf.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+        }
+        x += Self.shelfWidth + 2
+        if row.origin != nil {
+            let w = originColumnWidth(theme.small)
+            draw(origin, x: x, width: w)
+            x += w
+        }
+        x += 2
+
+        let badgeHeight = (h * 0.62).rounded()
+        let badge = NSRect(x: x, y: ((h - badgeHeight) / 2).rounded(), width: Self.badgeWidth, height: badgeHeight)
+        badgeColor.setFill()
+        NSBezierPath(roundedRect: badge, xRadius: 4, yRadius: 4).fill()
+        let badgeFont = theme.badge
+        let badgeTextWidth = min(badgeText.size().width.rounded(.up), Self.badgeWidth - 2)
+        let badgeBaseline = badge.midY + (badgeFont.capHeight / 2).rounded()
+        badgeText.draw(with: NSRect(x: badge.midX - badgeTextWidth / 2, y: badgeBaseline - badgeFont.ascender,
+                                    width: badgeTextWidth, height: badgeFont.ascender - badgeFont.descender + 2),
+                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        x = badge.maxX + 10
+
+        // Right side: age against the edge, size or count before it.
+        let ageX = bounds.width - 8 - ageWidth
+        draw(age, x: ageX, width: ageWidth)
+        let metaX = ageX - 12 - metaWidth
+        draw(meta, x: metaX, width: metaWidth)
+
+        // The location gives way first, then the name truncates.
+        let available = metaX - 12 - x
+        let nameW = min(nameWidth, max(available, 0))
+        draw(name, x: x, width: nameW + 1)
+        let locationX = x + nameW + 10
+        draw(location, x: locationX, width: available - nameW - 10, truncateHead: true)
     }
 }
 
@@ -347,48 +371,6 @@ final class SectionHeaderView: NSTableCellView {
         label.font = Theme.shared.badge
         label.textColor = Theme.shared.colors.textDim
         label.stringValue = "\(title.uppercased())  \(count.formatted())"
-    }
-}
-
-/// Small coloured type label ("PDF", "DIR").
-final class Badge: NSView {
-    private let label = NSTextField(labelWithString: "")
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = 4
-        label.textColor = .white
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -2),
-        ])
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    private var color: NSColor = .systemGray
-
-    func set(text: String, color: NSColor, font: NSFont) {
-        label.font = font
-        label.textColor = Theme.shared.colors.badgeLabel
-        label.stringValue = text
-        self.color = color
-        needsDisplay = true
-    }
-
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        // Resolve the dynamic colour for the current appearance.
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.backgroundColor = color.cgColor
-        }
     }
 }
 

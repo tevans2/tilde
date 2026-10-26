@@ -71,6 +71,14 @@ impl IndexConfig {
     }
 }
 
+/// Saves `items` as `config`'s saved index, current to now, as if a scan had found them.
+/// For benchmarks with synthetic trees too big to create on disk.
+#[doc(hidden)]
+pub fn write_saved(config: &IndexConfig, items: &[(String, ItemMeta)]) -> std::io::Result<u64> {
+    let path = config.cache_path.as_deref().ok_or_else(|| std::io::Error::other("no cache_path"))?;
+    persist::save(path, config.fingerprint(), current_event_id(), items)
+}
+
 /// What the index keeps per item besides its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemMeta {
@@ -370,9 +378,10 @@ impl GlobalIndex {
         let has_text = !query.text.is_empty();
         let name_pattern = has_text.then(|| Pattern::parse(&query.text, CaseMatching::Ignore, Normalization::Smart));
 
-        let mut ranked: Vec<(u32, i64)> = Vec::new();
-        for n in 0..snap.matched_item_count() {
-            if has_text && ranked.len() >= RERANK_CANDIDATES {
+        let mut ranked: Vec<(u32, i64)> =
+            if has_text { Vec::new() } else { filtered_newest(snap, &dead, query, &ctx, exclude_parent) };
+        for n in 0..if has_text { snap.matched_item_count() } else { 0 } {
+            if ranked.len() >= RERANK_CANDIDATES {
                 break;
             }
             let Some(item) = snap.get_matched_item(n) else { break };
@@ -391,10 +400,6 @@ impl GlobalIndex {
                 if !query.filters.iter().all(|f| f.accepts(&candidate, &ctx)) {
                     return None;
                 }
-                if !has_text {
-                    // Filters only: newest first.
-                    return Some(meta.modified);
-                }
                 let path_score = snap.pattern().score(std::slice::from_ref(column), &mut self.matcher)? as i64;
                 let name_score = name_pattern
                     .as_ref()
@@ -411,8 +416,13 @@ impl GlobalIndex {
                 ranked.push((n, score));
             }
         }
+        // Only the best `limit` are kept: pick them out before sorting (filter-only queries
+        // can rank most of the index).
+        if ranked.len() > limit && limit > 0 {
+            ranked.select_nth_unstable_by_key(limit - 1, |&(_, s)| std::cmp::Reverse(s));
+            ranked.truncate(limit);
+        }
         ranked.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
-        ranked.truncate(limit);
 
         let pattern = snap.pattern().column_pattern(0);
         let mut indices = Vec::new();
@@ -456,6 +466,35 @@ pub(crate) fn key_for(home: &Path, path: &Path) -> String {
 }
 
 /// Borrows a nucleo string as `&str` without allocating when it's ASCII.
+/// Filters only (no text): every live item that passes, scored by modification time so the
+/// newest come first. This visits the whole index, so it runs in parallel.
+fn filtered_newest(
+    snap: &nucleo::Snapshot<ItemMeta>,
+    dead: &live::DeadSet<'_>,
+    query: &Query,
+    ctx: &FilterContext<'_>,
+    exclude_parent: Option<&str>,
+) -> Vec<(u32, i64)> {
+    use rayon::prelude::*;
+    (0..snap.matched_item_count())
+        .into_par_iter()
+        .filter_map(|n| {
+            let item = snap.get_matched_item(n)?;
+            let meta = *item.data;
+            if dead.contains(meta.id) {
+                return None;
+            }
+            with_str(&item.matcher_columns[0], |key| {
+                let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
+                let candidate =
+                    Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
+                let keep = exclude_parent != Some(parent) && query.filters.iter().all(|f| f.accepts(&candidate, ctx));
+                keep.then_some((n, meta.modified))
+            })
+        })
+        .collect()
+}
+
 fn with_str<R>(s: &Utf32String, f: impl FnOnce(&str) -> R) -> R {
     match s.slice(..) {
         // SAFETY: nucleo stores a string as ASCII bytes only when every byte is ASCII.

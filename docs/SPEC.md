@@ -537,7 +537,7 @@ These do not block M0–M2.
 
 ## 13. Build progress
 
-### M0 (in progress)
+### M0 (done)
 
 Done:
 - Cargo workspace with `tilde-types`, `tilde-fs`, `tilde-query`, `tilde-ffi`.
@@ -621,8 +621,30 @@ Not yet: tags (`t`), conflict prompts (clashes always keep both), persistent und
 - App: `[edit] editor = "nvim"`; one nvim per window, started on the first edit, hidden between edits; the pending-changes pane follows `tilde_preview`; ⌘S writes, ⌘. (File › Cancel Edit) cancels; a failed apply is reported in nvim and keeps the buffer; nvim exiting mid-edit discards it and the next edit starts a new one; if nvim can't be found, EDIT says why and uses the built-in editor.
 - Tests: headless nvim driven over RPC (normal-mode edits, `yyp`, typed `:q!`, rename and new-line modes, cursor clamping, errors, nvim exiting).
 
-Remaining M0 spikes:
-- nucleo over 2M synthetic paths (full and incremental) to confirm headroom beyond a typical home folder.
-- NSTableView scrolling at 100k rows from Rust windows (verify 120 fps with Instruments).
-- FSEvents `sinceWhen` replay.
-- CI workflow.
+### M0, remaining spikes (done)
+
+- **CI**: `.github/workflows/ci.yml` on macOS 15: `cargo fmt --check`, `clippy -D warnings`, `cargo test` (Neovim installed, so the headless tests run), `build-core.sh`, `swift build`.
+- **FSEvents `sinceWhen` replay**: built with the saved index (M2); covered by `saves_and_resumes_with_changes_since`.
+- **Index at 2M paths**: `cargo run --release -p tilde-index --example bench_synthetic -- [items]` writes a synthetic saved index (2–7-level folders of 10–60 files) and loads it in a fresh process. M4, 10 cores:
+
+| Items | Load | Memory after load | Text query (fresh) | Typing, per key | Filter only (`ext:pdf`) |
+|---|---|---|---|---|---|
+| 100k | 35 ms | 31 MB | 6–10 ms | 5–11 ms | ~1 ms |
+| 500k | 180 ms | 133 MB | 27–40 ms | 16–43 ms | ~6 ms |
+| 2M | 0.98 s | 496 MB | 110–140 ms | 85–240 ms | 23 ms |
+
+  Search time and memory grow linearly (~60 ns and ~250 bytes per path). The cost is nucleo's matching itself (250–500 ns of CPU per path for real queries, measured single-threaded with `nucleo-matcher`), spread across cores; our re-ranking is capped at 3,000 candidates and takes 2–6 ms. One-letter queries at 2M hit the 250 ms wait and return partial results. The developer's real index is 55k paths, well inside the targets.
+
+  Fixed along the way: filter-only queries walked every item on one thread and allocated a lowercase extension per item (200 ms at 2M); they now walk in parallel without allocating (23 ms).
+
+  **Decision needed** before the §8 targets for 2M (16 ms per key, 200 MB) can be met: replace nucleo's full pass with our own index — paths in one arena (~60 bytes each instead of ~250), a per-path character bitmask that rejects most paths in a few nanoseconds before any fuzzy scoring, parallel scoring with a top-k heap, and narrowing from the previous result set as the query grows. Until then the practical ceiling for "instant" is roughly 300–500k paths.
+
+- **Scrolling at 100k rows**: `TILDE_SCROLL_BENCH=<steps>` (optionally `TILDE_SCROLL_STEP=<pt>`) scrolls the list in steps, forcing layout and drawing each time. Row cells built from seven text fields and ~20 constraints cost ~0.5 ms per newly visible row (Auto Layout measuring text, CoreText shaping JetBrains Mono's ligatures), so a fast flick (600 pt, ~23 new rows) took 12 ms a frame. Rows are now drawn directly in one view with no subviews or constraints:
+
+| Step | Before p50 / p95 | After p50 / p95 |
+|---|---|---|
+| 26 pt (one row) | 0.82 / 1.11 ms | 0.33 / 0.67 ms |
+| 100 pt | 2.28 / 2.75 ms | 0.92 / 1.42 ms |
+| 600 pt | 11.8 / 13.2 ms | 4.85 / 5.75 ms |
+
+  Release build with the debug hooks (`swift build -c release -Xswiftc -DDEBUG`), 100,200-row folder; the 8.3 ms budget for 120 Hz now holds at p95 even for large steps. Fetching rows from Rust was ~2% of the time. Not measured: compositor frame pacing, which needs Instruments.

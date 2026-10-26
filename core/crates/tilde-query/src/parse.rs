@@ -1,4 +1,4 @@
-use tilde_types::{Entry, EntryKind, extension_of};
+use tilde_types::{Entry, EntryKind, with_extension};
 
 use crate::kind::{Kind, kind_for};
 
@@ -64,10 +64,7 @@ impl Filter {
                 }),
                 Some(parent) => is_subsequence(v.trim_start_matches("~/"), parent),
             },
-            Filter::Ext(exts) => {
-                let ext = extension_of(c.name);
-                exts.contains(&ext)
-            }
+            Filter::Ext(exts) => with_extension(c.name, |ext| exts.iter().any(|e| e == ext)),
             Filter::Kind(k) => kind_for(c.kind, c.name) == *k,
             Filter::ModifiedWithin(secs) => ctx.now - c.modified <= *secs,
             Filter::Size(SizeBound::Larger(n)) => c.size > *n,

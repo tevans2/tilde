@@ -1,4 +1,4 @@
-use tilde_types::{Entry, EntryKind, extension_of};
+use tilde_types::{Entry, EntryKind, with_extension};
 
 /// Broad file categories used by `kind:` filters and the UI's type badges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,13 +41,17 @@ pub fn kind_of(entry: &Entry) -> Kind {
 
 /// Category for an item given its filesystem kind and name.
 pub fn kind_for(kind: EntryKind, name: &str) -> Kind {
-    let ext = extension_of(name);
-    match kind {
-        EntryKind::Folder => return Kind::Folder,
-        EntryKind::Package if ext == "app" => return Kind::App,
-        _ => {}
+    if kind == EntryKind::Folder {
+        return Kind::Folder;
     }
-    match ext.as_str() {
+    with_extension(name, |ext| kind_for_extension(kind, ext))
+}
+
+fn kind_for_extension(kind: EntryKind, ext: &str) -> Kind {
+    if kind == EntryKind::Package && ext == "app" {
+        return Kind::App;
+    }
+    match ext {
         "png" | "jpg" | "jpeg" | "heic" | "heif" | "gif" | "webp" | "tiff" | "tif" | "bmp" | "svg" | "raw" | "dng"
         | "psd" => Kind::Image,
         "mov" | "mp4" | "m4v" | "mkv" | "avi" | "webm" => Kind::Video,

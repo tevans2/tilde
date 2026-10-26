@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      # The tilde-nvim tests drive a headless Neovim; without it they skip.
+      - name: Install Neovim
+        run: brew install neovim
+
+      - name: Format
+        working-directory: core
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        working-directory: core
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: core
+        run: cargo test --workspace
+
+      - name: Build core and bindings
+        run: scripts/build-core.sh debug
+
+      - name: Build app
+        run: swift build --package-path App
