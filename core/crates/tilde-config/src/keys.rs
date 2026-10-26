@@ -59,8 +59,10 @@ const fn a(name: &'static str, description: &'static str, defaults: &'static [&'
 pub const GO_ACTIONS: &[ActionSpec] = &[
     a("down", "Next result", &["down", "ctrl+j"]),
     a("up", "Previous result", &["up", "ctrl+k"]),
-    a("parent", "Up to the parent folder (⌫ on an empty bar also does)", &["ctrl+h"]),
-    a("enter", "Into the highlighted folder, or reveal a result in its folder", &["tab", "ctrl+l"]),
+    a("parent", "Up to the parent folder (⌫ on an empty bar also does)", &[]),
+    a("enter", "Into the highlighted folder, or reveal a result in its folder", &["tab"]),
+    a("focus_bar", "Focus the search bar (from the list or preview)", &["ctrl+h"]),
+    a("focus_preview", "Focus the preview", &["ctrl+l"]),
     a("open", "Open the highlighted item", &["return"]),
     a("back", "Back to where you were (jump list)", &["ctrl+o"]),
     a("forward", "Forward again (jump list)", &["ctrl+i"]),
@@ -70,8 +72,10 @@ pub const GO_ACTIONS: &[ActionSpec] = &[
 pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("down", "Next item", &["j", "down", "ctrl+j"]),
     a("up", "Previous item", &["k", "up", "ctrl+k"]),
-    a("parent", "Up to the parent folder", &["h", "left", "backspace", "ctrl+h"]),
-    a("enter", "Into a folder, or open a file", &["l", "right", "ctrl+l"]),
+    a("parent", "Up to the parent folder", &["h", "left", "backspace"]),
+    a("enter", "Into a folder, or open a file", &["l", "right"]),
+    a("focus_bar", "Focus the search bar (from the list or preview)", &["ctrl+h"]),
+    a("focus_preview", "Focus the preview", &["ctrl+l"]),
     a("open", "Open the highlighted item", &["return"]),
     a("back", "Back to where you were (jump list)", &["ctrl+o"]),
     a("forward", "Forward again (jump list)", &["ctrl+i"]),
@@ -350,13 +354,28 @@ mod tests {
         for bindings in [&map.go, &map.select] {
             let mut seen = std::collections::HashSet::new();
             for b in bindings {
-                assert!(!b.keys.is_empty(), "{} has keys", b.action.name);
+                assert_eq!(b.keys.is_empty(), b.action.defaults.is_empty(), "{} defaults", b.action.name);
                 for k in &b.keys {
                     assert!(seen.insert(k.clone()), "{k:?} bound twice");
                 }
             }
         }
         assert_eq!(keys_of(&map.select, "redo"), ["U", "⌃R"]);
+    }
+
+    #[test]
+    fn pane_focus_replaces_control_directory_navigation() {
+        let map = KeysConfig::default().resolve();
+        for bindings in [&map.go, &map.select] {
+            assert_eq!(keys_of(bindings, "focus_bar"), ["⌃H"]);
+            assert_eq!(keys_of(bindings, "focus_preview"), ["⌃L"]);
+            for action in ["parent", "enter"] {
+                assert!(!keys_of(bindings, action).iter().any(|key| key == "⌃H" || key == "⌃L"));
+            }
+        }
+        assert_eq!(keys_of(&map.go, "enter"), ["⇥"]);
+        assert_eq!(keys_of(&map.select, "parent"), ["h", "←", "⌫"]);
+        assert_eq!(keys_of(&map.select, "enter"), ["l", "→"]);
     }
 
     #[test]

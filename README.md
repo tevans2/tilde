@@ -57,6 +57,10 @@ snapshots that window instead:
 TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/debug/Tilde
 ```
 
+Add `TILDE_SNAPSHOT_FOCUS=bar|list|preview` to assert where keyboard focus ends up;
+for example, `TILDE_SNAPSHOT_KEYS='^l^h' TILDE_SNAPSHOT_FOCUS=bar` checks the round trip
+from the bar into the preview and back.
+
 ## First launch
 
 A welcome window covers Full Disk Access (with its status, updated as you grant it), asks
@@ -72,12 +76,18 @@ the new key) or in the config file (see below).
 
 | Mode | Keys |
 |---|---|
-| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
-| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
+| GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab` or `/` go into folder (or reveal an Everywhere file) · `⌫` on empty bar goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
+| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `←` `→`) out / in · `⌫` goes up · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `X` hide from search |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
 | Anywhere | `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
+
+`⌃h` focuses the search bar on the left (GO mode), including after clicking inside a
+preview. `⌃l` focuses the preview on the right. Neither changes the current folder or
+search. Press `esc` from the bar to return to SELECT for `h` / `j` / `k` / `l` navigation.
+These focus shortcuts don't override keys in EDIT or a move/copy/rename dialog; they can
+be rebound as `focus_bar` and `focus_preview` in Settings › Keys.
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (your most-visited zoxide

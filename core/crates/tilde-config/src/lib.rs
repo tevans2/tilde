@@ -464,7 +464,9 @@ remember = true
 # Settings (⌘,) › Keys lists every action and its current keys.
 [keys.go]
 # down = ["down", "ctrl+j"]
-# enter = ["tab", "ctrl+l"]
+# enter = ["tab"]
+# focus_bar = "ctrl+h"
+# focus_preview = "ctrl+l"
 
 [keys.select]
 # move = "m"

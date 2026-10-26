@@ -518,6 +518,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .top: select(row: 0)
         case .bottom: select(row: results.tableRows - 1)
         case .search, .selectMode: setMode(.go)
+        case .focusBar: setMode(.go)
+        case .focusPreview: focusPreview()
         case .activity: toggleActivity()
         case .home: open(folder: engine.homeDir())
         case .clear:
@@ -705,7 +707,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 
-    /// GO keys from the keymap while typing in the bar, and up / down in a folder picker.
+    private func focusPreview() {
+        guard !preview.isHidden else { return statusBar.flash("Preview is hidden. Enable it in Settings › Preview.") }
+        preview.focus()
+    }
+
+    /// Pane focus works from any preview responder; navigation stays with the bar/list.
+    /// Dialogs and EDIT keep their own text editing and terminal keys.
     private func handleWindowKey(_ event: NSEvent) -> Bool {
         guard event.window === window, mode != .edit else { return false }
         if let overlay {
@@ -716,6 +724,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             default: return false
             }
             return true
+        }
+        switch Keymap.shared.action(for: event, in: mode) {
+        case .focusBar:
+            setMode(.go)
+            return true
+        case .focusPreview:
+            focusPreview()
+            return true
+        default:
+            break
         }
         guard mode == .go, let editor = pathBar.field.currentEditor(), window?.firstResponder === editor,
               (editor as? NSTextView)?.hasMarkedText() != true,

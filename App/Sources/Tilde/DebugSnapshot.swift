@@ -8,6 +8,7 @@ import SwiftTerm
 /// flows can be checked without screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead;
 /// `TILDE_SNAPSHOT_WINDOW=settings|keys|welcome` does the same for those windows.
+/// `TILDE_SNAPSHOT_FOCUS=bar|list|preview` asserts keyboard focus after replaying keys.
 @MainActor
 enum DebugSnapshot {
     /// Returns whether a snapshot or benchmark is running (the welcome isn't shown then).
@@ -163,6 +164,24 @@ enum DebugSnapshot {
             ? NSApp.windows.first { $0.isVisible && $0.windowController is SettingsWindowController || $0.windowController is WelcomeWindowController }
             : (NSApp.keyWindow ?? NSApp.windows.first)
         guard let window, let view = window.contentView?.superview else { return }
+        if let expected = ProcessInfo.processInfo.environment["TILDE_SNAPSHOT_FOCUS"] {
+            let responder = window.firstResponder as? NSView
+            let bar = find(PathBar.self, in: view)
+            let list = find(ResultsTableView.self, in: view)
+            let preview = find(PreviewPane.self, in: view)
+            let actual: String
+            if let responder, let preview, responder === preview || responder.isDescendant(of: preview) {
+                actual = "preview"
+            } else if let responder, responder === bar?.field.currentEditor() {
+                actual = "bar"
+            } else if let responder, responder === list {
+                actual = "list"
+            } else {
+                actual = String(describing: window.firstResponder)
+            }
+            assert(actual == expected, "Expected focus in \(expected), found \(actual)")
+            print("snapshot focus: \(actual)")
+        }
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))

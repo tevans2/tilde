@@ -4,6 +4,8 @@ import TildeFFI
 /// Actions bound in `[keys.go]` and `[keys.select]`. Raw values are the config names.
 enum KeyAction: String {
     case down, up, parent, enter, open, back, forward
+    case focusBar = "focus_bar"
+    case focusPreview = "focus_preview"
     case selectMode = "select_mode"
     case top, bottom, search, activity, home, clear
     case shelf

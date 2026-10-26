@@ -504,9 +504,10 @@ final class StatusBar: NSView {
         case .go:
             modePill.stringValue = "GO"
             let move = [keys.keys(.down, in: .go), keys.keys(.up, in: .go)].filter { !$0.isEmpty }.joined(separator: " ")
+            let parent = keys.keys(.parent, in: .go)
             hints.stringValue = (move.isEmpty ? "" : "\(move) move   ")
                 + hint([(.open, "open"), (.enter, "go in")], all: true)
-                + "   ⌫ \(keys.keys(.parent, in: .go)) up   "
+                + (parent.isEmpty ? "   ⌫ up   " : "   ⌫ \(parent) up   ")
                 + hint([(.selectMode, "select")])
         case .select:
             modePill.stringValue = "SELECT"

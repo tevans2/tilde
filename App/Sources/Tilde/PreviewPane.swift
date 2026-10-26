@@ -86,6 +86,21 @@ final class PreviewPane: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    // Some Quick Look providers don't accept keyboard focus themselves. The pane is
+    // a fallback so focus can still leave the search field and Ctrl-H can return to it.
+    override var acceptsFirstResponder: Bool { true }
+
+    func focus() {
+        guard let window else { return }
+        let target: NSView = textScroll.isHidden ? quickLook : textView
+        if !window.makeFirstResponder(target) { window.makeFirstResponder(self) }
+    }
+
+    private var containsFocus: Bool {
+        guard let responder = window?.firstResponder as? NSView else { return false }
+        return responder === self || responder.isDescendant(of: self)
+    }
+
     func show(_ row: RowView?) {
         generation += 1
         let current = generation
@@ -121,17 +136,21 @@ final class PreviewPane: NSView {
     }
 
     private func showQuickLook(_ path: String?) {
+        let restoreFocus = containsFocus
         textScroll.isHidden = true
         quickLook.isHidden = false
         quickLook.previewItem = path.map { URL(fileURLWithPath: $0) as NSURL }
+        if restoreFocus { focus() }
     }
 
     private func showText(_ preview: TextPreview) {
+        let restoreFocus = containsFocus
         quickLook.previewItem = nil
         quickLook.isHidden = true
         textScroll.isHidden = false
         textView.textStorage?.setAttributedString(Self.attributed(preview))
         textView.scroll(.zero)
+        if restoreFocus { focus() }
     }
 
     private static func attributed(_ preview: TextPreview) -> NSAttributedString {

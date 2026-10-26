@@ -592,7 +592,7 @@ Finished later (see "M3, finished" below): tags, conflict prompts, persistent un
 
 ### Navigation, preview and themes (done)
 
-- `⌃j` `⌃k` move and `⌃h` `⌃l` go out / in, in GO, SELECT and the folder picker (a local key monitor, ahead of the search field's text bindings).
+- `⌃j` `⌃k` move in GO, SELECT and the folder picker (a local key monitor, ahead of the search field's text bindings). `⌃h` focuses the search bar and `⌃l` focuses the preview, including from inside Quick Look or a text preview; EDIT and dialogs keep their own keys. `⌫` goes up (on an empty bar in GO); `tab` / `/` in GO and `l` / `→` in SELECT still enter folders.
 - Preview pane: `tilde-preview` runs bat (true colour) and parses its SGR output into styled spans (UTF-16 offsets); used for code, text and unknown types that look like text, up to 5 MB and `max_lines`. Markdown and everything else use Quick Look. `[preview]` sets visibility, width (default half the window), bat on/off, light and dark bat themes (defaulting to the preset's match) and line count.
 - `[theme]`: appearance (system / light / dark), presets (default, catppuccin, gruvbox, nord, solarized; each with light and dark palettes), 24 colour keys overridable for both appearances or either. Resolved in Rust with validation; Swift builds appearance-aware colours with system colours as fallbacks.
 - Fixed along the way: Everywhere search returned nothing when a matching pass outlasted the 250 ms wait (very large indexes, debug builds); nucleo's completion callback now refreshes results, and dependencies are optimized in debug builds.

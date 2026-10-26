@@ -158,6 +158,8 @@ struct WelcomeView: View {
                 }
                 Text("\(sel(.activity)) shows recent downloads and screenshots. Keys can be changed in Settings › Keys.")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("\(go(.focusBar)) focuses the search bar; \(go(.focusPreview)) focuses the preview.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 0)
