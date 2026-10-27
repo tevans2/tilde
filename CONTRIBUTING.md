@@ -58,7 +58,17 @@ cargo run --release -p tilde-fs --example bench_list -- 10000
 cargo run --release -p tilde-index --example bench_index        # scans your home folder
 ```
 
-CI runs the same (format, clippy, tests, both builds) on every push and pull request.
+Maths in Markdown previews is checked against the KaTeX the app bundles, set up as the
+preview runs it. The test files in `core/crates/tilde-preview/tests/maths/` must all render
+(CI checks them); point it at any folder of notes to see what fails there:
+
+```sh
+cargo run -q --manifest-path core/Cargo.toml -p tilde-preview --example math_survey -- <folder> \
+  | node scripts/math-check.js
+```
+
+CI runs the same (format, clippy, tests, the maths check, both builds) on every push and
+pull request.
 
 ### Snapshots
 

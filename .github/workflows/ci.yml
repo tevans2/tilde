@@ -40,6 +40,13 @@ jobs:
         working-directory: core
         run: cargo test --workspace
 
+      # Every formula in the maths test files renders with the KaTeX the app bundles.
+      - name: Maths renders
+        working-directory: core
+        run: |
+          cargo run -q -p tilde-preview --example math_survey -- crates/tilde-preview/tests/maths/should-render \
+            | node ../scripts/math-check.js
+
       - name: Build core and bindings
         run: scripts/build-core.sh debug
 

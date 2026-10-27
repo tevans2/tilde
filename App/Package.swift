@@ -29,7 +29,9 @@ let package = Package(
         .executableTarget(
             name: "Tilde",
             dependencies: ["TildeFFI", .product(name: "SwiftTerm", package: "SwiftTerm")],
-            path: "Sources/Tilde"
+            path: "Sources/Tilde",
+            // KaTeX for maths in the Markdown preview.
+            resources: [.copy("Resources/katex")]
         ),
         // The app's own logic (keys, jump list, history graph). Run with `swift test`.
         .testTarget(

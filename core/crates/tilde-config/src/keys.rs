@@ -97,6 +97,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("quick_look", "Preview mode: the full preview, scrollable (again to leave)", &["p"]),
     a("quick_look_window", "Quick Look window (⌘Y)", &["P"]),
     a("preview_full", "In preview mode: the whole window (again for the list)", &["f"]),
+    a("preview_source", "In preview mode: the file's source (again for the rendered view)", &["v"]),
     a("open_with", "Open with another app", &["w"]),
     a("hide", "Leave out of search", &["X"]),
     a("undo", "Undo", &["u"]),

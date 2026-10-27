@@ -9,7 +9,9 @@ import WebKit
 /// numbers), Markdown rendered by Tilde as native text (MarkdownView.swift), everything
 /// else through Quick Look. In PREVIEW (`p`), code and text stay in bat, the whole file in
 /// a larger font; Markdown goes to Tilde's web rendering (`[preview] markdown`: or native
-/// text, larger, or Quick Look), preloaded while the selection rests so `p` is instant.
+/// text, larger, or Quick Look) and HTML to the same web view (scripts off, nothing
+/// fetched), preloaded while the selection rests so `p` is instant. In PREVIEW, `v` swaps
+/// a rendered view for the file's source through bat, and back.
 ///
 /// Quick Look shows an instant preview: a thumbnail rendered for the pane (images, the
 /// first page of PDFs and documents, a frame of video), or the icon and details when there
@@ -80,6 +82,16 @@ final class PreviewPane: NSView {
     /// `p` asked for the web page: show it as soon as it's loaded.
     private var revealWeb = false
     private var webWork: DispatchWorkItem?
+    /// The web view blocks network loads (added once, before the first HTML file).
+    private var webOffline = false
+    /// PREVIEW shows the file's source (`v`) over its rendered view.
+    private(set) var sourceShown = false
+    /// What the source covers, to show again: the views it hid, and whether the text view
+    /// held the rendered Markdown (which the source replaced).
+    private var hiddenForSource: [NSView] = []
+    private var markdownUnderSource = false
+    /// Files whose `p` shows them rendered in the web view rather than as source.
+    private static let html: Set<String> = ["html", "htm", "xhtml"]
     /// Markdown files larger than this get Quick Look.
     private static let markdownLimit: UInt64 = 5_000_000
 
@@ -245,6 +257,8 @@ final class PreviewPane: NSView {
         fullRequested = false
         textFull = false
         markdownFull = nil
+        sourceShown = false
+        hiddenForSource = []
         revealWeb = false
         webWork?.cancel()
         web?.isHidden = true
@@ -280,7 +294,9 @@ final class PreviewPane: NSView {
             let preview = batPreview(path: path, theme: batTheme, maxLines: maxLines)
             await MainActor.run {
                 guard current == self.generation, !self.fullRequested else { return }
-                if let preview { self.showText(preview) } else { self.showQuickLook(path) }
+                guard let preview else { return self.showQuickLook(path) }
+                self.showText(preview)
+                if Self.isHTML(row) { self.preloadWeb(row) }
             }
         }
     }
@@ -329,6 +345,7 @@ final class PreviewPane: NSView {
     /// What takes the keyboard when the preview is focused: the full preview, or bat's
     /// text. `nil` while the full preview is still loading.
     var focusTarget: NSView? {
+        if sourceShown { return textView }
         if full == .shown { return usingPDF ? pdfView : quickLook }
         if markdownFull == "web", let web, !web.isHidden { return web }
         if !textScroll.isHidden { return textView }
@@ -342,6 +359,7 @@ final class PreviewPane: NSView {
     func scroll(_ how: Scroll) {
         pinPDFToTop = false
         pdfSpot = nil
+        if sourceShown { return Self.scroll(textScroll, how) }
         if markdownFull == "web", let web, !web.isHidden { return MarkdownRender.scroll(web, how) }
         if full == .shown, usingPDF, let scroll = pdfView.documentView?.enclosingScrollView {
             return Self.scroll(scroll, how)
@@ -440,6 +458,12 @@ final class PreviewPane: NSView {
             if mode == "web" { showWeb(row) } else { renderNativeFull(path) }
             return true
         }
+        // HTML: rendered in the web view; bat's source stays up until it's ready.
+        if let row, Self.isHTML(row), !textScroll.isHidden {
+            markdownFull = "web"
+            showWeb(row)
+            return true
+        }
         fullRequested = true
         revealWhenReady = true
         fullWork?.cancel()
@@ -497,9 +521,74 @@ final class PreviewPane: NSView {
         }
     }
 
-    /// PREVIEW stays in bat for everything bat shows.
+    /// PREVIEW stays in bat for everything bat shows but HTML, which is rendered.
     private static func fullIsText(_ row: RowView) -> Bool {
-        usesBat(row)
+        usesBat(row) && !html.contains(row.ext)
+    }
+
+    private static func isHTML(_ row: RowView) -> Bool {
+        row.kind == .file && html.contains(row.ext) && row.size <= markdownLimit
+    }
+
+    /// `v` in PREVIEW: the file's whole source through bat, in place of its rendered view
+    /// (Markdown, HTML, an SVG, a PDF's… whatever bat finds to be text), or back again.
+    /// False when there's nothing to swap: no file, or it's already shown as source. Bat
+    /// runs in the background; if the file isn't text after all, it beeps.
+    func toggleSource() -> Bool {
+        if sourceShown {
+            hideSource()
+            return true
+        }
+        guard let row, row.kind == .file, row.size <= Self.batSizeLimit, !textFull else { return false }
+        let theme = Theme.shared
+        let batTheme = isDark ? theme.batThemeDark : theme.batThemeLight
+        let (path, current, lines) = (row.path, generation, Self.wholeFileLines)
+        Task.detached {
+            let preview = batPreview(path: path, theme: batTheme, maxLines: lines)
+            await MainActor.run {
+                guard current == self.generation, !self.sourceShown else { return }
+                guard let preview else { return NSSound.beep() }
+                self.showSource(preview)
+            }
+        }
+        return true
+    }
+
+    private func showSource(_ preview: TextPreview) {
+        hiddenForSource = [quickLook, pdfView, thumbnail, web].compactMap { $0 }.filter { !$0.isHidden }
+        markdownUnderSource = row.map(Self.isMarkdown) == true && !textScroll.isHidden
+        sourceShown = true
+        setWrapping(false)
+        textView.textStorage?.setAttributedString(Self.attributed(preview, font: Theme.shared.list))
+        textView.scroll(.zero)
+        textScroll.isHidden = false
+        // Focus moves to the source before what it covers hides (no focus would end PREVIEW).
+        onFullShown?()
+        for view in hiddenForSource { view.isHidden = true }
+    }
+
+    private func hideSource() {
+        sourceShown = false
+        for view in hiddenForSource { view.isHidden = false }
+        let covered = hiddenForSource
+        hiddenForSource = []
+        if markdownUnderSource, let path = shownPath {
+            // The text view held the rendered Markdown: render it again.
+            Task.detached { [dark = isDark, native = markdownFull == "native"] in
+                let blocks = markdownBlocks(path: path, dark: dark)
+                await MainActor.run {
+                    guard self.shownPath == path, !self.sourceShown, let blocks else { return }
+                    let size = native ? Theme.shared.list.pointSize : Theme.shared.small.pointSize
+                    self.showMarkdown(blocks, size: size)
+                    // The web page may have finished loading while the source was up.
+                    if self.revealWeb, self.webPage?.loaded == true { self.revealWebPage() } else { self.onFullShown?() }
+                }
+            }
+            return
+        }
+        if revealWeb, webPage?.loaded == true { return revealWebPage() }
+        onFullShown?()
+        if !covered.isEmpty || full == .shown { textScroll.isHidden = true }
     }
 
     private static func isMarkdown(_ row: RowView) -> Bool {
@@ -570,7 +659,7 @@ final class PreviewPane: NSView {
     /// Renders the web page in the background once the selection rests on a Markdown file,
     /// so `p` shows it at once.
     private func preloadWeb(_ row: RowView) {
-        guard Theme.shared.previewMarkdown == "web" else { return }
+        guard Self.isHTML(row) || Theme.shared.previewMarkdown == "web" else { return }
         webWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.shownPath == row.path else { return }
@@ -585,17 +674,53 @@ final class PreviewPane: NSView {
         guard webPage?.key != key else { return }
         webPage = (key, false)
         let (path, dark) = (row.path, isDark)
+        if Self.isHTML(row) {
+            // The file itself, with its folder readable (its images and styles), offline.
+            let web = webView()
+            webLinks.onLoad = { [weak self] in self?.webLoaded(key, path) }
+            return whenOffline(web) {
+                guard self.webPage?.key == key else { return }
+                let url = URL(fileURLWithPath: path)
+                web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            }
+        }
         Task.detached {
             let html = markdownHtml(path: path, dark: dark)
             await MainActor.run {
                 guard self.webPage?.key == key, let html else { return }
                 let web = self.webView()
-                self.webLinks.onLoad = { [weak self] in
-                    guard let self, self.webPage?.key == key else { return }
-                    self.webPage?.loaded = true
-                    if self.revealWeb, self.markdownFull == "web", self.shownPath == path { self.revealWebPage() }
-                }
+                self.webLinks.onLoad = { [weak self] in self?.webLoaded(key, path) }
                 web.loadHTMLString(MarkdownRender.page(body: html, appearance: self.effectiveAppearance), baseURL: nil)
+            }
+        }
+    }
+
+    private func webLoaded(_ key: String, _ path: String) {
+        guard webPage?.key == key else { return }
+        webPage?.loaded = true
+        if revealWeb, markdownFull == "web", shownPath == path, !sourceShown { revealWebPage() }
+    }
+
+    /// Runs `then` once the web view blocks network loads, so an HTML file previews without
+    /// fetching anything (Markdown pages have their own policy). Compiled once. If the rules
+    /// can't be set up, the page isn't loaded at all (its source stays up).
+    private func whenOffline(_ web: WKWebView, then: @escaping @MainActor () -> Void) {
+        if webOffline { return then() }
+        // Content-blocker patterns have no `|`: one rule per scheme.
+        let rules = ["https?", "wss?", "ftp"]
+            .map { #"{"trigger":{"url-filter":"^\#($0)://"},"action":{"type":"block"}}"# }
+            .joined(separator: ",")
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "tilde-offline", encodedContentRuleList: "[\(rules)]") { list, error in
+            MainActor.assumeIsolated {
+                guard let list else {
+                    NSLog("Tilde: no offline rules for HTML previews: \(String(describing: error))")
+                    return
+                }
+                if !self.webOffline {
+                    web.configuration.userContentController.add(list)
+                    self.webOffline = true
+                }
+                then()
             }
         }
     }

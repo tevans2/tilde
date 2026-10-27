@@ -94,4 +94,5 @@ design and build plan is in [docs/SPEC.md](docs/SPEC.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Maths in Markdown previews is typeset with [KaTeX](https://katex.org)
+(MIT), bundled in `App/Sources/Tilde/Resources/katex`.

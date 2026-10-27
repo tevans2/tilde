@@ -47,15 +47,41 @@ enum MarkdownRender {
             .img-alt { display: inline-block; font-size: 0.8em; line-height: 1.5; color: \(hex(c.textDim));
               border: 1px solid \(hex(c.border)); border-radius: 4px; padding: 0 0.45em; margin: 0 0.15em; }
             ::selection { background: \(hex(c.selection)); }
-            math { font-family: 'STIX Two Math', math; font-size: 1.12em; }
-            math[display=block] { display: block; margin: 0.9em 0; overflow-x: auto; overflow-y: hidden; }
+            blockquote:has(.callout-title) { --callout: \(hex(.systemBlue)); color: \(hex(c.text)); border-left-color: var(--callout);
+              background: color-mix(in srgb, var(--callout) 9%, transparent); border-radius: 0 8px 8px 0; padding: 0.7em 1em; }
+            blockquote:has(.callout-title) > :last-child { margin-bottom: 0; }
+            .callout-title { display: block; font-weight: 600; color: var(--callout); margin-bottom: 0.3em; }
+            \(Self.calloutColors)
+            .katex { font-size: 1.12em; }
+            .math-display { display: block; margin: 0.9em 0; overflow-x: auto; overflow-y: hidden; }
+            .math-display > .katex-display { margin: 0; }
+            .math-error { font-family: '\(theme.list.familyName ?? "Menlo")', ui-monospace, monospace; font-size: 0.85em;
+              color: \(hex(.systemRed)); background: \(hex(c.bar)); border-radius: 5px; padding: 0.1em 0.4em;
+              white-space: pre-wrap; cursor: help; }
+            .math-display.math-error { padding: 0.6em 0.9em; }
             """
         }
         return """
         <!doctype html><html><head><meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline' \(KaTeX.scheme):; font-src \(KaTeX.scheme):">
+        <link rel="stylesheet" href="\(KaTeX.scheme)://katex/katex.min.css">
         <style>\(css)</style></head><body>\(body)</body></html>
         """
+    }
+
+    /// Callout colours by kind, as Obsidian groups them.
+    private static var calloutColors: String {
+        let groups: [(NSColor, [String])] = [
+            (.systemGreen, ["tip", "hint", "important", "success", "check", "done"]),
+            (.systemOrange, ["warning", "caution", "attention", "question", "help", "faq"]),
+            (.systemRed, ["failure", "fail", "missing", "danger", "error", "bug"]),
+            (.systemPurple, ["example"]),
+            (.systemTeal, ["abstract", "summary", "tldr"]),
+            (.systemGray, ["quote", "cite"]),
+        ]
+        return groups.map { color, kinds in
+            kinds.map { "blockquote:has(.callout-title[data-kind=\"\($0)\"])" }.joined(separator: ", ") + " { --callout: \(hex(color)); }"
+        }.joined(separator: "\n")
     }
 
     private static func hex(_ color: NSColor) -> String {
@@ -68,6 +94,13 @@ enum MarkdownRender {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         config.websiteDataStore = .nonPersistent()
+        config.setURLSchemeHandler(KaTeX.assets, forURLScheme: KaTeX.scheme)
+        // KaTeX runs in its own script world: the page's scripts stay off, and it can't
+        // see anything a page defines.
+        if let script = KaTeX.script {
+            config.userContentController.addUserScript(
+                WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: KaTeX.world))
+        }
         let web = WKWebView(frame: .zero, configuration: config)
         web.navigationDelegate = links
         // No white flash before the page's own background draws.
@@ -217,6 +250,56 @@ enum MarkdownRender {
     }
 }
 
+/// KaTeX, bundled (Resources/katex): its script, run on every Markdown page, and its
+/// styles and fonts, served to the page from the app.
+@MainActor
+enum KaTeX {
+    static let scheme = "tilde-asset"
+    static let world = WKContentWorld.world(name: "tilde-math")
+    static let assets = AssetHandler()
+
+    /// The folder: in Tilde.app's Resources, or next to the binary in a development build.
+    static let folder: URL? = [Bundle.main.resourceURL, Bundle.main.bundleURL, Bundle.main.executableURL?.deletingLastPathComponent()]
+        .compactMap { $0?.appendingPathComponent("Tilde_Tilde.bundle/katex") }
+        .first { FileManager.default.fileExists(atPath: $0.path) }
+
+    /// KaTeX, its chemistry extension (\ce) and Tilde's setup, then the call that renders
+    /// the page. `nil` (maths stays TeX) if the files are missing.
+    static let script: String? = {
+        guard let folder else { return nil }
+        let parts = ["katex.min.js", "contrib/mhchem.min.js", "tilde-math.js"].compactMap {
+            try? String(contentsOf: folder.appendingPathComponent($0), encoding: .utf8)
+        }
+        guard parts.count == 3 else { return nil }
+        return parts.joined(separator: "\n;\n") + "\n;tildeMath.renderAll(document, katex);"
+    }()
+}
+
+/// Serves `tilde-asset://katex/<file>` from the KaTeX folder, and nothing outside it.
+@MainActor
+final class AssetHandler: NSObject, WKURLSchemeHandler {
+    func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
+        guard let url = task.request.url, url.host == "katex", let folder = KaTeX.folder?.standardizedFileURL else {
+            return task.didFailWithError(URLError(.fileDoesNotExist))
+        }
+        let file = folder.appendingPathComponent(url.path).standardizedFileURL
+        guard file.path.hasPrefix(folder.path + "/"), let data = try? Data(contentsOf: file) else {
+            return task.didFailWithError(URLError(.fileDoesNotExist))
+        }
+        let mime = switch file.pathExtension {
+        case "css": "text/css"
+        case "woff2": "font/woff2"
+        case "js": "text/javascript"
+        default: "application/octet-stream"
+        }
+        task.didReceive(URLResponse(url: url, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil))
+        task.didReceive(data)
+        task.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop task: any WKURLSchemeTask) {}
+}
+
 /// Links in the web view open in the browser (or the app for their kind), never in the pane.
 final class WebLinks: NSObject, WKNavigationDelegate {
     var onLoad: (() -> Void)?
@@ -229,10 +312,15 @@ final class WebLinks: NSObject, WKNavigationDelegate {
             if url.scheme != nil, url.scheme != "about" { NSWorkspace.shared.open(url) }
             return decisionHandler(.cancel)
         }
-        decisionHandler(action.request.url?.scheme == "about" ? .allow : .cancel)
+        // The page itself: a Markdown page (about:blank) or an HTML file.
+        decisionHandler(["about", "file"].contains(action.request.url?.scheme) ? .allow : .cancel)
     }
 
+    /// Loaded, rendered (KaTeX ran as the document finished) and its fonts in: ready to show
+    /// without raw TeX or unstyled maths flashing up.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        onLoad?()
+        webView.callAsyncJavaScript("await document.fonts.ready", arguments: [:], in: nil, in: KaTeX.world) { [weak self] _ in
+            self?.onLoad?()
+        }
     }
 }

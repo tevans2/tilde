@@ -1,7 +1,8 @@
 //! Markdown for PREVIEW, rendered two ways from one parse (pulldown-cmark, with GitHub's
 //! extensions): HTML for a web view, and blocks of styled runs for a native text view.
-//! Code blocks are highlighted with syntect (bat's library). Math (`$…$`, `$$…$$`,
-//! ```` ```math ````) becomes MathML, which WebKit draws itself, so no scripts are needed.
+//! Code blocks are highlighted with syntect (bat's library). Maths is found first
+//! (`math.rs`) and left as TeX in `math-inline` / `math-display` spans, for KaTeX in the
+//! app's web view; the native view shows it as code.
 //! Images next to the file are embedded; remote ones are left out, so previewing a README
 //! doesn't fetch anything.
 
@@ -23,85 +24,71 @@ fn options() -> Options {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_GFM
-        | Options::ENABLE_MATH
 }
 
-/// LaTeX as MathML; the source, as code, if it can't be converted.
-fn math(latex: &str, block: bool) -> String {
-    let style = if block { latex2mathml::DisplayStyle::Block } else { latex2mathml::DisplayStyle::Inline };
-    match latex2mathml::latex_to_mathml(&tex_aliases(latex.trim()), style) {
-        // It reports some unknown commands inline rather than as an error.
-        Ok(mathml) if !mathml.contains("PARSE ERROR") => unstretch(&mathml),
-        _ if block => format!("<pre class=\"math-source\"><code>{}</code></pre>", escape(latex)),
-        _ => format!("<code class=\"math-source\">{}</code>", escape(latex)),
-    }
-}
-
-/// Rewrites common LaTeX that latex2mathml doesn't know into forms it does.
-fn tex_aliases(latex: &str) -> String {
-    let mut s = latex.to_string();
-    for env in ["aligned", "align*", "align", "gathered", "gather*", "gather", "split"] {
-        s = s
-            .replace(&format!("\\begin{{{env}}}"), "\\begin{matrix}")
-            .replace(&format!("\\end{{{env}}}"), "\\end{matrix}");
-    }
-    s = s.replace("\\begin{cases}", "\\left\\{\\begin{matrix}").replace("\\end{cases}", "\\end{matrix}\\right.");
-    // Commands, matched whole (`\le` but not `\left`).
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s.as_str();
-    while let Some(i) = rest.find('\\') {
-        out.push_str(&rest[..i]);
-        let after = &rest[i + 1..];
-        let len = after.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(after.len());
-        let (name, tail) = after.split_at(len);
-        rest = tail;
-        let replacement = match name {
-            "le" => "\\leq",
-            "ge" => "\\geq",
-            "dots" => "\\ldots",
-            "neg" => "\\lnot",
-            "lVert" | "rVert" => "\\|",
-            "prime" => "'",
-            "tfrac" | "dfrac" => "\\frac",
-            "varnothing" => "\\emptyset",
-            "deg" => "\\operatorname{deg}",
-            "mathcal" => "\\mathscr",
-            "displaystyle" | "textstyle" => "",
-            "color" => {
-                // `\color{red}{x}`: keep x, drop the colour.
-                if let Some(end) = rest.strip_prefix('{').and_then(|r| r.find('}')) {
-                    rest = &rest[end + 2..];
-                }
-                ""
+/// Obsidian callouts: `> [!note] Title` (`[!tip]-`, `[!warning]+` fold markers too) at the
+/// start of a quote becomes a title span the page styles by kind (`blockquote:has(…)`), and
+/// the native view shows in bold. Code blocks are left alone.
+fn callouts(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut fence: Option<(char, usize)> = None;
+    let mut previous_depth = 0;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some((c, n)) = fence {
+            if crate::math::fence_close(trimmed, c, n) {
+                fence = None;
             }
-            "" => {
-                // `\\`, `\{`, `\,`…: the next character belongs to the backslash.
-                let c = rest.chars().next().map_or(0, char::len_utf8);
-                out.push('\\');
-                out.push_str(&rest[..c]);
-                rest = &rest[c..];
-                continue;
-            }
-            _ => {
-                out.push('\\');
-                out.push_str(name);
-                continue;
-            }
-        };
-        out.push_str(replacement);
+            out.push_str(line);
+            continue;
+        }
+        if let Some(f) = crate::math::fence_open(trimmed) {
+            fence = Some(f);
+            out.push_str(line);
+            continue;
+        }
+        let prefix_len = line.find(|c: char| !matches!(c, ' ' | '\t' | '>')).unwrap_or(line.len());
+        let (prefix, body) = line.split_at(prefix_len);
+        let depth = prefix.matches('>').count();
+        let opens = depth > previous_depth;
+        previous_depth = if line.trim().is_empty() { 0 } else { depth };
+        if opens
+            && let Some(rest) = body.strip_prefix("[!")
+            && let Some(end) = rest.find(']')
+            && end > 0
+            && rest[..end].chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            let kind = rest[..end].to_lowercase();
+            let title = rest[end + 1..].trim_start_matches(['+', '-']).trim();
+            let title = if title.is_empty() {
+                let mut c = kind.chars();
+                c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+            } else {
+                title.to_string()
+            };
+            out.push_str(prefix);
+            out.push_str(&format!(
+                "<span class=\"callout-title\" data-kind=\"{}\">{}</span>\n",
+                escape(&kind),
+                escape(&title)
+            ));
+            continue;
+        }
+        out.push_str(line);
     }
-    out.push_str(rest);
     out
 }
 
-/// In LaTeX only `\left( … \right)` grows with what's inside; MathML stretches every bracket
-/// unless told not to.
-fn unstretch(mathml: &str) -> String {
-    let mut out = mathml.to_string();
-    for b in ["(", ")", "[", "]", "{", "}", "|", "∣", "‖"] {
-        out = out.replace(&format!("<mo>{b}</mo>"), &format!("<mo stretchy=\"false\">{b}</mo>"));
-    }
-    out
+/// A formula for KaTeX: its TeX, escaped, in a span the page's script renders.
+fn math_span(tex: &str, display: bool) -> String {
+    let class = if display { "math-display" } else { "math-inline" };
+    format!("<span class=\"{class}\">{}</span>", escape(tex.trim()))
+}
+
+/// The parser, with the options the preview uses, over a document whose maths `math::extract`
+/// has already taken out (for tools that check what it finds).
+pub fn parse(source: &str) -> Parser<'_> {
+    Parser::new_ext(source, options())
 }
 
 fn syntaxes() -> &'static SyntaxSet {
@@ -165,21 +152,42 @@ fn attr(tag: &str, name: &str) -> Option<String> {
     tag.find(&key).and_then(|i| tag[i + key.len()..].split('"').next().map(str::to_string))
 }
 
-/// `<img>` tags in raw HTML: local images embedded, remote ones replaced by their alt text.
+/// Images in raw HTML. `<img>`: a local image is embedded, a remote one replaced by its
+/// alt text. `<source>` (in `<picture>`, often a dark-mode variant): local candidates in
+/// `srcset` embedded, remote ones dropped, and the tag dropped if none are left, so the
+/// browser falls back to the `<img>`.
 fn rewrite_imgs(html: &str, base: &Path) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
-    while let Some(i) = rest.find("<img") {
+    while let Some(i) = [rest.find("<img"), rest.find("<source")].into_iter().flatten().min() {
         out.push_str(&rest[..i]);
         let Some(len) = rest[i..].find('>') else {
             rest = &rest[i..];
             break;
         };
         let tag = &rest[i..=i + len];
-        let src = attr(tag, "src").unwrap_or_default();
-        match local_image(&src, base).and_then(|p| data_uri(&p)) {
-            Some(uri) => out.push_str(&tag.replacen(&format!("src=\"{src}\""), &format!("src=\"{uri}\""), 1)),
-            None => out.push_str(&alt_label(&attr(tag, "alt").unwrap_or_default())),
+        if tag.starts_with("<img") {
+            let src = attr(tag, "src").unwrap_or_default();
+            match local_image(&src, base).and_then(|p| data_uri(&p)) {
+                Some(uri) => out.push_str(&tag.replacen(&format!("src=\"{src}\""), &format!("src=\"{uri}\""), 1)),
+                None => out.push_str(&alt_label(&attr(tag, "alt").unwrap_or_default())),
+            }
+        } else if let Some(srcset) = attr(tag, "srcset") {
+            let embedded: Vec<String> = srcset
+                .split(',')
+                .filter_map(|candidate| {
+                    let mut parts = candidate.split_whitespace();
+                    let uri = local_image(parts.next()?, base).and_then(|p| data_uri(&p))?;
+                    Some(std::iter::once(uri).chain(parts.map(str::to_string)).collect::<Vec<_>>().join(" "))
+                })
+                .collect();
+            if !embedded.is_empty() {
+                out.push_str(&tag.replacen(
+                    &format!("srcset=\"{srcset}\""),
+                    &format!("srcset=\"{}\"", embedded.join(", ")),
+                    1,
+                ));
+            }
         }
         rest = &rest[i + len + 1..];
     }
@@ -199,11 +207,13 @@ fn escape(s: &str) -> String {
 /// The document as HTML (the body only; the app adds the page and its styles). `base` is
 /// the file's folder, for images.
 pub fn to_html(source: &str, base: &Path, dark: bool) -> String {
+    let extracted = crate::math::extract(&callouts(source));
+    let source = extracted.text.as_str();
     let mut events = Vec::new();
     let mut code: Option<(String, String)> = None;
     // A remote image's alt text, being collected.
     let mut alt: Option<String> = None;
-    for event in Parser::new_ext(source, options()) {
+    for event in parse(source) {
         if let Some(text) = &mut alt {
             match event {
                 Event::Text(t) | Event::Code(t) => text.push_str(&t),
@@ -222,7 +232,7 @@ pub fn to_html(source: &str, base: &Path, dark: bool) -> String {
             }
             (Some((_, text)), Event::Text(t)) => text.push_str(&t),
             (Some((lang, text)), Event::End(TagEnd::CodeBlock)) if lang.trim() == "math" => {
-                events.push(Event::Html(math(text, true).into()));
+                events.push(Event::Html(format!("<p>{}</p>\n", math_span(text, true)).into()));
                 code = None;
             }
             (Some((lang, text)), Event::End(TagEnd::CodeBlock)) => {
@@ -241,8 +251,19 @@ pub fn to_html(source: &str, base: &Path, dark: bool) -> String {
                     None => alt = Some(String::new()),
                 }
             }
-            (None, Event::InlineMath(m)) => events.push(Event::InlineHtml(math(&m, false).into())),
-            (None, Event::DisplayMath(m)) => events.push(Event::InlineHtml(math(&m, true).into())),
+            (None, Event::InlineMath(m)) => events.push(Event::InlineHtml(math_span(&m, false).into())),
+            (None, Event::DisplayMath(m)) => events.push(Event::InlineHtml(math_span(&m, true).into())),
+            (None, Event::Text(t)) if t.contains(crate::math::OPEN) => {
+                for piece in crate::math::pieces(&t) {
+                    match piece {
+                        crate::math::Piece::Text(s) => events.push(Event::Text(s.to_string().into())),
+                        crate::math::Piece::Math(n) => {
+                            let m = &extracted.math[n];
+                            events.push(Event::InlineHtml(math_span(&m.tex, m.display).into()));
+                        }
+                    }
+                }
+            }
             (None, Event::Html(h)) => events.push(Event::Html(rewrite_imgs(&h, base).into())),
             (None, Event::InlineHtml(h)) => events.push(Event::InlineHtml(rewrite_imgs(&h, base).into())),
             (None, e) => events.push(e),
@@ -402,6 +423,8 @@ fn table_text(rows: &[Vec<String>]) -> String {
 
 /// The document as blocks for a native text view. `base` is the file's folder.
 pub fn to_blocks(source: &str, base: &Path, dark: bool) -> Vec<Block> {
+    let extracted = crate::math::extract(&callouts(source));
+    let source = extracted.text.as_str();
     let mut n = Native {
         blocks: Vec::new(),
         current: None,
@@ -414,7 +437,8 @@ pub fn to_blocks(source: &str, base: &Path, dark: bool) -> Vec<Block> {
     let mut code: Option<(String, String)> = None;
     let mut table: Option<Vec<Vec<String>>> = None;
     let mut image: Option<(String, String)> = None;
-    for event in Parser::new_ext(source, options()) {
+    let mut in_title = false;
+    for event in parse(source) {
         if let Some((_, text)) = &mut code {
             match event {
                 Event::Text(t) => text.push_str(&t),
@@ -447,7 +471,16 @@ pub fn to_blocks(source: &str, base: &Path, dark: bool) -> Vec<Block> {
             match event {
                 Event::Start(Tag::TableHead | Tag::TableRow) => rows.push(Vec::new()),
                 Event::Start(Tag::TableCell) => rows.last_mut().unwrap().push(String::new()),
-                Event::Text(t) | Event::Code(t) => rows.last_mut().and_then(|r| r.last_mut()).unwrap().push_str(&t),
+                Event::Text(t) | Event::Code(t) => {
+                    // Maths in a cell shows as its TeX, like maths elsewhere in this view.
+                    let cell = rows.last_mut().and_then(|r| r.last_mut()).unwrap();
+                    for piece in crate::math::pieces(&t) {
+                        match piece {
+                            crate::math::Piece::Text(s) => cell.push_str(s),
+                            crate::math::Piece::Math(i) => cell.push_str(&extracted.math[i].tex),
+                        }
+                    }
+                }
                 Event::End(TagEnd::Table) => {
                     let rows = table.take().unwrap();
                     n.start(BlockKind::Table, 0);
@@ -527,6 +560,20 @@ pub fn to_blocks(source: &str, base: &Path, dark: bool) -> Vec<Block> {
             Event::Start(Tag::Link { dest_url, .. }) => n.inline.link = Some(dest_url.to_string()),
             Event::End(TagEnd::Link) => n.inline.link = None,
             Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item) => n.flush(),
+            Event::Text(t) if t.contains(crate::math::OPEN) => {
+                for piece in crate::math::pieces(&t) {
+                    match piece {
+                        crate::math::Piece::Text(s) => n.push(s, false),
+                        crate::math::Piece::Math(i) if extracted.math[i].display => {
+                            let tex = extracted.math[i].tex.clone();
+                            n.start(BlockKind::Code, 0);
+                            n.push(&tex, true);
+                            n.flush();
+                        }
+                        crate::math::Piece::Math(i) => n.push(&extracted.math[i].tex.clone(), true),
+                    }
+                }
+            }
             Event::Text(t) => n.push(&t, false),
             Event::Code(t) | Event::InlineMath(t) => n.push(&t, true),
             Event::DisplayMath(t) => {
@@ -548,6 +595,16 @@ pub fn to_blocks(source: &str, base: &Path, dark: bool) -> Vec<Block> {
             Event::Rule => {
                 n.start(BlockKind::Rule, 0);
                 n.flush();
+            }
+            // A callout's title (inline HTML comes tag by tag): bold, on its own line.
+            Event::InlineHtml(h) if h.starts_with("<span class=\"callout-title\"") => {
+                in_title = true;
+                n.inline.bold += 1;
+            }
+            Event::InlineHtml(h) if in_title && h.as_ref() == "</span>" => {
+                in_title = false;
+                n.inline.bold -= 1;
+                n.push("\n", false);
             }
             Event::Html(h) | Event::InlineHtml(h) => {
                 for (src, alt, width) in html_images(&h) {
@@ -602,22 +659,33 @@ mod tests {
     }
 
     #[test]
-    fn math_becomes_mathml() {
+    fn obsidian_callouts() {
         let dir = tempfile::tempdir().unwrap();
-        let html =
-            to_html("Euler: $e^{i\\pi} + 1 = 0$\n\n$$\\frac{a}{b}$$\n\n```math\n\\sqrt{x}\n```\n", dir.path(), true);
-        assert!(html.contains("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">"), "{html}");
-        assert!(html.contains("<mfrac>") && html.contains("<msqrt>"), "{html}");
-        assert_eq!(html.matches("display=\"block\"").count(), 2, "{html}");
-        // Aliases for what latex2mathml lacks, brackets that don't grow, and the source for
-        // anything still unknown.
-        let m = math(r"P(A \mid B) \le \dfrac{1}{2}, \begin{cases} a & x \ge 0 \\ b \end{cases}", false);
-        assert!(!m.contains("PARSE ERROR") && m.contains("<mfrac>") && m.contains("≤") && m.contains("≥"), "{m}");
-        assert!(m.contains("<mo stretchy=\"false\">(</mo>"), "{m}");
-        assert_eq!(tex_aliases(r"\left(\color{red}{x}\right) \\ \{a\}"), r"\left({x}\right) \\ \{a\}");
-        assert_eq!(math(r"\unknowncommand{x}", false), r#"<code class="math-source">\unknowncommand{x}</code>"#);
-        let blocks = to_blocks("Inline $x^2$ here.\n", dir.path(), true);
-        assert!(blocks[0].runs.iter().any(|r| r.code && r.text == "x^2"));
+        let doc = "> [!warning]- Watch out\n> Body with $x$.\n\n> [!tip]\n> Short.\n\n> Plain quote\n> [!note] not a callout mid-quote\n\n```\n> [!note] code\n```\n";
+        let html = to_html(doc, dir.path(), true);
+        assert!(html.contains("<span class=\"callout-title\" data-kind=\"warning\">Watch out</span>"), "{html}");
+        assert!(html.contains("<span class=\"callout-title\" data-kind=\"tip\">Tip</span>"), "{html}");
+        assert_eq!(html.matches("callout-title").count(), 2, "{html}");
+        let blocks = to_blocks(doc, dir.path(), true);
+        assert!(blocks[0].runs[0].bold && blocks[0].runs[0].text == "Watch out" && blocks[0].quote == 1);
+    }
+
+    #[test]
+    fn math_is_left_for_katex() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc =
+            "Euler: $e^{i\\pi} < 1$\n\n$$\n\\frac{a}{b}\n\n- c\n$$\n\n```math\n\\sqrt{x}\n```\n\nLet \\( X \\) be.\n";
+        let html = to_html(doc, dir.path(), true);
+        assert!(html.contains("<span class=\"math-inline\">e^{i\\pi} &lt; 1</span>"), "{html}");
+        assert!(html.contains("<span class=\"math-display\">\\frac{a}{b}\n\n- c</span>"), "{html}");
+        assert!(html.contains("<span class=\"math-display\">\\sqrt{x}</span>"), "{html}");
+        assert!(html.contains("<span class=\"math-inline\">X</span>"), "{html}");
+        assert!(!html.contains(crate::math::OPEN));
+        let blocks = to_blocks(doc, dir.path(), true);
+        assert!(blocks[0].runs.iter().any(|r| r.code && r.text == "e^{i\\pi} < 1"));
+        let table = to_blocks("| a | b |\n|---|---|\n| $x^2$ | $E[X|Y]$ |\n", dir.path(), true);
+        assert_eq!(table[0].runs[0].text, "a    │  b\n─────┼────────\nx^2  │  E[X|Y]");
+        assert!(blocks.iter().any(|b| b.kind == BlockKind::Code && b.runs[0].text == "\\frac{a}{b}\n\n- c"));
     }
 
     #[test]
@@ -632,6 +700,15 @@ mod tests {
         assert!(html.contains("<pre class=\"code\"><code><span style=\"color:#"));
         let raw = rewrite_imgs("<p align=\"center\"><img src=\"logo.png\" width=\"9\"></p>", dir.path());
         assert!(raw.contains("data:image/png;base64,") && raw.contains("width=\"9\""));
+        let picture = rewrite_imgs(
+            "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"logo.png\"><source srcset=\"https://x.org/a.png 2x\"><img src=\"logo.png\"></picture>",
+            dir.path(),
+        );
+        assert_eq!(picture.matches("data:image/png;base64,").count(), 2, "{picture}");
+        assert!(
+            picture.contains("media=\"(prefers-color-scheme: dark)\" srcset=\"data:") && !picture.contains("x.org"),
+            "{picture}"
+        );
         let badge = rewrite_imgs("<a href=\"x\"><img src=\"https://img.shields.io/b\" alt=\"CI\"></a>", dir.path());
         assert_eq!(badge, "<a href=\"x\"><span class=\"img-alt\">CI</span></a>");
         assert!(html.contains("<span class=\"img-alt\">remote</span>"));

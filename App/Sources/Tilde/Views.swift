@@ -542,7 +542,7 @@ final class StatusBar: NSView {
         switch mode {
         case .select where inPreview:
             modePill.stringValue = "PREVIEW"
-            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) scroll   space page   \(keys.key(.top, in: .select)) \(keys.key(.bottom, in: .select)) top / bottom   \(keys.key(.previewFull, in: .select)) whole window   \(keys.key(.quickLookWindow, in: .select)) Quick Look   \(keys.key(.quickLook, in: .select)) or esc back"
+            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) scroll   space page   \(keys.key(.top, in: .select)) \(keys.key(.bottom, in: .select)) top / bottom   \(keys.key(.previewFull, in: .select)) whole window   \(keys.key(.previewSource, in: .select)) source   \(keys.key(.quickLookWindow, in: .select)) Quick Look   \(keys.key(.quickLook, in: .select)) or esc back"
         case .select where inCleanup != nil:
             modePill.stringValue = "CLEAN UP"
             let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move"

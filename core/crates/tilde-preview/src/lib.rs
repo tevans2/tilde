@@ -3,6 +3,7 @@
 
 mod ansi;
 pub mod markdown;
+pub mod math;
 
 pub use ansi::{Span, StyledText, parse};
 

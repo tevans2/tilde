@@ -51,8 +51,9 @@ page of PDFs and documents, a frame of video), the icon and details for files wi
 one, bat for code and text (highlighted, with line numbers, the first `max_lines`),
 Markdown rendered as text, Quick Look's view for folders and apps. The full, interactive
 preview (every page of a PDF, video playback, zoom, the whole of a code or text file in a
-larger font, Markdown rendered like GitHub with tables, images and maths) comes on request
-with `p`. To make that
+larger font, Markdown rendered like GitHub with tables, images and maths, HTML pages
+rendered with their own styles but no scripts and nothing fetched) comes on request with
+`p`. To make that
 quick, it's loaded invisibly once you rest on a file for a moment, and dropped when you
 move on; so `p` usually shows it at once. That background load is skipped where it would
 cost something: files only in iCloud (they'd be downloaded), on network drives, video and
@@ -76,7 +77,9 @@ pickers aren't supported. You can also drag from Tilde onto any dialog.
 window (`[preview] mode_width`, or Settings › Preview) and has the keyboard, so `j` / `k`
 scroll, `space` / `⇧space` page and `g` / `G` jump to the top or bottom; `f` gives it the
 whole window, hiding the list, and `f` again brings the list back (`f` from the list goes
-straight there). `p` again, `esc`, `h` or a click on the list goes back. PDFs,
+straight there). `v` swaps a rendered view (Markdown, HTML, an SVG…) for the file's whole
+source, highlighted by bat, and `v` again swaps back; from the list, `v` goes straight to
+the source. `p` again, `esc`, `h` or a click on the list goes back. PDFs,
 code, text and Markdown scroll in small steps; documents Quick Look draws (Office, Pages
 and so on) move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
 Quick Look window; with items on the shelf, or the preview pane turned off, `p` opens it
@@ -160,6 +163,28 @@ filters like `ext:pdf` keep the folder's order. Sorting by date added shows when
 arrived instead of when they changed.
 
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
+
+## Maths
+
+Markdown previews (`p`) typeset maths with [KaTeX](https://katex.org), as in Obsidian,
+GitHub and Jupyter:
+
+- `$…$` inline and `$$…$$` display, including blocks over several lines with blank lines
+  or lines starting with `-`, `+` or `>` inside (`aligned` steps), in quotes, callouts,
+  lists and table cells. `$5 and $10` stays text, as does anything in code.
+- `\( … \)` and `\[ … \]` (on lines of their own), ```` ```math ```` blocks and
+  GitHub's `` $`…`$ ``.
+- `align`, `cases`, `bmatrix`, `array`, `gather`, `alignat`, commutative diagrams
+  (`CD`), chemistry (`\ce{…}`), colours, `\cancel`, `\boxed`, and the rest of
+  [what KaTeX supports](https://katex.org/docs/supported). Equations aren't numbered
+  unless they have a `\tag{…}`, as in Obsidian.
+- `\newcommand`, `\def` and `\DeclareMathOperator` hold for the rest of the note.
+
+A formula KaTeX can't render shows as its TeX in red, with the error when you hover over
+it; the rest of the note renders. What doesn't work: `\label` and `\eqref`, siunitx,
+TikZ, the physics package's `\dv`/`\qty`, and `\href` or `\includegraphics` (turned
+off so a note can't link out or load anything). The pane's quick preview shows maths as
+its TeX.
 
 ## Search
 

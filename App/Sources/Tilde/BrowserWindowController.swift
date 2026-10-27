@@ -638,6 +638,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             // Straight into PREVIEW with the whole window.
             previewWhole = true
             quickLookKey()
+        case .previewSource:
+            // Straight into PREVIEW, showing the source.
+            quickLookKey()
+            if !preview.toggleSource() { NSSound.beep() }
         case .openWith: openWith()
         case .undo: undo()
         case .redo: redo()
@@ -1149,6 +1153,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .bottom: preview.scroll(.bottom)
         case .quickLook, .clear, .parent, .back, .search: endPreviewFocus()
         case .quickLookWindow: toggleQuickLook(nil)
+        case .previewSource:
+            if !preview.toggleSource() { NSSound.beep() }
         case .previewFull:
             previewWhole.toggle()
             preview.holdPosition()
@@ -2259,6 +2265,9 @@ extension BrowserWindowController {
         case .previewFull:
             previewWhole = true
             quickLookKey()
+        case .previewSource:
+            quickLookKey()
+            if !preview.toggleSource() { NSSound.beep() }
         case .undo: undo()
         case .redo: redo()
         case .history: showHistory()

@@ -10,6 +10,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   like GitHub, with tables, images, HTML, highlighted code and LaTeX maths, prepared in
   the background so it appears at once, and scrolls with `j` / `k`. `[preview] markdown`
   picks `web` (default), `native` or `quicklook`. Remote images aren't fetched.
+- **Maths typeset with KaTeX** in Markdown previews: `$…$`, `$$…$$` (blank lines and
+  `aligned` steps inside, in callouts, lists and tables), `\( \)`, `\[ \]`, ```` ```math ````,
+  chemistry, `\newcommand` across a note. Written for Obsidian: of 23,312 formulas in a
+  real vault, all but one render (that one is a TeX error). A formula that can't render
+  shows its TeX in red with the error on hover.
+- **Obsidian callouts** (`> [!note] Title`) show as titled, coloured boxes.
+- **Source view**: `v` in preview mode swaps a rendered Markdown, HTML or SVG file for its
+  whole source through bat, and back (`v` from the list goes straight there).
+- **HTML pages render** in preview mode, with their own styles, and scroll with `j` / `k`.
+  Scripts don't run and nothing is fetched from the network.
 - **Code and text in preview mode stay highlighted.** `p` shows the whole file through
   bat in a larger font, instead of Quick Look's plain text, and scrolls with `j` / `k`.
 
