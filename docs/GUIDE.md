@@ -13,7 +13,9 @@ says which one.
 ## Keys
 
 These are the defaults. Every GO and SELECT key can be changed in Settings › Keys (press
-the new key) or in the config file (see [CONFIG.md](CONFIG.md)).
+the new key) or in the config file (see [CONFIG.md](CONFIG.md)). The status bar shows the
+essentials; **`?`** (`⌃/` while typing in the bar, or a click on the status bar) lists every
+key for where you are, with the menu's shortcuts. Type to find one; `⏎` or a click runs it.
 
 | Mode | Keys |
 |---|---|
@@ -185,6 +187,26 @@ it; the rest of the note renders. What doesn't work: `\label` and `\eqref`, siun
 TikZ, the physics package's `\dv`/`\qty`, and `\href` or `\includegraphics` (turned
 off so a note can't link out or load anything). The pane's quick preview shows maths as
 its TeX.
+
+## Using the mouse
+
+Everything has a key, and nothing below changes them; it's there for when your hand is
+on the mouse:
+
+- **Click a folder in the path bar** to go there. Drop files on it to move them there
+  (copy with ⌥ held, or to another disk), as a drop on the list does.
+- **`⋯` on the row under the pointer** (it shows only while the mouse moves over the list,
+  and goes at the first key press) opens the row's actions, as a right-click does: open,
+  open with, preview, source, Quick Look, show in Finder, shelf, move to…, copy to…,
+  rename, tags, compress, copy path, trash. With items on the shelf, file actions apply to
+  the shelf, as their keys do.
+- **Right-click empty space** for the folder: new folder, edit as text, sort, hidden files,
+  open in Terminal, show in Finder, copy path, Clean Up.
+- **⌘-click** a row to put it on the shelf or take it off; **⇧-click** to shelve every row
+  from the highlighted one to the clicked one.
+- **Click the status bar**: on the left for the list of keys, on the right (the item count)
+  for the sort order, hidden files, and a jump to the Everywhere results.
+- **Hold a dragged file over a folder** and the folder opens, as in the Finder.
 
 ## Search
 

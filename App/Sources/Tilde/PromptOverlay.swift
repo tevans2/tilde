@@ -1,10 +1,22 @@
 import AppKit
 import TildeFFI
 
+/// One entry in the keys panel: what it does, its keys, and how to run it.
+struct CommandItem {
+    let label: String
+    let keys: String
+    let run: @MainActor () -> Void
+}
+
+struct CommandGroup {
+    let title: String
+    let items: [CommandItem]
+}
+
 /// A small panel over the window for one line of input: a folder picker (with fuzzy
-/// results) for move and copy, a plain text prompt for rename, new folder and tags, or a
-/// choice of a few answers by key (what to do about name clashes). `⏎` confirms, `esc`
-/// cancels.
+/// results) for move and copy, a plain text prompt for rename, new folder and tags, a
+/// choice of a few answers by key (what to do about name clashes), or the keys panel.
+/// `⏎` confirms, `esc` cancels.
 @MainActor
 final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     enum Kind {
@@ -15,7 +27,18 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         /// One of `options` (key, label), chosen by its key or a click; `⏎` picks the
         /// first. `onChoose` gets the option's index.
         case choice(options: [(key: String, label: String)], onChoose: (Int) -> Void)
+        /// Every key for where the window is, grouped: typing filters, `⏎` or a click runs
+        /// the entry (after the panel closes).
+        case commands(groups: [CommandGroup])
     }
+
+    /// The keys panel's rows: group titles and entries.
+    private enum CommandRow {
+        case header(String)
+        case item(CommandItem)
+    }
+
+    private var commandRows: [CommandRow] = []
 
     private let kind: Kind
     private let onClose: () -> Void
@@ -49,7 +72,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         self.title.stringValue = title
         build()
         switch kind {
-        case .destination:
+        case .destination, .commands:
             refreshResults()
         case let .text(initial, _, _):
             field.stringValue = initial
@@ -69,7 +92,14 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
     /// Has a list of results that up and down move through.
     var hasList: Bool {
-        if case .destination = kind { return true }
+        switch kind {
+        case .destination, .commands: true
+        default: false
+        }
+    }
+
+    private var isCommands: Bool {
+        if case .commands = kind { return true }
         return false
     }
 
@@ -103,6 +133,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         field.delegate = self
         field.placeholderString = customPlaceholder ?? {
             if case .destination = kind { return "Type a folder, or a path like ~/Documents" }
+            if case .commands = kind { return "Type to find a key or an action" }
             return ""
         }()
         hint.font = theme.small
@@ -112,6 +143,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             case .destination: return "↑↓ choose   ⏎ confirm   esc cancel"
             case .text: return "⏎ confirm   esc cancel"
             case .choice: return "press a key   esc cancel"
+            case .commands: return "↑↓ choose   ⏎ or click to run   esc close"
             }
         }()
         title.lineBreakMode = .byWordWrapping
@@ -131,6 +163,8 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         table.delegate = self
         table.target = self
         table.doubleAction = #selector(confirm)
+        // In the keys panel one click runs an entry, as a menu does.
+        if case .commands = kind { table.action = #selector(clicked) }
         scroll.documentView = table
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -146,7 +180,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         box.translatesAutoresizingMaskIntoConstraints = false
         addSubview(box)
 
-        let isText: Bool = { if case .destination = kind { return false }; return true }()
+        let isText = !hasList
         let isChoice: Bool = { if case .choice = kind { return true }; return false }()
         NSLayoutConstraint.activate([
             box.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -169,7 +203,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 6),
             scroll.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -6),
-            scroll.heightAnchor.constraint(equalToConstant: isText ? 0 : 8 * Theme.shared.rowHeight),
+            scroll.heightAnchor.constraint(equalToConstant: isText ? 0 : (isCommands ? 14 : 8) * Theme.shared.rowHeight),
             hint.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 6),
             hint.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
             hint.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
@@ -237,10 +271,39 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             onSubmit(text)
         case .choice:
             choose(0)
+        case .commands:
+            let row = table.selectedRow
+            guard row >= 0, row < commandRows.count, case let .item(item) = commandRows[row] else { return NSSound.beep() }
+            close()
+            item.run()
         }
     }
 
+    @objc private func clicked() {
+        let row = table.clickedRow
+        guard row >= 0, row < commandRows.count, case .item = commandRows[row] else { return }
+        table.selectRowIndexes([row], byExtendingSelection: false)
+        confirm()
+    }
+
     private func refreshResults() {
+        if case let .commands(groups) = kind {
+            // Every word typed must appear in the entry or its keys.
+            let words = field.stringValue.lowercased().split(separator: " ")
+            commandRows = groups.flatMap { group -> [CommandRow] in
+                let items = group.items.filter { item in
+                    let text = "\(item.label) \(item.keys)".lowercased()
+                    return words.allSatisfy { text.contains($0) }
+                }
+                return items.isEmpty ? [] : [.header(group.title)] + items.map(CommandRow.item)
+            }
+            table.reloadData()
+            if let first = commandRows.firstIndex(where: { if case .item = $0 { true } else { false } }) {
+                table.selectRowIndexes([first], byExtendingSelection: false)
+                table.scrollRowToVisible(0)
+            }
+            return
+        }
         guard case let .destination(search, _) = kind else { return }
         results = search(field.stringValue)
         table.reloadData()
@@ -273,6 +336,15 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
     }
 
     private func move(_ delta: Int) {
+        if isCommands {
+            // Over the group titles.
+            var row = table.selectedRow + delta
+            while row >= 0, row < commandRows.count, case .header = commandRows[row] { row += delta }
+            guard row >= 0, row < commandRows.count else { return }
+            table.selectRowIndexes([row], byExtendingSelection: false)
+            table.scrollRowToVisible(row == 1 ? 0 : row)
+            return
+        }
         guard !results.isEmpty else { return }
         let row = min(max(table.selectedRow + delta, 0), results.count - 1)
         table.selectRowIndexes([row], byExtendingSelection: false)
@@ -281,9 +353,64 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
     // MARK: Results table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { results.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { isCommands ? commandRows.count : results.count }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard isCommands else { return true }
+        if case .item = commandRows[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard isCommands, case .header = commandRows[row] else { return Theme.shared.rowHeight }
+        return Theme.shared.rowHeight * 0.85
+    }
+
+    /// An entry: what it does, and its keys on the right; or a group's title.
+    private func commandView(_ row: CommandRow) -> NSView {
+        let theme = Theme.shared
+        switch row {
+        case let .header(title):
+            let label = NSTextField(labelWithString: title.uppercased())
+            label.font = theme.badge
+            label.textColor = theme.colors.textDim
+            let box = NSView()
+            label.translatesAutoresizingMaskIntoConstraints = false
+            box.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 8),
+                label.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -3),
+            ])
+            return box
+        case let .item(item):
+            let label = NSTextField(labelWithString: item.label)
+            label.font = .systemFont(ofSize: theme.small.pointSize + 0.5)
+            label.textColor = theme.colors.text
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let keys = NSTextField(labelWithString: item.keys)
+            keys.font = theme.small
+            keys.textColor = theme.colors.match
+            keys.alignment = .right
+            keys.setContentCompressionResistancePriority(.required, for: .horizontal)
+            let box = NSView()
+            for v in [label, keys] {
+                v.translatesAutoresizingMaskIntoConstraints = false
+                box.addSubview(v)
+            }
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 16),
+                label.centerYAnchor.constraint(equalTo: box.centerYAnchor),
+                keys.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 12),
+                keys.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -10),
+                keys.centerYAnchor.constraint(equalTo: box.centerYAnchor),
+            ])
+            return box
+        }
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if isCommands { return commandView(commandRows[row]) }
         let label = NSTextField(labelWithString: "")
         label.lineBreakMode = .byTruncatingHead
         let d = results[row]

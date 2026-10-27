@@ -16,6 +16,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
   real vault, all but one render (that one is a TeX error). A formula that can't render
   shows its TeX in red with the error on hover.
 - **Obsidian callouts** (`> [!note] Title`) show as titled, coloured boxes.
+- **Fewer hints, every key a `?` away**: the status bar keeps the essentials; `?` (`⌃/` in
+  the bar, or a click on the status bar) lists every key for where you are, with the menu's
+  shortcuts. Type to find one; `⏎` or a click runs it.
+- **More for the mouse**, with no change to any key: click a folder in the path bar to go
+  there (or drop files on it), a `⋯` button on the row under the pointer, a fuller row
+  menu (move to, copy to, compress, shelf, source), a menu for empty space (new folder,
+  sort, hidden files, open in Terminal), ⌘/⇧-click to shelve rows, a click on the item
+  count for sort and hidden files, and folders that open when a drag is held over them.
 - **Source view**: `v` in preview mode swaps a rendered Markdown, HTML or SVG file for its
   whole source through bat, and back (`v` from the list goes straight there).
 - **HTML pages render** in preview mode, with their own styles, and scroll with `j` / `k`.

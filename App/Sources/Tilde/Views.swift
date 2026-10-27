@@ -5,11 +5,18 @@ import TildeFFI
 
 /// Breadcrumbs for the current folder followed by the search field. It's also the
 /// window's title bar: the window buttons sit at its leading edge (`leadingInset`).
+/// For the mouse, each folder in the crumbs can be clicked to go there, and files can be
+/// dropped on it.
 @MainActor
 final class PathBar: NSView {
     let field = FocusReportingField()
-    private let crumbs = NSTextField(labelWithString: "")
+    private let crumbs = NSStackView()
     private var crumbsLeading: NSLayoutConstraint!
+    /// A click on a folder in the crumbs.
+    var onNavigate: ((String) -> Void)?
+    /// What a drop of `info` on a folder would do, and doing it.
+    var dropOperation: ((NSDraggingInfo, String) -> NSDragOperation)?
+    var onDrop: ((NSDraggingInfo, String) -> Bool)?
 
     /// Room for the window buttons.
     var leadingInset: CGFloat = 0 {
@@ -21,10 +28,10 @@ final class PathBar: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        crumbs.lineBreakMode = .byTruncatingHead
-        crumbs.maximumNumberOfLines = 1
-        crumbs.usesSingleLineMode = true
-        crumbs.cell?.wraps = false
+        crumbs.orientation = .horizontal
+        crumbs.spacing = 0
+        crumbs.alignment = .centerY
+        crumbs.detachesHiddenViews = true
         crumbs.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         crumbs.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -53,55 +60,60 @@ final class PathBar: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func setFolder(_ path: String, home: String) {
-        var display = path
-        if path == home {
-            display = "~"
-        } else if path.hasPrefix(home + "/") {
-            display = "~" + path.dropFirst(home.count)
-        }
-        let parts = display.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        let s = NSMutableAttributedString()
+    /// Replaces the crumbs: text pieces, each with the folder it goes to (or none).
+    private func setCrumbs(_ pieces: [(text: String, path: String?, strong: Bool)], rootFirst: Bool = false) {
+        for v in crumbs.arrangedSubviews { v.removeFromSuperview() }
         let font = Theme.shared.bar
-        // Attributed strings ignore the field's line break mode; deep paths keep their end.
-        let truncate = NSMutableParagraphStyle()
-        truncate.lineBreakMode = .byTruncatingHead
         let c = Theme.shared.colors
-        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55), .paragraphStyle: truncate]
-        let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim, .paragraphStyle: truncate]
-        if display.hasPrefix("/") { s.append(NSAttributedString(string: "/", attributes: sep)) }
-        for part in parts {
-            s.append(NSAttributedString(string: part, attributes: seg))
-            s.append(NSAttributedString(string: " / ", attributes: sep))
+        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55)]
+        for (i, piece) in pieces.enumerated() {
+            let crumb = Crumb(path: piece.path, bar: self)
+            crumb.attributedTitle = NSAttributedString(string: piece.text, attributes: [
+                .font: font, .foregroundColor: piece.strong ? c.text : c.textDim,
+            ])
+            // The root is its own separator: "/ Volumes / …".
+            let slash = NSTextField(labelWithAttributedString: NSAttributedString(
+                string: rootFirst && i == 0 ? " " : " / ", attributes: sep))
+            for v in [crumb, slash] as [NSView] {
+                v.setContentCompressionResistancePriority(.required, for: .horizontal)
+                crumbs.addArrangedSubview(v)
+                // Deep paths keep their end: the root-most pieces give way first.
+                crumbs.setVisibilityPriority(NSStackView.VisibilityPriority(rawValue: Float(500 + i)), for: v)
+            }
         }
-        crumbs.attributedStringValue = s
+    }
+
+    func setFolder(_ path: String, home: String) {
+        var pieces: [(String, String?, Bool)] = []
+        var base: String
+        var rest: Substring
+        if path == home || path.hasPrefix(home + "/") {
+            pieces.append(("~", home, false))
+            base = home
+            rest = path.dropFirst(home.count)
+        } else {
+            pieces.append(("/", "/", false))
+            base = ""
+            rest = Substring(path)
+        }
+        for part in rest.split(separator: "/") {
+            base += "/" + part
+            pieces.append((String(part), base, false))
+        }
+        setCrumbs(pieces.map { (text: $0.0, path: $0.1, strong: false) }, rootFirst: pieces.first?.0 == "/")
+    }
+
+    /// A page that isn't a folder: "History /".
+    func setTitle(_ title: String) {
+        setCrumbs([(text: title, path: nil, strong: true)])
     }
 
     /// `@ Activity`, then the filter (`/ Downloaded`, `/ Inbox`).
-    /// A page that isn't a folder: "History /".
-    func setTitle(_ title: String) {
-        let font = Theme.shared.bar
-        let c = Theme.shared.colors
-        let s = NSMutableAttributedString(string: title, attributes: [.font: font, .foregroundColor: c.text])
-        s.append(NSAttributedString(string: " / ", attributes: [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55)]))
-        crumbs.attributedStringValue = s
-    }
-
     func setActivity(_ filter: ActivityFilter) {
-        let font = Theme.shared.bar
-        let c = Theme.shared.colors
-        let s = NSMutableAttributedString(string: "@ Activity", attributes: [.font: font, .foregroundColor: c.text])
-        let sep: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim.withAlphaComponent(0.55)]
-        let seg: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: c.textDim]
-        var parts: [String] = []
-        if filter.origin != .all { parts.append(Format.filterName(filter.origin)) }
-        if filter.inbox { parts.append("Inbox") }
-        for part in parts {
-            s.append(NSAttributedString(string: " / ", attributes: sep))
-            s.append(NSAttributedString(string: part, attributes: seg))
-        }
-        s.append(NSAttributedString(string: " / ", attributes: sep))
-        crumbs.attributedStringValue = s
+        var pieces: [(text: String, path: String?, strong: Bool)] = [(text: "@ Activity", path: nil, strong: true)]
+        if filter.origin != .all { pieces.append((text: Format.filterName(filter.origin), path: nil, strong: false)) }
+        if filter.inbox { pieces.append((text: "Inbox", path: nil, strong: false)) }
+        setCrumbs(pieces)
     }
 
     func applyTheme(_ theme: Theme) {
@@ -128,6 +140,70 @@ final class PathBar: NSView {
     }
 }
 
+/// One folder in the path bar: a click goes there; files dropped on it move (or copy) in.
+@MainActor
+private final class Crumb: NSButton {
+    let path: String?
+    private weak var bar: PathBar?
+    private var targeted = false {
+        didSet { needsDisplay = true }
+    }
+
+    init(path: String?, bar: PathBar) {
+        self.path = path
+        self.bar = bar
+        super.init(frame: .zero)
+        isBordered = false
+        setButtonType(.momentaryChange)
+        focusRingType = .none
+        refusesFirstResponder = true
+        if path != nil {
+            target = self
+            action = #selector(go)
+            registerForDraggedTypes([.fileURL])
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func resetCursorRects() {
+        if path != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    @objc private func go() {
+        if let path { bar?.onNavigate?(path) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if targeted {
+            Theme.shared.colors.selection.setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: -3, dy: 0), xRadius: 5, yRadius: 5).fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        let op = path.flatMap { bar?.dropOperation?(sender, $0) } ?? []
+        targeted = !op.isEmpty
+        return op
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        path.flatMap { bar?.dropOperation?(sender, $0) } ?? []
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        targeted = false
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        targeted = false
+        guard let path else { return false }
+        return bar?.onDrop?(sender, path) ?? false
+    }
+}
+
 /// A text field that reports when it becomes first responder.
 final class FocusReportingField: NSTextField {
     var onFocus: (() -> Void)?
@@ -142,9 +218,23 @@ final class FocusReportingField: NSTextField {
 // MARK: Results
 
 /// The results list. Reports focus and gives SELECT-mode key handling first refusal.
+///
+/// For the mouse (none of it shows while using keys): a `⋯` button on the row under the
+/// pointer opens that row's menu; ⌘-click and ⇧-click put rows on the shelf.
 final class ResultsTableView: NSTableView {
     var onFocus: (() -> Void)?
     var onKey: ((NSEvent) -> Bool)?
+    /// Whether a row can have the `⋯` button (not section headers).
+    var canHover: ((Int) -> Bool)?
+    /// The `⋯` button on a row was clicked; the menu shows under `button`.
+    var onMoreClick: ((Int, NSView) -> Void)?
+    /// ⌘-click (`extend` false) or ⇧-click (`extend` true) on a row.
+    var onShelfClick: ((Int, _ extend: Bool) -> Void)?
+    /// A drag left the list.
+    var onDragExit: (() -> Void)?
+    private let moreButton = NSButton()
+    private var hoverRow = -1
+    private var tracking: NSTrackingArea?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -159,6 +249,79 @@ final class ResultsTableView: NSTableView {
         focusRingType = .none
         columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         floatsGroupRows = false
+        moreButton.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Actions")
+        moreButton.isBordered = false
+        moreButton.imageScaling = .scaleProportionallyDown
+        moreButton.refusesFirstResponder = true
+        moreButton.target = self
+        moreButton.action = #selector(moreClicked)
+        moreButton.isHidden = true
+        moreButton.toolTip = "Actions (or right-click the row)"
+        addSubview(moreButton)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        showMoreButton(row: row(at: convert(event.locationInWindow, from: nil)))
+    }
+
+    /// The `⋯` button on `row`, as the pointer moving over it shows.
+    func showMoreButton(row: Int) {
+        guard row >= 0, canHover?(row) ?? true else { return hideMoreButton() }
+        guard row != hoverRow || moreButton.isHidden else { return }
+        hoverRow = row
+        let rect = rect(ofRow: row)
+        let size = min(rect.height - 6, 20)
+        moreButton.contentTintColor = Theme.shared.colors.textDim
+        moreButton.frame = NSRect(x: rect.maxX - size - 14, y: rect.midY - size / 2, width: size, height: size)
+        // Above the row views, which the table adds after it.
+        addSubview(moreButton, positioned: .above, relativeTo: nil)
+        moreButton.isHidden = false
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        hideMoreButton()
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        hideMoreButton()
+        super.scrollWheel(with: event)
+    }
+
+    /// The `⋯` button goes as soon as the keyboard is used.
+    func hideMoreButton() {
+        moreButton.isHidden = true
+        hoverRow = -1
+    }
+
+    @objc private func moreClicked() {
+        guard hoverRow >= 0 else { return }
+        onMoreClick?(hoverRow, moreButton)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0, flags.contains(.command) || flags.contains(.shift), let onShelfClick {
+            onShelfClick(row, flags.contains(.shift))
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        super.draggingExited(sender)
+        onDragExit?()
     }
 
     @available(*, unavailable)
@@ -195,6 +358,7 @@ final class ResultsTableView: NSTableView {
     }
 
     override func keyDown(with event: NSEvent) {
+        hideMoreButton()
         if onKey?(event) != true { super.keyDown(with: event) }
     }
 }
@@ -484,6 +648,10 @@ final class StatusBar: NSView {
     private let hints = NSTextField(labelWithString: "")
     private let right = NSTextField(labelWithString: "")
     private var flashWork: DispatchWorkItem?
+    /// A click on the mode and hints: the keys panel.
+    var onHelp: (() -> Void)?
+    /// A click on the summary on the right, with the point to show a menu at.
+    var onSummaryClick: ((NSPoint) -> Void)?
     /// A running operation ("Copying 2/5 · file.dmg"); shown instead of the summary.
     private var activity: String?
     private var lastSummary = ""
@@ -523,6 +691,22 @@ final class StatusBar: NSView {
 
     private var mode: Mode = .go
 
+    // The keys panel and the summary's menu are for the mouse: nothing changes for keys.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if right.frame.insetBy(dx: -6, dy: -6).contains(point) {
+            onSummaryClick?(NSPoint(x: right.frame.minX, y: right.frame.maxY + 4))
+        } else if point.x < max(hints.frame.maxX, pillBackground.frame.maxX) + 8, mode != .edit {
+            onHelp?()
+        }
+    }
+
+    override func resetCursorRects() {
+        for view in [pillBackground, hints, right] as [NSView] {
+            addCursorRect(view.frame, cursor: .pointingHand)
+        }
+    }
+
     func applyTheme(_ theme: Theme) {
         modePill.font = theme.badge
         hints.font = theme.small
@@ -539,50 +723,38 @@ final class StatusBar: NSView {
                 return key.isEmpty ? nil : "\(key) \(label)"
             }.joined(separator: gap)
         }
+        let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select))"
+        // The essentials; `?` (or a click here) lists every key.
+        let more = keys.key(.help, in: mode == .go ? .go : .select)
+        let help = more.isEmpty ? "" : "   \(more) keys"
         switch mode {
         case .select where inPreview:
             modePill.stringValue = "PREVIEW"
-            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) scroll   space page   \(keys.key(.top, in: .select)) \(keys.key(.bottom, in: .select)) top / bottom   \(keys.key(.previewFull, in: .select)) whole window   \(keys.key(.previewSource, in: .select)) source   \(keys.key(.quickLookWindow, in: .select)) Quick Look   \(keys.key(.quickLook, in: .select)) or esc back"
+            hints.stringValue = "\(move) scroll   " + hint([(.previewSource, "source"), (.previewFull, "whole window"), (.quickLook, "back")]) + help
         case .select where inCleanup != nil:
             modePill.stringValue = "CLEAN UP"
-            let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move"
-            let back = "\(keys.key(.parent, in: .select)) back"
             switch inCleanup! {
             case .categories:
-                hints.stringValue = "\(move)   \(keys.key(.enter, in: .select)) open   r look again   \(keys.key(.cleanup, in: .select)) or esc close"
-            case .items:
-                hints.stringValue = "\(move)   " + hint([
-                    (.shelf, "collect"), (.shelfAll, "all"), (.trash, "trash"), (.move, "move"),
-                    (.hide, "never suggest"), (.quickLook, "preview"),
-                ]) + "   ⏎ show in folder   \(back)"
-            case .trash:
-                hints.stringValue = "\(move)   " + hint([(.trash, "empty the Trash"), (.shelf, "collect"), (.move, "move out"), (.quickLook, "preview")])
-                    + "   \(back)"
+                hints.stringValue = "\(move) move   " + hint([(.enter, "open"), (.cleanup, "close")]) + help
+            case .items, .trash:
+                hints.stringValue = "\(move) move   " + hint([(.shelf, "collect"), (.trash, "trash"), (.parent, "back")]) + help
             }
         case .select where inHistory:
             modePill.stringValue = "HISTORY"
-            hints.stringValue = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select)) move   u undo   r redo   ⏎ go to that state   esc back"
+            hints.stringValue = "\(move) move   u undo   r redo   ⏎ go to that state   esc back" + help
         case .select where inActivity:
             modePill.stringValue = "SELECT"
-            hints.stringValue = hint([
-                (.filterAll, "all"), (.filterDownloads, "downloads"), (.filterScreenshots, "screenshots"),
-                (.filterEdited, "edited"), (.filterAirdrop, "airdrop"), (.inbox, "inbox"),
-            ], gap: "  ") + "   " + hint([(.enter, "reveal"), (.move, "move"), (.trash, "trash"), (.activity, "back")])
+            hints.stringValue = "\(move) move   " + hint([(.filterDownloads, "downloads"), (.inbox, "inbox"), (.enter, "reveal"), (.activity, "back")]) + help
         case .go:
             modePill.stringValue = "GO"
-            let move = [keys.keys(.down, in: .go), keys.keys(.up, in: .go)].filter { !$0.isEmpty }.joined(separator: " ")
-            hints.stringValue = (move.isEmpty ? "" : "\(move) move   ")
-                + hint([(.open, "open"), (.enter, "go in")], all: true)
-                + "   ⌫ \(keys.keys(.parent, in: .go)) up   "
-                + hint([(.selectMode, "select")])
+            let goMove = [keys.key(.down, in: .go), keys.key(.up, in: .go)].filter { !$0.isEmpty }.joined(separator: " ")
+            hints.stringValue = (goMove.isEmpty ? "" : "\(goMove) move   ") + hint([(.open, "open"), (.enter, "go in"), (.selectMode, "select")]) + help
         case .select:
             modePill.stringValue = "SELECT"
-            let move = "\(keys.key(.down, in: .select)) \(keys.key(.up, in: .select))"
             let inOut = "\(keys.key(.parent, in: .select)) \(keys.key(.enter, in: .select))"
             hints.stringValue = "\(move) move   \(inOut) out / in   " + hint([
-                (.shelf, "collect"), (.move, "move"), (.copy, "copy"), (.trash, "trash"), (.tag, "tag"),
-                (.rename, "rename"), (.edit, "edit"), (.undo, "undo"), (.search, "search"),
-            ])
+                (.shelf, "collect"), (.move, "move"), (.trash, "trash"), (.search, "search"),
+            ]) + help
         case .edit:
             modePill.stringValue = "EDIT"
             hints.stringValue = "rename: edit a name   trash: delete the line   move: type a path   copy: duplicate a line   new: add a line (end with / for a folder)"

@@ -90,6 +90,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// Activity is showing (or has been asked for). `currentFolder` is where it was opened
     /// from, and where `⌫` / `h` / `@` go back to.
     private var inActivity = false
+    /// A drag held over a folder row opens it after a moment.
+    private var springWork: DispatchWorkItem?
+    private var springRow: Int?
     private var activityFilter = ActivityFilter(origin: .all, inbox: false)
     /// From the latest results: inbox count and date headings.
     private var activity: ActivityInfo?
@@ -159,7 +162,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         // GO keys are caught before the search field, whose text editing would otherwise
         // take them (⌃h as delete, ⌃k as kill-line, tab to the next field).
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            let handled = MainActor.assumeIsolated { self?.handleWindowKey(event) ?? false }
+            let handled = MainActor.assumeIsolated {
+                // Mouse-only controls go as soon as a key is pressed.
+                self?.tableView.hideMoreButton()
+                return self?.handleWindowKey(event) ?? false
+            }
             return handled ? nil : event
         }
         // Some Quick Look previews (web-based ones, like Markdown extensions) take the
@@ -182,6 +189,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
         pathBar.field.delegate = self
         pathBar.field.onFocus = { [weak self] in self?.modeDidFocus(.go) }
+        // The mouse: a folder in the crumbs opens it, and takes files dropped on it.
+        pathBar.onNavigate = { [weak self] folder in
+            guard let self, self.mode != .edit else { return }
+            if folder != self.currentFolder || self.inActivity { self.open(folder: folder, select: nil) }
+        }
+        pathBar.dropOperation = { [weak self] info, folder in
+            guard let self, self.mode != .edit, self.overlay == nil else { return [] }
+            return self.dragOperation(info, into: folder)
+        }
+        pathBar.onDrop = { [weak self] info, folder in self?.dropFiles(info, into: folder) ?? false }
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -201,6 +218,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         let rowMenu = NSMenu()
         rowMenu.delegate = self
         tableView.menu = rowMenu
+        tableView.canHover = { [weak self] row in self?.results.row(row) != nil }
+        tableView.onMoreClick = { [weak self] row, button in
+            guard let self else { return }
+            let menu = NSMenu()
+            self.buildMenu(menu, row: row)
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.maxY + 2), in: button)
+        }
+        tableView.onShelfClick = { [weak self] row, extend in self?.shelfClick(row: row, extend: extend) }
+        tableView.onDragExit = { [weak self] in self?.cancelSpring() }
 
         let scroll = listScroll
         scroll.documentView = tableView
@@ -282,6 +308,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         cleanupEvents.onChange = { [weak self] _ in self?.cleanupChanged() }
         historyView.isHidden = true
         historyView.onClose = { [weak self] in self?.closeHistory() }
+        historyView.onHelp = { [weak self] in self?.showKeys() }
+        statusBar.onHelp = { [weak self] in self?.showKeys() }
+        statusBar.onSummaryClick = { [weak self] point in self?.showSummaryMenu(at: point) }
         historyView.onUndo = { [weak self] e in self?.undoEntry(e) }
         historyView.onRedo = { [weak self] e in self?.redoEntry(e) }
         historyView.onGoto = { [weak self] e in self?.gotoEntry(e) }
@@ -632,6 +661,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .sort: chooseSort()
         case .history: showHistory()
         case .cleanup: showCleanup()
+        case .help: showKeys()
         case .quickLook: quickLookKey()
         case .quickLookWindow: toggleQuickLook(nil)
         case .previewFull:
@@ -1081,6 +1111,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .back: jump(back: true)
         case .forward: jump(back: false)
         case .selectMode: setMode(.select)
+        case .help: showKeys()
         default: return false
         }
         return true
@@ -1155,6 +1186,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .quickLookWindow: toggleQuickLook(nil)
         case .previewSource:
             if !preview.toggleSource() { NSSound.beep() }
+        case .help: showKeys()
         case .previewFull:
             previewWhole.toggle()
             preview.holdPosition()
@@ -1314,22 +1346,55 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
         _ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int,
         proposedDropOperation dropOperation: NSTableView.DropOperation
     ) -> NSDragOperation {
-        guard let target = dropTarget(row: row, on: dropOperation) else { return [] }
+        guard let target = dropTarget(row: row, on: dropOperation) else {
+            cancelSpring()
+            return []
+        }
         if target.row == nil { tableView.setDropRow(-1, dropOperation: .on) }
-        return dragOperation(info, into: target.folder)
+        let operation = dragOperation(info, into: target.folder)
+        // Held over a folder, the drag opens it, as in the Finder.
+        if let row = target.row, !operation.isEmpty { springOpen(row: row, folder: target.folder) } else { cancelSpring() }
+        return operation
+    }
+
+    /// Opens `folder` if the drag stays on its row for a moment.
+    private func springOpen(row: Int, folder: String) {
+        guard springRow != row else { return }
+        cancelSpring()
+        springRow = row
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.springRow = nil
+            self.open(folder: folder)
+        }
+        springWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
+    }
+
+    func cancelSpring() {
+        springWork?.cancel()
+        springWork = nil
+        springRow = nil
     }
 
     func tableView(
         _ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int,
         dropOperation: NSTableView.DropOperation
     ) -> Bool {
+        cancelSpring()
         guard let target = dropTarget(row: row, on: dropOperation) else { return false }
-        let operation = dragOperation(info, into: target.folder)
+        return dropFiles(info, into: target.folder)
+    }
+
+    /// Moves or copies dropped files into `destination` (the list, a folder row, or a folder
+    /// in the path bar), asking about name clashes.
+    func dropFiles(_ info: NSDraggingInfo, into destination: String) -> Bool {
+        let operation = dragOperation(info, into: destination)
         let sources = droppedPaths(info)
         guard !operation.isEmpty, !sources.isEmpty else { return false }
         let copy = operation == .copy
-        let folder = target.folder == currentFolder ? "this folder" : "“\((target.folder as NSString).lastPathComponent)”"
-        let request = OpRequest(kind: copy ? .copy : .move, sources: sources, destination: target.folder, clash: .keepBoth)
+        let folder = destination == currentFolder ? "this folder" : "“\((destination as NSString).lastPathComponent)”"
+        let request = OpRequest(kind: copy ? .copy : .move, sources: sources, destination: destination, clash: .keepBoth)
         // After the drag ends, so a clash question can take the keyboard.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1692,7 +1757,15 @@ extension BrowserWindowController: OpsEventsDelegate {
         prompt.onCloseExtra = { [weak self] in
             guard let self else { return }
             self.overlay = nil
-            if self.inHistory { self.historyView.focus() } else if self.inCleanup { self.setMode(.select) } else { self.setMode(restore) }
+            if self.previewFocused {
+                self.focusPreviewContent()
+            } else if self.inHistory {
+                self.historyView.focus()
+            } else if self.inCleanup {
+                self.setMode(.select)
+            } else {
+                self.setMode(restore)
+            }
         }
     }
 
@@ -2066,40 +2139,104 @@ extension BrowserWindowController: QLPreviewPanelDataSource, QLPreviewPanelDeleg
 }
 
 extension BrowserWindowController: NSMenuDelegate {
-    /// The right-click menu, for the clicked row (which becomes the highlighted one).
+    /// The right-click menu: for the clicked row (which becomes the highlighted one), or
+    /// for the folder when the click is on empty space.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        buildMenu(menu, row: tableView.clickedRow)
+    }
+
+    /// A row's menu (right-click or its `⋯` button), or the folder's for empty space.
+    func buildMenu(_ menu: NSMenu, row: Int) {
         menu.removeAllItems()
-        let row = tableView.clickedRow
-        guard row >= 0, let r = results.row(row) else { return }
+        guard row >= 0, let r = results.row(row) else { return folderMenu(menu) }
         if tableView.selectedRow != row { select(row: row) }
         let url = URL(fileURLWithPath: r.path)
         func add(_ title: String, _ action: @escaping () -> Void) {
-            let item = menu.addItem(withTitle: title, action: #selector(MenuAction.run), keyEquivalent: "")
-            let target = MenuAction(action)
-            item.target = target
-            item.representedObject = target
+            menu.addItem(MenuAction.item(title, action))
         }
+        // What file actions apply to, as with their keys: the shelf if it has anything.
+        let onShelf = shelf.count
+        let what = onShelf > 0 ? " \(onShelf) Shelved Item\(onShelf == 1 ? "" : "s")" : ""
         add("Open") { [weak self] in self?.activateHighlighted() }
         let withItem = menu.addItem(withTitle: "Open With", action: nil, keyEquivalent: "")
         let withMenu = NSMenu()
         for app in Self.apps(toOpen: url) {
-            let item = withMenu.addItem(withTitle: app.isDefault ? "\(app.name) (default)" : app.name,
-                                        action: #selector(MenuAction.run), keyEquivalent: "")
-            let target = MenuAction { [weak self] in self?.open([url], with: app.url) }
-            item.target = target
-            item.representedObject = target
+            let item = MenuAction.item(app.isDefault ? "\(app.name) (default)" : app.name) { [weak self] in
+                self?.open([url], with: app.url)
+            }
             item.image = NSWorkspace.shared.icon(forFile: app.url.path)
             item.image?.size = NSSize(width: 16, height: 16)
+            withMenu.addItem(item)
         }
         withItem.submenu = withMenu
+        add("Preview") { [weak self] in self?.quickLookKey() }
+        add("Preview Source") { [weak self] in
+            guard let self else { return }
+            self.quickLookKey()
+            if !self.preview.toggleSource() { NSSound.beep() }
+        }
         add("Quick Look") { [weak self] in self?.toggleQuickLook(nil) }
         add("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
         menu.addItem(.separator())
-        add("Copy Path") { [weak self] in self?.copyPaths() }
-        add("Tags…") { [weak self] in self?.tagTargets() }
+        add(shelfSet.contains(r.path) ? "Remove from Shelf" : "Add to Shelf") { [weak self] in
+            guard let self else { return }
+            self.setShelf(self.shelfSet.contains(r.path) ? self.shelf.filter { $0 != r.path } : self.shelf + [r.path])
+        }
+        add("Move\(what) to…") { [weak self] in self?.pickDestination(copy: false) }
+        add("Copy\(what) to…") { [weak self] in self?.pickDestination(copy: true) }
         add("Rename…") { [weak self] in self?.renameHighlighted() }
+        add("Tags…") { [weak self] in self?.tagTargets() }
+        add("Compress\(what)") { [weak self] in self?.compressTargets() }
+        add("Copy Path") { [weak self] in self?.copyPaths() }
         menu.addItem(.separator())
-        add("Move to Trash") { [weak self] in self?.trashTargets() }
+        add("Move\(what) to Trash") { [weak self] in self?.trashTargets() }
+    }
+
+    /// Right-click on empty space: things to do in the folder.
+    private func folderMenu(_ menu: NSMenu) {
+        guard !inActivity, !inHistory, !inCleanup else { return }
+        let folder = URL(fileURLWithPath: currentFolder)
+        func add(_ title: String, _ action: @escaping () -> Void) {
+            menu.addItem(MenuAction.item(title, action))
+        }
+        add("New Folder…") { [weak self] in self?.newFolder(nil) }
+        add("Edit Folder as Text") { [weak self] in
+            self?.enterEdit(focus: nil, selectName: false, newLine: false, quick: false)
+        }
+        menu.addItem(.separator())
+        let sortItem = menu.addItem(withTitle: "Sort By", action: nil, keyEquivalent: "")
+        let sortMenu = NSMenu()
+        for (i, entry) in Self.sortKeys.enumerated() {
+            let item = NSMenuItem(title: entry.label, action: #selector(sortByMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = i
+            item.state = sort.by == entry.0 ? .on : .off
+            sortMenu.addItem(item)
+        }
+        sortMenu.addItem(.separator())
+        let reverse = NSMenuItem(title: "Reverse Order", action: #selector(sortByMenu(_:)), keyEquivalent: "")
+        reverse.target = self
+        reverse.tag = -1
+        sortMenu.addItem(reverse)
+        sortItem.submenu = sortMenu
+        let hidden = NSMenuItem(title: "Show Hidden Files", action: #selector(toggleHidden(_:)), keyEquivalent: "")
+        hidden.target = self
+        hidden.state = showHidden ? .on : .off
+        menu.addItem(hidden)
+        menu.addItem(.separator())
+        add("Open in Terminal") {
+            let config = NSWorkspace.OpenConfiguration()
+            if let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+                NSWorkspace.shared.open([folder], withApplicationAt: terminal, configuration: config)
+            }
+        }
+        add("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+        add("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(folder.path, forType: .string)
+        }
+        menu.addItem(.separator())
+        add("Clean Up…") { [weak self] in self?.showCleanup() }
     }
 }
 
@@ -2109,6 +2246,15 @@ final class MenuAction: NSObject {
     private let action: () -> Void
     init(_ action: @escaping () -> Void) { self.action = action }
     @objc func run() { action() }
+
+    /// A menu item that runs `action`.
+    static func item(_ title: String, _ action: @escaping () -> Void) -> NSMenuItem {
+        let target = MenuAction(action)
+        let item = NSMenuItem(title: title, action: #selector(run), keyEquivalent: "")
+        item.target = target
+        item.representedObject = target
+        return item
+    }
 }
 
 // MARK: Clean Up
@@ -2274,6 +2420,7 @@ extension BrowserWindowController {
         case .activity: showActivity(record: true)
         case .home: open(folder: engine.homeDir())
         case .search: closeCleanup(); setMode(.go)
+        case .help: showKeys()
         default: statusBar.flash("That does nothing in Clean Up.")
         }
         updateChrome()
@@ -2457,5 +2604,198 @@ extension BrowserWindowController {
         } catch {
             statusBar.flash("Couldn't update the config: \(error.message)")
         }
+    }
+}
+
+// MARK: Keys panel
+
+extension BrowserWindowController {
+    /// `?` (or a click on the status bar): every key for where the window is, grouped,
+    /// with the menu's shortcuts. Running an entry presses its key once the panel closes,
+    /// so it does exactly what the key does here.
+    func showKeys() {
+        guard let window, overlay == nil else { return }
+        let keys = Keymap.shared
+        let all = Dictionary(keys.all(in: .select).map { ($0.action, $0) }, uniquingKeysWith: { a, _ in a })
+        let allGo = Dictionary(keys.all(in: .go).map { ($0.action, $0) }, uniquingKeysWith: { a, _ in a })
+
+        /// A keymap action, labelled by its description (or `label`), run by its first key.
+        func item(_ action: KeyAction, _ label: String? = nil, in mode: Mode = .select) -> CommandItem? {
+            guard let binding = (mode == .go ? allGo : all)[action.rawValue], !binding.keys.isEmpty else { return nil }
+            return CommandItem(
+                label: label ?? binding.description, keys: binding.keys.map(\.display).joined(separator: " ")
+            ) { [weak window] in
+                if let window, let e = keys.event(for: action, in: mode, window: window) { NSApp.sendEvent(e) }
+            }
+        }
+        /// A key that isn't in the keymap (a page's own keys).
+        func fixed(_ label: String, _ display: String, key: String) -> CommandItem {
+            CommandItem(label: label, keys: display) { [weak window] in
+                if let window, let e = Keymap.event(key: key, window: window) { NSApp.sendEvent(e) }
+            }
+        }
+        func group(_ title: String, _ items: [CommandItem?]) -> CommandGroup {
+            CommandGroup(title: title, items: items.compactMap { $0 })
+        }
+
+        var groups: [CommandGroup] = []
+        if previewFocused {
+            groups = [group("Preview mode", [
+                item(.down, "Scroll down"), item(.up, "Scroll up"), fixed("Page down", "space", key: "space"),
+                item(.top, "To the top"), item(.bottom, "To the bottom"),
+                item(.previewSource, "Source (again for the rendered view)"), item(.previewFull, "Whole window (again for the list)"),
+                item(.quickLookWindow, "Quick Look window"), item(.quickLook, "Back to the list"),
+            ])]
+        } else if inHistory {
+            groups = [group("History", [
+                item(.down, "Next operation"), item(.up, "Previous operation"),
+                fixed("Undo this operation (and what depends on it)", "u", key: "u"),
+                fixed("Redo this operation (and what it builds on)", "r", key: "r"),
+                fixed("Put files back as they were after this operation", "⏎", key: "return"),
+                fixed("Back", "esc", key: "esc"),
+            ])]
+        } else if inCleanup {
+            groups = [group("Clean Up", [
+                item(.down, "Next"), item(.up, "Previous"), item(.enter, "Open the category, or show the item in its folder"),
+                item(.parent, "Back to the categories"), fixed("Look again", "r", key: "r"),
+                item(.shelf, "Collect"), item(.shelfAll, "Collect all"), item(.trash, "Trash (or empty the Trash)"),
+                item(.move), item(.hide, "Never suggest this again"), item(.quickLook), item(.cleanup, "Close Clean Up"),
+            ])]
+        } else if mode == .go {
+            groups = [group("Typing in the bar", [
+                item(.down, in: .go), item(.up, in: .go), item(.open, in: .go), item(.enter, in: .go),
+                item(.parent, in: .go), item(.back, in: .go), item(.forward, in: .go), item(.selectMode, in: .go),
+            ])]
+        } else {
+            if inActivity {
+                groups.append(group("Activity", [
+                    item(.filterAll), item(.filterDownloads), item(.filterScreenshots), item(.filterEdited),
+                    item(.filterAirdrop), item(.inbox), item(.activity, "Back"),
+                ]))
+            }
+            groups += [
+                group("Move around", [
+                    item(.down), item(.up), item(.parent), item(.enter), item(.open), item(.top), item(.bottom),
+                    item(.back), item(.forward), item(.home), item(.search),
+                ]),
+                group("Files", [
+                    item(.shelf), item(.shelfAll), item(.clear), item(.move), item(.copy), item(.trash), item(.rename),
+                    item(.tag), item(.newFolder), item(.newItem), item(.edit), item(.compress), item(.copyPath),
+                    item(.openWith), item(.hide),
+                ]),
+                group("Preview", [
+                    item(.quickLook, "Preview mode: the full preview, scrollable"), item(.previewFull, "Preview mode with the whole window"),
+                    item(.previewSource, "Preview mode showing the source"), item(.quickLookWindow, "Quick Look window"),
+                ]),
+                group("Undo and views", [
+                    item(.undo), item(.redo), item(.history), item(.sort), item(.activity), item(.cleanup),
+                ]),
+            ]
+        }
+        groups.append(CommandGroup(title: "Menu", items: menuCommands()))
+        showOverlay(PromptOverlay(title: "Keys", kind: .commands(groups: groups.filter { !$0.items.isEmpty })))
+    }
+
+    /// The menu bar's items that have a shortcut and can run now.
+    private func menuCommands() -> [CommandItem] {
+        var out: [CommandItem] = []
+        func walk(_ menu: NSMenu, _ path: String) {
+            menu.update()
+            for entry in menu.items where !entry.isSeparatorItem && !entry.isHidden {
+                if let sub = entry.submenu {
+                    walk(sub, entry.title)
+                    continue
+                }
+                guard entry.isEnabled, !entry.keyEquivalent.isEmpty, let action = entry.action else { continue }
+                let target = entry.target
+                out.append(CommandItem(label: entry.title, keys: Self.display(entry)) { [weak entry] in
+                    NSApp.sendAction(action, to: target, from: entry)
+                })
+            }
+        }
+        for top in NSApp.mainMenu?.items ?? [] {
+            if let sub = top.submenu { walk(sub, top.title) }
+        }
+        return out
+    }
+
+    /// A menu item's shortcut as the menu shows it: ⇧⌘N.
+    private static func display(_ item: NSMenuItem) -> String {
+        let m = item.keyEquivalentModifierMask
+        var s = ""
+        if m.contains(.control) { s += "⌃" }
+        if m.contains(.option) { s += "⌥" }
+        if m.contains(.shift) || item.keyEquivalent != item.keyEquivalent.lowercased() { s += "⇧" }
+        if m.contains(.command) { s += "⌘" }
+        let key: String = switch item.keyEquivalent {
+        case "\u{8}", "\u{7f}": "⌫"
+        case "\r": "↩"
+        case " ": "Space"
+        default: item.keyEquivalent.uppercased()
+        }
+        return s + key
+    }
+}
+
+// MARK: Status bar menu
+
+extension BrowserWindowController {
+    /// A click on the status bar's summary: the folder's order, hidden files, and a jump to
+    /// the Everywhere results when a search has some. The same as View › Sort By and
+    /// `s`, for the mouse.
+    func showSummaryMenu(at point: NSPoint) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if mode == .go || results.hereCount > 0,
+           let row = (0..<results.tableRows).first(where: { results.header($0)?.0 == "Everywhere" }) {
+            menu.addItem(MenuAction.item("Go to the Everywhere results") { [weak self] in
+                guard let self else { return }
+                self.setMode(.select)
+                self.select(row: row + 1)
+            })
+            menu.addItem(.separator())
+        }
+        if !inActivity, !inHistory, !inCleanup {
+            let title = NSMenuItem(title: "Sort by", action: nil, keyEquivalent: "")
+            title.isEnabled = false
+            menu.addItem(title)
+            for (i, entry) in Self.sortKeys.enumerated() {
+                let item = NSMenuItem(title: entry.label, action: #selector(sortByMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = i
+                item.state = sort.by == entry.0 ? .on : .off
+                item.indentationLevel = 1
+                menu.addItem(item)
+            }
+            let reverse = NSMenuItem(title: "Reverse Order", action: #selector(sortByMenu(_:)), keyEquivalent: "")
+            reverse.target = self
+            reverse.tag = -1
+            reverse.indentationLevel = 1
+            menu.addItem(reverse)
+            menu.addItem(.separator())
+        }
+        let hidden = NSMenuItem(title: "Show Hidden Files", action: #selector(toggleHidden(_:)), keyEquivalent: "")
+        hidden.target = self
+        hidden.state = showHidden ? .on : .off
+        menu.addItem(hidden)
+        menu.popUp(positioning: nil, at: point, in: statusBar)
+    }
+}
+
+// MARK: Shelf by mouse
+
+extension BrowserWindowController {
+    /// ⌘-click puts a row on the shelf or takes it off; ⇧-click shelves every row from the
+    /// highlighted one to the clicked one. The clicked row becomes the highlighted one.
+    func shelfClick(row: Int, extend: Bool) {
+        guard mode != .edit, overlay == nil, !inHistory, results.row(row) != nil else { return }
+        if extend, tableView.selectedRow >= 0 {
+            let range = min(tableView.selectedRow, row)...max(tableView.selectedRow, row)
+            let paths = range.compactMap { results.row($0)?.path }.filter { !shelfSet.contains($0) }
+            setShelf(shelf + paths)
+        } else if let path = results.row(row)?.path {
+            setShelf(shelfSet.contains(path) ? shelf.filter { $0 != path } : shelf + [path])
+        }
+        if tableView.selectedRow != row { select(row: row) }
     }
 }

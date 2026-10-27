@@ -80,7 +80,9 @@ everything), the folder permissions and the editor for EDIT. Then:
 | **SELECT** (the list) | Acting on files | `j` `k` move · `h` `l` out / in · `x` shelf · `m` move · `c` copy · `d` trash · `r` rename · `e` EDIT · `p` preview · `u` undo · `/` → GO |
 | Anywhere | | `⌃o` / `⌃i` back / forward · `⌘,` Settings · `⌘N` new window |
 
-Every key can be changed in Settings › Keys.
+Press `?` for every key where you are (or click the status bar); every key can be changed
+in Settings › Keys. With a mouse: click folders in the path bar, right-click rows or empty
+space, or use the `⋯` on a row.
 
 - **[The guide](docs/GUIDE.md)** covers every key and feature.
 - **[Configuration](docs/CONFIG.md)** covers the config file, themes and keymaps.

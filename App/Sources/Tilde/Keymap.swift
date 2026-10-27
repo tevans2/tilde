@@ -18,6 +18,7 @@ enum KeyAction: String {
     case quickLookWindow = "quick_look_window"
     case previewFull = "preview_full"
     case previewSource = "preview_source"
+    case help
     case openWith = "open_with"
     case filterAll = "filter_all"
     case filterDownloads = "filter_downloads"
@@ -84,6 +85,44 @@ final class Keymap {
 
     private func bindings(_ mode: Mode) -> [ActionKeys] {
         mode == .go ? info.go : info.select
+    }
+
+    /// The actions of `mode` with their descriptions and keys, in the keymap's order.
+    func all(in mode: Mode) -> [ActionKeys] {
+        bindings(mode)
+    }
+
+    /// The first key of `action` as a key press in `window`, to run the action as if it
+    /// were typed (the keys panel). `nil` when unbound.
+    func event(for action: KeyAction, in mode: Mode, window: NSWindow) -> NSEvent? {
+        guard let chord = bindings(mode).first(where: { $0.action == action.rawValue })?.keys.first else { return nil }
+        return Self.event(key: chord.key, ctrl: chord.ctrl, alt: chord.alt, shift: chord.shift, window: window)
+    }
+
+    /// A key press: `key` is a character or one of the names (`return`, `down`…).
+    static func event(key: String, ctrl: Bool = false, alt: Bool = false, shift: Bool = false, window: NSWindow) -> NSEvent? {
+        let named: [String: (UInt16, String)] = [
+            "down": (125, String(UnicodeScalar(NSDownArrowFunctionKey)!)),
+            "up": (126, String(UnicodeScalar(NSUpArrowFunctionKey)!)),
+            "left": (123, String(UnicodeScalar(NSLeftArrowFunctionKey)!)),
+            "right": (124, String(UnicodeScalar(NSRightArrowFunctionKey)!)),
+            "return": (36, "\r"), "tab": (48, "\t"), "esc": (53, "\u{1b}"), "space": (49, " "),
+            "backspace": (51, "\u{7f}"), "delete": (117, String(UnicodeScalar(NSDeleteFunctionKey)!)),
+            "home": (115, String(UnicodeScalar(NSHomeFunctionKey)!)), "end": (119, String(UnicodeScalar(NSEndFunctionKey)!)),
+            "pageup": (116, String(UnicodeScalar(NSPageUpFunctionKey)!)),
+            "pagedown": (121, String(UnicodeScalar(NSPageDownFunctionKey)!)),
+        ]
+        var flags: NSEvent.ModifierFlags = []
+        if ctrl { flags.insert(.control) }
+        if alt { flags.insert(.option) }
+        if shift { flags.insert(.shift) }
+        // Characters carry no key code; the keymap matches them by character.
+        let (code, chars) = named[key] ?? (0, key)
+        if [115, 116, 117, 119, 121, 123, 124, 125, 126].contains(code) { flags.insert(.function) }
+        return NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: chars, charactersIgnoringModifiers: chars,
+            isARepeat: false, keyCode: code)
     }
 
     // MARK: Matching

@@ -14,6 +14,8 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onRedo: ((HistoryEntry) -> Void)?
     var onGoto: ((HistoryEntry?) -> Void)?
     var onClose: (() -> Void)?
+    /// `?`: the keys panel.
+    var onHelp: (() -> Void)?
     var onSelect: (() -> Void)?
 
     private(set) var rows: [HistoryGraph.Row] = []
@@ -123,6 +125,7 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             if let e = selectedRow?.entry { onUndo?(e) }
         case ("r", _), (_, .redo):
             if let e = selectedRow?.entry { onRedo?(e) }
+        case (_, .help): onHelp?()
         case (_, .down): move(1)
         case (_, .up): move(-1)
         case (_, .top): move(-rows.count)

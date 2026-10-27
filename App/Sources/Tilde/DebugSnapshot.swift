@@ -7,7 +7,8 @@ import UniformTypeIdentifiers
 
 /// Development aid: `TILDE_SNAPSHOT=/path/out.png` renders the key window to a PNG after
 /// launch and quits. `TILDE_SNAPSHOT_KEYS` replays keystrokes first (`\e` is escape, `\t` tab,
-/// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause), so
+/// `\r` return, `\b` delete, `^j` control-j, `@s` command-s, `\w` a one-second pause, `\o`
+/// the pointer over the highlighted row), so
 /// flows can be checked without screen-recording access.
 /// `TILDE_SNAPSHOT_INDEX=1` opens the Search Index window and snapshots that instead;
 /// `TILDE_SNAPSHOT_WINDOW=settings|keys|cleanup-settings|welcome|history|cleanup` does the same for those windows, and
@@ -137,6 +138,8 @@ enum DebugSnapshot {
     private static let commandBase: UInt32 = 0xE100
     /// `\w`: wait a second (for Neovim to start, say).
     private static let pause = Character(UnicodeScalar(0xE200)!)
+    /// `\o`: the pointer over the highlighted row (its `⋯` button shows).
+    private static let hover = Character(UnicodeScalar(0xE201)!)
 
     private static func decode(_ s: String) -> String {
         var s = s
@@ -145,11 +148,13 @@ enum DebugSnapshot {
             s = s.replacingOccurrences(of: "@\(c)", with: String(UnicodeScalar(commandBase + UInt32(c.asciiValue!))!))
         }
         s = s.replacingOccurrences(of: "@.", with: String(UnicodeScalar(commandBase + 46)!))
+        s = s.replacingOccurrences(of: "^/", with: String(UnicodeScalar(controlBase + 47)!))
         // ⌘⌫ and ⌃⌫.
         s = s.replacingOccurrences(of: "@\\b", with: String(UnicodeScalar(commandBase + 127)!))
         s = s.replacingOccurrences(of: "^\\b", with: String(UnicodeScalar(controlBase + 127)!))
         return s.replacingOccurrences(of: "\\e", with: "\u{1b}")
             .replacingOccurrences(of: "\\w", with: String(pause))
+            .replacingOccurrences(of: "\\o", with: String(hover))
             .replacingOccurrences(of: "\\t", with: "\t")
             .replacingOccurrences(of: "\\r", with: "\r")
             .replacingOccurrences(of: "\\b", with: "\u{7f}")
@@ -159,6 +164,13 @@ enum DebugSnapshot {
         guard let c = chars.first else { return done() }
         if c == pause {
             return DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { type(Array(chars.dropFirst()), then: done) }
+        }
+        if c == hover {
+            if let window = NSApp.keyWindow ?? NSApp.windows.first, let content = window.contentView,
+               let table = find(ResultsTableView.self, in: content) {
+                table.showMoreButton(row: table.selectedRow)
+            }
+            return DispatchQueue.main.asyncAfter(deadline: .now() + keyDelay) { type(Array(chars.dropFirst()), then: done) }
         }
         if let window = NSApp.keyWindow ?? NSApp.windows.first, let event = keyEvent(for: c, window: window) {
             recorder?.pressed(label(for: c))

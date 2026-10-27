@@ -65,6 +65,7 @@ pub const GO_ACTIONS: &[ActionSpec] = &[
     a("back", "Back to where you were (jump list)", &["ctrl+o"]),
     a("forward", "Forward again (jump list)", &["ctrl+i"]),
     a("select_mode", "Switch to SELECT", &["esc"]),
+    a("help", "All keys, to read or run (also a click on the status bar)", &["ctrl+/"]),
 ];
 
 pub const SELECT_ACTIONS: &[ActionSpec] = &[
@@ -104,6 +105,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("redo", "Redo", &["U", "ctrl+r"]),
     a("history", "History: undo or redo any operation", &["H"]),
     a("cleanup", "Clean Up: free space (big files, old downloads, duplicates…)", &["C"]),
+    a("help", "All keys, to read or run (also a click on the status bar)", &["?"]),
     a("filter_all", "Activity: everything", &["1"]),
     a("filter_downloads", "Activity: downloads", &["2"]),
     a("filter_screenshots", "Activity: screenshots", &["3"]),
