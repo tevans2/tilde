@@ -346,7 +346,7 @@ final class CleanupCell: NSView {
             case .working where cat.kind == .duplicates && cat.total > 0:
                 note = "checking contents · \(Int(Double(cat.done) / Double(max(cat.total, 1)) * 100))% · \(note)"
             case .working: note = "measuring… · \(note)"
-            case .skipped: note = "not checked in Low Power Mode · r to check"
+            case .skipped: note = "not checked in Low Power Mode · \(Keymap.shared.key(.refresh, in: .select)) to check"
             case .ready: note = cat.count == 0 ? "nothing to suggest" : "\(cat.count) item\(cat.count == 1 ? "" : "s") · \(note)"
             }
             draw(note, theme.small, dim, x: left, y: 6 + theme.list.pointSize * 1.45, width: bounds.width - left - 14)

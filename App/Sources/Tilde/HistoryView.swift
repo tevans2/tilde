@@ -4,7 +4,7 @@ import TildeFFI
 /// History (`H`, Edit › History): the undo tree, in the window in place of the list and
 /// preview. Operations are nodes on branches, newest at the top, with a "start" node at
 /// the bottom; the current state is marked. The side shows what the selected operation
-/// did and what `u` (undo it), `r` (redo it) and `⏎` (go to the state right after it)
+/// did and what `u` (undo it), `U` (redo it) and `⏎` (go to the state right after it)
 /// would change, since undoing an old operation also undoes later ones on the same files.
 @MainActor
 final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
@@ -16,6 +16,8 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onClose: (() -> Void)?
     /// `?`: the keys panel.
     var onHelp: (() -> Void)?
+    /// `g`: the go-to list (its `g` is the first operation).
+    var onGoTo: (() -> Void)?
     var onSelect: (() -> Void)?
 
     private(set) var rows: [HistoryGraph.Row] = []
@@ -115,24 +117,30 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { return false }
         let select = Keymap.shared.action(for: event, in: .select)
-        if event.keyCode == 53 || select == .history || select == .back { onClose?(); return true }
+        // esc, h, q and H (which opened it) all leave.
+        if event.keyCode == 53 || [.history, .back, .parent, .close].contains(select) { onClose?(); return true }
         if event.keyCode == 36 || event.keyCode == 76 {
             if let row = selectedRow { onGoto?(row.entry) }
             return true
         }
-        switch (event.charactersIgnoringModifiers, select) {
-        case ("u", _), (_, .undo):
+        switch select {
+        case .undo:
             if let e = selectedRow?.entry { onUndo?(e) }
-        case ("r", _), (_, .redo):
+        case .redo:
             if let e = selectedRow?.entry { onRedo?(e) }
-        case (_, .help): onHelp?()
-        case (_, .down): move(1)
-        case (_, .up): move(-1)
-        case (_, .top): move(-rows.count)
-        case (_, .bottom): move(rows.count)
+        case .help: onHelp?()
+        case .goto: onGoTo?()
+        case .down: move(1)
+        case .up: move(-1)
+        case .top: selectFirst()
+        case .bottom: move(rows.count)
         default: return false
         }
         return true
+    }
+
+    func selectFirst() {
+        move(-rows.count)
     }
 
     private func move(_ delta: Int) {
@@ -169,7 +177,7 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let state = switch e.state {
         case .applied: "Done"
         case .undone: "Undone"
-        case .partlyUndone: "Partly undone (u undoes the rest)"
+        case .partlyUndone: "Partly undone (\(Keymap.shared.key(.undo, in: .select)) undoes the rest)"
         }
         add("\(state) · \(Self.time(e.at))", theme.small, c.textDim)
         if e.changed != e.at { add(", last changed \(Self.time(e.changed))", theme.small, c.textDim) }
@@ -188,7 +196,7 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         add("\n")
         if e.canUndo {
             let p = ops.previewUndo(entry: e.id)
-            add("u  undo", theme.small, c.go)
+            add("\(Keymap.shared.key(.undo, in: .select))  undo", theme.small, c.go)
             if p.undo.count > 1 {
                 add(" this and \(p.undo.count - 1) later operation\(p.undo.count == 2 ? "" : "s") on the same files:\n", theme.small, c.textDim)
                 for n in names(Array(p.undo.dropLast())) { add("     \(n)\n", theme.small, c.textDim) }
@@ -198,7 +206,7 @@ final class HistoryView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         if e.canRedo {
             let p = ops.previewRedo(entry: e.id)
-            add("r  redo", theme.small, c.go)
+            add("\(Keymap.shared.key(.redo, in: .select))  redo", theme.small, c.go)
             if p.redo.count > 1 {
                 add(" after \(p.redo.count - 1) earlier operation\(p.redo.count == 2 ? "" : "s") it builds on:\n", theme.small, c.textDim)
                 for n in names(Array(p.redo.dropLast())) { add("     \(n)\n", theme.small, c.textDim) }

@@ -64,11 +64,14 @@ Query filters: `in:<fuzzy path>`, `in:.` (this folder and below), `ext:<ext>`, `
 |---|---|
 | `j` `k`, `↑` `↓` | Move |
 | `h` `l`, `←` `→` | Up a level, enter the folder or open the file |
-| `x`, space | Toggle the highlighted item on the shelf |
+| `x` | Toggle the highlighted item on the shelf |
 | `a` | Toggle all shown items on the shelf |
 | `m` | Move (destination picker) |
 | `c` | Copy (destination picker) |
-| `y` | Copy paths to the clipboard |
+| `y`, `p`, `P` | Copy files; paste copies here; paste moving them here |
+| `Y` | Copy paths to the clipboard |
+| space | Preview mode |
+| `g` | Go to: places, views, bookmarks (`g g` top); `b` bookmarks |
 | `t` | Tag |
 | `z` | Compress |
 | `d`, `⌫` | Trash |
@@ -77,7 +80,7 @@ Query filters: `in:<fuzzy path>`, `in:.` (this folder and below), `ext:<ext>`, `
 | `e` | Edit the whole folder as text |
 | `u`, `⌃R` | Undo, redo |
 | `/` | Back to GO |
-| `@`, `'`, `~` | Activity, marks, home |
+| `@`, `~` | Activity, home |
 | `esc` | Clear the filter, then the shelf |
 | `1`–`5`, `i` | In Activity: filter by origin, inbox toggle |
 
@@ -745,3 +748,11 @@ Finished later (see "M3, finished" below): tags, conflict prompts, persistent un
 - Status bar hints are the essentials per mode, ending in `? keys`. `help` (`?` in SELECT, `ctrl+/` in GO; also a click on the mode pill or hints) opens a `PromptOverlay` of kind `.commands`: the keys for where the window is (list, GO, PREVIEW, History, Clean Up, Activity), grouped, from the keymap's descriptions and keys, then the menu bar's enabled items that have shortcuts. Typing filters by entry and key; `⏎` or a click runs an entry by sending its key press (`Keymap.event`) once the panel has closed, so it does exactly what the key does there.
 - Mouse-only, no key changes: path bar crumbs are buttons (`Crumb`: click to go, drop to move/copy via `dropFiles`); a `⋯` button on the hovered row (tracking area; hidden on any key, scroll or exit) pops the row menu; the row menu gained shelf, move to, copy to, compress, preview, source; right-click on empty space gives a folder menu; ⌘-click toggles a row on the shelf, ⇧-click shelves a range; a click on the status bar's summary shows sort, hidden files and a jump to Everywhere; a drag held 0.9 s over a folder row opens it.
 
+
+### Consistent keys, go to, copy and paste (done)
+
+- Defaults changed: `quick_look` → `space` (Finder), `quick_look_window` → `shift+space`, `shelf` → `x` only, `copy_path` → `Y`, `top` → `home` (and `g g`). New actions: `goto` (`g`), `bookmark` (`b`), `yank` (`y`), `paste` (`p`), `paste_move` (`P`), `hidden` (`.`), `refresh` (`R`), `close` (`q`). User bindings are untouched.
+- `g` opens a pick-by-key overlay (`PromptOverlay.Kind.keys`: entries matched by their key, case-sensitive, no field): `g` runs the view's `top` (list, preview, History, Clean Up), then places (`h` `d` `D` `o` `A` `i` `t` `v` `/`, from `$HOME`, hidden when missing), views (`a` `c` `u`) and bookmarks. Bookmarks are a key → folder map in UserDefaults; `b` + a key sets, moves or (on its own folder) removes one; `g`'s own keys are refused.
+- `y` / ⌘C write file URLs to the general pasteboard (as the Finder does); `p` / ⌘V copy them into the open folder, `P` / ⌥⌘V move them (and clear the pasteboard). Pasting into the source folder skips the clash question (keep both); elsewhere `resolvingClashes` asks. ⌘C in GO copies the highlighted file when no text is selected. Edit › Move Items Here is ⌘V's ⌥ alternate.
+- Go menu: Enclosing Folder (⌘↑), the places with Finder's shortcuts, Activity (⇧⌘F), Go to Folder… (⇧⌘G, the destination picker); File › Open (⌘O, and a hidden ⌘↓).
+- Leaving: `esc` / `h` back out one layer (`esc` in Activity with nothing to clear leaves it), the opening key toggles, `q` (`close`) closes preview, History, Clean Up and Activity. History reads only the keymap (no hard-coded `u` / `r`); Clean Up's rescan is `refresh` (`R`). Preview pages with ⌃D/⌃F/⇟ and ⌃U/⌃B/⇞, since `space` now leaves.

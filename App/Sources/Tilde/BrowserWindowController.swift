@@ -60,7 +60,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var editInNvim = false
     private var keyMonitor: Any?
     private var focusObservation: NSKeyValueObservation?
-    /// PREVIEW: the preview has the keyboard (first `p`), j / k scroll it, and the pane
+    /// PREVIEW: the preview has the keyboard (first `space`), j / k scroll it, and the pane
     /// takes most of the window.
     private var previewFocused = false
     /// `f` in PREVIEW: the preview takes the whole window. Kept for the window's next
@@ -309,6 +309,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         historyView.isHidden = true
         historyView.onClose = { [weak self] in self?.closeHistory() }
         historyView.onHelp = { [weak self] in self?.showKeys() }
+        historyView.onGoTo = { [weak self] in self?.showGoTo { self?.historyView.selectFirst() } }
         statusBar.onHelp = { [weak self] in self?.showKeys() }
         statusBar.onSummaryClick = { [weak self] point in self?.showSummaryMenu(at: point) }
         historyView.onUndo = { [weak self] e in self?.undoEntry(e) }
@@ -648,7 +649,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
                 queryChanged()
             } else if !shelf.isEmpty {
                 setShelf([])
+            } else if inActivity {
+                // esc backs out one layer.
+                toggleActivity()
             }
+        case .close:
+            if inActivity { toggleActivity() } else { statusBar.flash("Nothing to close") }
+        case .goto: showGoTo { [weak self] in self?.select(row: 0) }
+        case .bookmark: chooseBookmark()
+        case .yank: yankFiles()
+        case .paste: pasteFiles(move: false)
+        case .pasteMove: pasteFiles(move: true)
+        case .hidden: toggleHidden(nil)
+        case .refresh: refresh()
         case .shelf: toggleShelf()
         case .shelfAll: toggleShelfAll()
         case .move: pickDestination(copy: false)
@@ -756,7 +769,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func undoEntry(_ e: HistoryEntry) {
-        guard e.canUndo else { return statusBar.flash("“\(e.label)” isn't in place; r redoes it") }
+        guard e.canUndo else { return statusBar.flash("“\(e.label)” isn't in place; \(Keymap.shared.key(.redo, in: .select)) redoes it") }
         let p = ops.previewUndo(entry: e.id)
         let run = { [weak self] in
             guard let self else { return }
@@ -864,9 +877,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// What Quick Look shows: the shelf if it has anything, otherwise the highlighted row.
     private var quickLookItems: [URL] = []
 
-    /// `p` / File › Quick Look (⌘Y): the full Quick Look panel, which follows the
+    /// `⇧space` / File › Quick Look (⌘Y): the full Quick Look panel, which follows the
     /// highlighted row while it's open.
-    /// `p` in SELECT: PREVIEW, with the full preview (loaded now if it wasn't). Straight
+    /// `space` in SELECT: PREVIEW, with the full preview (loaded now if it wasn't). Straight
     /// to the Quick Look window when the pane can't show it: preview hidden, or the shelf
     /// has items (the window shows the shelf).
     private func quickLookKey() {
@@ -1100,6 +1113,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             }
             return true
         }
+        // ⌘C with no text selected copies the highlighted file, as in SELECT.
+        if flags.intersection([.command, .control, .option, .shift]) == .command,
+           event.charactersIgnoringModifiers == "c", editor.selectedRange.length == 0 {
+            whenResultsCurrent { [weak self] in self?.yankFiles() }
+            return true
+        }
         guard let action = Keymap.shared.action(for: event, in: .go) else { return false }
         switch action {
         case .down: moveSelection(by: 1)
@@ -1137,7 +1156,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: PREVIEW
 
-    /// After the first `p`: the preview gets the keyboard and most of the window. The full
+    /// After the first `space`: the preview gets the keyboard and most of the window. The full
     /// preview may still be loading; it takes focus when it appears.
     private func startPreviewFocus() {
         guard !previewFocused, Theme.shared.previewVisible else { return }
@@ -1172,8 +1191,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private func handlePreviewKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { return false }
-        if event.keyCode == 49, flags.isDisjoint(with: [.control, .option]) {
-            preview.scroll(flags.contains(.shift) ? .pageUp : .pageDown)
+        // Pages: ⌃D ⌃F and ⇟ down, ⌃U ⌃B and ⇞ up (space leaves, as it came in).
+        let ctrlKey = flags.contains(.control) ? event.charactersIgnoringModifiers?.lowercased() : nil
+        if event.keyCode == 121 || ctrlKey == "d" || ctrlKey == "f" {
+            preview.scroll(.pageDown)
+            return true
+        }
+        if event.keyCode == 116 || ctrlKey == "u" || ctrlKey == "b" {
+            preview.scroll(.pageUp)
             return true
         }
         guard let action = Keymap.shared.action(for: event, in: .select) else { return false }
@@ -1182,7 +1207,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .up: preview.scroll(.up)
         case .top: preview.scroll(.top)
         case .bottom: preview.scroll(.bottom)
-        case .quickLook, .clear, .parent, .back, .search: endPreviewFocus()
+        case .quickLook, .clear, .parent, .back, .search, .close: endPreviewFocus()
+        case .goto: showGoTo { [weak self] in self?.preview.scroll(.top) }
         case .quickLookWindow: toggleQuickLook(nil)
         case .previewSource:
             if !preview.toggleSource() { NSSound.beep() }
@@ -2091,6 +2117,13 @@ extension BrowserWindowController: NSMenuItemValidation {
         // edits text instead.
         case #selector(moveToTrash(_:)):
             return mode == .select && overlay == nil && window?.firstResponder === tableView
+        case #selector(copy(_:)):
+            return mode == .select && overlay == nil && !inHistory && (selectedRow != nil || !shelf.isEmpty)
+        case #selector(paste(_:)), #selector(pasteMoving(_:)):
+            return mode == .select && overlay == nil && canPasteHere && !Self.pasteboardFiles().isEmpty
+        case #selector(openSelected(_:)), #selector(enclosingFolder(_:)), #selector(goToPlace(_:)),
+             #selector(goToFolder(_:)), #selector(showActivityMenu(_:)):
+            return mode != .edit && overlay == nil
         case #selector(goBack(_:)):
             return mode != .edit && jumps.canGoBack
         case #selector(goForward(_:)):
@@ -2370,13 +2403,6 @@ extension BrowserWindowController {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { return false }
         let plain = flags.isDisjoint(with: [.control, .option])
-        if plain, event.charactersIgnoringModifiers == "r" {
-            // Looking again always includes the content check (it was skipped on battery
-            // saving).
-            rescanCleanup(duplicates: true)
-            statusBar.flash("Looking again…")
-            return true
-        }
         if plain, event.keyCode == 51 {
             cleanupBack()
             return true
@@ -2397,7 +2423,13 @@ extension BrowserWindowController {
         case .parent: cleanupBack()
         case .clear:
             if shelf.isEmpty { closeCleanup() } else { setShelf([]) }
-        case .cleanup: closeCleanup()
+        case .cleanup, .close: closeCleanup()
+        case .refresh:
+            // Looking again always includes the content check (it was skipped on battery
+            // saving).
+            rescanCleanup(duplicates: true)
+            statusBar.flash("Looking again…")
+        case .goto: showGoTo { [weak self] in self?.cleanupView.select(0) }
         case .shelf: cleanupShelf()
         case .shelfAll: cleanupShelfAll()
         case .trash: cleanupTrash()
@@ -2551,7 +2583,7 @@ extension BrowserWindowController {
                     guard let self else { return }
                     self.statusBar.setActivity(nil)
                     var notes: [String] = []
-                    if changed > 0 { notes.append("\(changed) changed since Clean Up looked, left alone (r looks again)") }
+                    if changed > 0 { notes.append("\(changed) changed since Clean Up looked, left alone (\(Keymap.shared.key(.refresh, in: .select)) looks again)") }
                     if refused > 0 { notes.append("\(refused) kept (the copy to keep, or a running app's cache)") }
                     guard !go.isEmpty else {
                         return self.statusBar.flash(notes.isEmpty ? "Nothing to trash" : notes.joined(separator: " · "))
@@ -2641,25 +2673,28 @@ extension BrowserWindowController {
         var groups: [CommandGroup] = []
         if previewFocused {
             groups = [group("Preview mode", [
-                item(.down, "Scroll down"), item(.up, "Scroll up"), fixed("Page down", "space", key: "space"),
-                item(.top, "To the top"), item(.bottom, "To the bottom"),
+                item(.down, "Scroll down"), item(.up, "Scroll up"),
+                fixed("Page down", "⌃D ⌃F ⇟", key: "pagedown"), fixed("Page up", "⌃U ⌃B ⇞", key: "pageup"),
+                item(.goto, "Go to (g g: the top)"), item(.bottom, "To the bottom"),
                 item(.previewSource, "Source (again for the rendered view)"), item(.previewFull, "Whole window (again for the list)"),
-                item(.quickLookWindow, "Quick Look window"), item(.quickLook, "Back to the list"),
+                item(.quickLookWindow, "Quick Look window"), item(.quickLook, "Back to the list"), item(.close, "Back to the list"),
             ])]
         } else if inHistory {
             groups = [group("History", [
-                item(.down, "Next operation"), item(.up, "Previous operation"),
-                fixed("Undo this operation (and what depends on it)", "u", key: "u"),
-                fixed("Redo this operation (and what it builds on)", "r", key: "r"),
+                item(.down, "Next operation"), item(.up, "Previous operation"), item(.goto, "Go to (g g: the newest)"),
+                item(.bottom, "The oldest"),
+                item(.undo, "Undo this operation (and what depends on it)"),
+                item(.redo, "Redo this operation (and what it builds on)"),
                 fixed("Put files back as they were after this operation", "⏎", key: "return"),
-                fixed("Back", "esc", key: "esc"),
+                fixed("Back", "esc", key: "esc"), item(.close, "Back"),
             ])]
         } else if inCleanup {
             groups = [group("Clean Up", [
                 item(.down, "Next"), item(.up, "Previous"), item(.enter, "Open the category, or show the item in its folder"),
-                item(.parent, "Back to the categories"), fixed("Look again", "r", key: "r"),
+                item(.parent, "Back to the categories"), item(.refresh, "Look again"),
                 item(.shelf, "Collect"), item(.shelfAll, "Collect all"), item(.trash, "Trash (or empty the Trash)"),
-                item(.move), item(.hide, "Never suggest this again"), item(.quickLook), item(.cleanup, "Close Clean Up"),
+                item(.move), item(.hide, "Never suggest this again"), item(.quickLook), item(.goto),
+                item(.cleanup, "Close Clean Up"), item(.close, "Close Clean Up"),
             ])]
         } else if mode == .go {
             groups = [group("Typing in the bar", [
@@ -2670,16 +2705,17 @@ extension BrowserWindowController {
             if inActivity {
                 groups.append(group("Activity", [
                     item(.filterAll), item(.filterDownloads), item(.filterScreenshots), item(.filterEdited),
-                    item(.filterAirdrop), item(.inbox), item(.activity, "Back"),
+                    item(.filterAirdrop), item(.inbox), item(.activity, "Back"), item(.close, "Back"),
                 ]))
             }
             groups += [
                 group("Move around", [
-                    item(.down), item(.up), item(.parent), item(.enter), item(.open), item(.top), item(.bottom),
-                    item(.back), item(.forward), item(.home), item(.search),
+                    item(.down), item(.up), item(.parent), item(.enter), item(.open), item(.goto), item(.top), item(.bottom),
+                    item(.back), item(.forward), item(.bookmark), item(.home), item(.search),
                 ]),
                 group("Files", [
-                    item(.shelf), item(.shelfAll), item(.clear), item(.move), item(.copy), item(.trash), item(.rename),
+                    item(.shelf), item(.shelfAll), item(.clear), item(.yank), item(.paste), item(.pasteMove),
+                    item(.move), item(.copy), item(.trash), item(.rename),
                     item(.tag), item(.newFolder), item(.newItem), item(.edit), item(.compress), item(.copyPath),
                     item(.openWith), item(.hide),
                 ]),
@@ -2688,7 +2724,8 @@ extension BrowserWindowController {
                     item(.previewSource, "Preview mode showing the source"), item(.quickLookWindow, "Quick Look window"),
                 ]),
                 group("Undo and views", [
-                    item(.undo), item(.redo), item(.history), item(.sort), item(.activity), item(.cleanup),
+                    item(.undo), item(.redo), item(.history), item(.sort), item(.hidden), item(.refresh),
+                    item(.activity), item(.cleanup),
                 ]),
             ]
         }
@@ -2730,6 +2767,8 @@ extension BrowserWindowController {
         let key: String = switch item.keyEquivalent {
         case "\u{8}", "\u{7f}": "⌫"
         case "\r": "↩"
+        case String(UnicodeScalar(NSUpArrowFunctionKey)!): "↑"
+        case String(UnicodeScalar(NSDownArrowFunctionKey)!): "↓"
         case " ": "Space"
         default: item.keyEquivalent.uppercased()
         }
@@ -2797,5 +2836,219 @@ extension BrowserWindowController {
             setShelf(shelfSet.contains(path) ? shelf.filter { $0 != path } : shelf + [path])
         }
         if tableView.selectedRow != row { select(row: row) }
+    }
+}
+
+// MARK: Go to and bookmarks
+
+extension BrowserWindowController {
+    /// A place `g` and the Go menu go to, with Finder's shortcut where it has one.
+    struct GoPlace {
+        let key: String
+        let title: String
+        let path: String
+        let menuKey: String?
+        let menuModifiers: NSEvent.ModifierFlags
+    }
+
+    static let places: [GoPlace] = {
+        // $HOME, as the core uses (the snapshots point it at a demo folder).
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        return [
+            GoPlace(key: "h", title: "Home", path: home, menuKey: "h", menuModifiers: [.command, .shift]),
+            GoPlace(key: "d", title: "Downloads", path: home + "/Downloads", menuKey: "l", menuModifiers: [.command, .option]),
+            GoPlace(key: "D", title: "Desktop", path: home + "/Desktop", menuKey: "d", menuModifiers: [.command, .shift]),
+            GoPlace(key: "o", title: "Documents", path: home + "/Documents", menuKey: "o", menuModifiers: [.command, .shift]),
+            GoPlace(key: "A", title: "Applications", path: "/Applications", menuKey: "a", menuModifiers: [.command, .shift]),
+            GoPlace(key: "i", title: "iCloud Drive", path: home + "/Library/Mobile Documents/com~apple~CloudDocs",
+                    menuKey: nil, menuModifiers: []),
+            GoPlace(key: "t", title: "Trash", path: home + "/.Trash", menuKey: nil, menuModifiers: []),
+            GoPlace(key: "v", title: "Volumes", path: "/Volumes", menuKey: nil, menuModifiers: []),
+            GoPlace(key: "/", title: "Computer", path: "/", menuKey: "c", menuModifiers: [.command, .shift]),
+        ].filter { FileManager.default.fileExists(atPath: $0.path) }
+    }()
+
+    /// Keys `g` uses itself, which bookmarks can't take.
+    private static let goKeys: Set<String> = Set(places.map(\.key)).union(["g", "a", "c", "u"])
+
+    /// Bookmarks: a key to a folder, kept between launches.
+    private static var bookmarks: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "bookmarks") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "bookmarks") }
+    }
+
+    /// `g`: places, views and bookmarks, each a key press away. `g` again runs `top`
+    /// (the first item of whatever is showing).
+    func showGoTo(top: @escaping @MainActor () -> Void) {
+        guard overlay == nil, mode != .edit else { return }
+        let places = Self.places.map { place in
+            CommandItem(label: place.title, keys: place.key) { [weak self] in
+                self?.open(folder: place.path)
+            }
+        }
+        let views = [
+            CommandItem(label: "Activity", keys: "a") { [weak self] in
+                guard let self, !self.inActivity else { return }
+                self.showActivity(record: true)
+            },
+            CommandItem(label: "Clean Up", keys: "c") { [weak self] in self?.showCleanup() },
+            CommandItem(label: "History (the undo tree)", keys: "u") { [weak self] in self?.showHistory() },
+        ]
+        let marks = Self.bookmarks.sorted { $0.key < $1.key }.map { key, path in
+            CommandItem(label: display(path), keys: key) { [weak self] in
+                guard FileManager.default.fileExists(atPath: path) else {
+                    self?.statusBar.flash("\(self?.display(path) ?? path) isn't there any more")
+                    return
+                }
+                self?.open(folder: path)
+            }
+        }
+        let bookmarkKey = Keymap.shared.key(.bookmark, in: .select)
+        var groups = [
+            CommandGroup(title: "Here", items: [CommandItem(label: "The first item", keys: "g", run: top)]),
+            CommandGroup(title: "Places", items: places),
+            CommandGroup(title: "Views", items: views),
+        ]
+        if !marks.isEmpty { groups.append(CommandGroup(title: "Bookmarks", items: marks)) }
+        showOverlay(PromptOverlay(
+            title: "Go to…", kind: .keys(groups: groups, other: nil),
+            hint: marks.isEmpty && !bookmarkKey.isEmpty
+                ? "press a key   esc close   \(bookmarkKey) in a folder bookmarks it here"
+                : "press a key   esc close"))
+    }
+
+    /// `b`: bookmark the open folder under the next key pressed, for `g` and that key.
+    /// The key of a bookmark already there moves it here, or removes it if it's this folder.
+    private func chooseBookmark() {
+        guard !inActivity, !currentFolder.isEmpty else { return statusBar.flash("Activity isn't a folder. Bookmark a folder.") }
+        let folder = currentFolder
+        let set = { [weak self] (key: String) in
+            guard let self else { return }
+            if Self.goKeys.contains(key) || key == " " {
+                return self.statusBar.flash("g \(key) is taken by Tilde. Pick another key.")
+            }
+            var marks = Self.bookmarks
+            if marks[key] == folder {
+                marks[key] = nil
+                self.statusBar.flash("Removed the bookmark g \(key)")
+            } else {
+                marks[key] = folder
+                self.statusBar.flash("g \(key) goes to \(self.display(folder))")
+            }
+            Self.bookmarks = marks
+        }
+        let marks = Self.bookmarks.sorted { $0.key < $1.key }.map { key, path in
+            CommandItem(label: path == folder ? "\(display(path))   (press to remove)" : display(path), keys: key) { set(key) }
+        }
+        showOverlay(PromptOverlay(
+            title: "Bookmark “\(display(folder))” as… press a key",
+            kind: .keys(groups: marks.isEmpty ? [] : [CommandGroup(title: "Bookmarks", items: marks)], other: set),
+            hint: "press any free key   one in use moves it here   esc cancel"))
+    }
+
+    /// `R`: read the folder (or Activity) again.
+    private func refresh() {
+        let query = pathBar.field.stringValue
+        if inActivity {
+            showActivity(record: false, query: query, select: selectedRow?.name)
+        } else if !currentFolder.isEmpty {
+            open(folder: currentFolder, select: selectedRow?.name, query: query, record: false)
+        }
+        statusBar.flash("Read again")
+    }
+}
+
+// MARK: Copy and paste files
+
+extension BrowserWindowController {
+    /// File URLs on the pasteboard (from here, the Finder or another app).
+    static func pasteboardFiles() -> [String] {
+        let urls = NSPasteboard.general.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.map(\.path)
+    }
+
+    private var canPasteHere: Bool {
+        !inActivity && !inHistory && !inCleanup && !currentFolder.isEmpty
+    }
+
+    /// `y` / ⌘C: the files on the pasteboard, as the Finder copies them, so they paste here
+    /// (`p`), in the Finder, or into a mail.
+    func yankFiles() {
+        let paths = targets
+        guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(paths.map { URL(fileURLWithPath: $0) as NSURL })
+        let paste = Keymap.shared.key(.paste, in: .select), move = Keymap.shared.key(.pasteMove, in: .select)
+        statusBar.flash("Copied \(describe(paths))   \(paste) pastes a copy, \(move) moves \(paths.count == 1 ? "it" : "them")")
+    }
+
+    /// `p` / ⌘V: copies the pasteboard's files into the open folder. `P` / ⌥⌘V moves
+    /// them, and empties the pasteboard (they've gone from where it says).
+    func pasteFiles(move: Bool) {
+        guard canPasteHere else { return statusBar.flash("Paste into a folder") }
+        let sources = Self.pasteboardFiles()
+        guard !sources.isEmpty else { return statusBar.flash("No files copied. \(Keymap.shared.key(.yank, in: .select)) copies them.") }
+        let here = currentFolder
+        let allHere = sources.allSatisfy { ($0 as NSString).deletingLastPathComponent == here }
+        if move, allHere { return statusBar.flash("Already here") }
+        let request = OpRequest(kind: move ? .move : .copy, sources: sources, destination: here, clash: .keepBoth)
+        let what = "\(move ? "Moved" : "Pasted") \(describe(sources))"
+        if move { NSPasteboard.general.clearContents() }
+        // Pasting where they are makes copies: no question about names.
+        if allHere { return submit(request, describing: what) }
+        resolvingClashes(request, in: "this folder") { [weak self] request in
+            self?.submit(request, describing: what)
+        }
+    }
+
+    /// Edit › Copy (⌘C) on the list.
+    @objc func copy(_ sender: Any?) {
+        yankFiles()
+    }
+
+    /// Edit › Paste (⌘V) on the list.
+    @objc func paste(_ sender: Any?) {
+        pasteFiles(move: false)
+    }
+
+    /// Edit › Move Items Here (⌥⌘V).
+    @objc func pasteMoving(_ sender: Any?) {
+        pasteFiles(move: true)
+    }
+}
+
+// MARK: Finder's Go menu
+
+extension BrowserWindowController {
+    /// File › Open (⌘↓, ⌘O): into a folder, or open a file.
+    @objc func openSelected(_ sender: Any?) {
+        goIntoOrActivate()
+    }
+
+    /// Go › Enclosing Folder (⌘↑).
+    @objc func enclosingFolder(_ sender: Any?) {
+        goUp()
+    }
+
+    /// Go › Home, Downloads… (`representedObject` is the path).
+    @objc func goToPlace(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        open(folder: path)
+    }
+
+    /// Go › Activity.
+    @objc func showActivityMenu(_ sender: Any?) {
+        if !inActivity { showActivity(record: true) }
+    }
+
+    /// Go › Go to Folder… (⇧⌘G): the folder picker, to open one.
+    @objc func goToFolder(_ sender: Any?) {
+        showOverlay(PromptOverlay(title: "Go to the folder…", kind: .destination(
+            search: { [index] query in index.destinations(query: query, limit: 12) },
+            onPick: { [weak self] dest in
+                self?.index.recordDestination(path: dest)
+                self?.open(folder: dest)
+            })))
     }
 }

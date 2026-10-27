@@ -76,13 +76,15 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("open", "Open the highlighted item", &["return"]),
     a("back", "Back to where you were (jump list)", &["ctrl+o"]),
     a("forward", "Forward again (jump list)", &["ctrl+i"]),
-    a("top", "First item", &["g"]),
-    a("bottom", "Last item", &["G"]),
+    a("top", "First item (also g g)", &["home"]),
+    a("bottom", "Last item", &["G", "end"]),
+    a("goto", "Go to: places, views and bookmarks (g g is the first item)", &["g"]),
+    a("bookmark", "Bookmark this folder under a key, for g and that key", &["b"]),
     a("search", "Back to GO (search)", &["/"]),
     a("activity", "Activity view", &["@"]),
     a("home", "Home folder", &["~"]),
     a("clear", "Clear the search, then the shelf", &["esc"]),
-    a("shelf", "Put on or take off the shelf", &["x", "space"]),
+    a("shelf", "Put on or take off the shelf", &["x"]),
     a("shelf_all", "Shelf everything shown", &["a"]),
     a("move", "Move to a folder", &["m"]),
     a("copy", "Copy to a folder", &["c"]),
@@ -93,10 +95,13 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("new_item", "New item below (as text)", &["o"]),
     a("new_folder", "New folder", &["n"]),
     a("compress", "Compress to zip", &["z"]),
-    a("copy_path", "Copy the path", &["y"]),
+    a("yank", "Copy the files, to paste here or in another app (⌘C)", &["y"]),
+    a("paste", "Paste copied files into this folder (⌘V)", &["p"]),
+    a("paste_move", "Move copied files into this folder (⌥⌘V)", &["P"]),
+    a("copy_path", "Copy the path", &["Y"]),
     a("sort", "Sort the folder (again to reverse)", &["s"]),
-    a("quick_look", "Preview mode: the full preview, scrollable (again to leave)", &["p"]),
-    a("quick_look_window", "Quick Look window (⌘Y)", &["P"]),
+    a("quick_look", "Preview mode: the full preview, scrollable (again to leave)", &["space"]),
+    a("quick_look_window", "Quick Look window (⌘Y)", &["shift+space"]),
     a("preview_full", "In preview mode: the whole window (again for the list)", &["f"]),
     a("preview_source", "In preview mode: the file's source (again for the rendered view)", &["v"]),
     a("open_with", "Open with another app", &["w"]),
@@ -105,6 +110,9 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("redo", "Redo", &["U", "ctrl+r"]),
     a("history", "History: undo or redo any operation", &["H"]),
     a("cleanup", "Clean Up: free space (big files, old downloads, duplicates…)", &["C"]),
+    a("hidden", "Show or hide hidden files (⇧⌘.)", &["."]),
+    a("refresh", "Read the folder again (in Clean Up: look again)", &["R"]),
+    a("close", "Close the view: preview, History, Clean Up, Activity", &["q"]),
     a("help", "All keys, to read or run (also a click on the status bar)", &["?"]),
     a("filter_all", "Activity: everything", &["1"]),
     a("filter_downloads", "Activity: downloads", &["2"]),
@@ -457,7 +465,7 @@ mod tests {
         let config: KeysConfig = toml::from_str("[select]\ntag = \"x\"\n").unwrap();
         let map = config.resolve();
         assert_eq!(keys_of(&map.select, "tag"), ["x"]);
-        assert_eq!(keys_of(&map.select, "shelf"), ["space"]);
+        assert!(keys_of(&map.select, "shelf").is_empty());
     }
 
     #[test]

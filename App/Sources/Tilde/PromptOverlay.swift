@@ -15,7 +15,8 @@ struct CommandGroup {
 
 /// A small panel over the window for one line of input: a folder picker (with fuzzy
 /// results) for move and copy, a plain text prompt for rename, new folder and tags, a
-/// choice of a few answers by key (what to do about name clashes), or the keys panel.
+/// choice of a few answers by key (what to do about name clashes), the keys panel, or a
+/// list of entries picked by one key press (`g`'s places).
 /// `⏎` confirms, `esc` cancels.
 @MainActor
 final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
@@ -30,6 +31,9 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         /// Every key for where the window is, grouped: typing filters, `⏎` or a click runs
         /// the entry (after the panel closes).
         case commands(groups: [CommandGroup])
+        /// Entries picked by pressing their key (`keys`, one character, case counts) or a
+        /// click. Another key goes to `other` when it's set (a new bookmark), else beeps.
+        case keys(groups: [CommandGroup], other: ((String) -> Void)?)
     }
 
     /// The keys panel's rows: group titles and entries.
@@ -72,7 +76,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         self.title.stringValue = title
         build()
         switch kind {
-        case .destination, .commands:
+        case .destination, .commands, .keys:
             refreshResults()
         case let .text(initial, _, _):
             field.stringValue = initial
@@ -93,14 +97,25 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
     /// Has a list of results that up and down move through.
     var hasList: Bool {
         switch kind {
-        case .destination, .commands: true
+        case .destination, .commands, .keys: true
         default: false
         }
     }
 
+    /// The keys panel or a pick-by-key list: rows of entries under group titles.
     private var isCommands: Bool {
-        if case .commands = kind { return true }
-        return false
+        switch kind {
+        case .commands, .keys: true
+        default: false
+        }
+    }
+
+    /// Picked by key press: no field, the overlay takes the keys.
+    private var byKey: Bool {
+        switch kind {
+        case .choice, .keys: true
+        default: false
+        }
     }
 
     @available(*, unavailable)
@@ -144,6 +159,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             case .text: return "⏎ confirm   esc cancel"
             case .choice: return "press a key   esc cancel"
             case .commands: return "↑↓ choose   ⏎ or click to run   esc close"
+            case .keys: return "press a key   esc close"
             }
         }()
         title.lineBreakMode = .byWordWrapping
@@ -164,7 +180,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         table.target = self
         table.doubleAction = #selector(confirm)
         // In the keys panel one click runs an entry, as a menu does.
-        if case .commands = kind { table.action = #selector(clicked) }
+        if isCommands { table.action = #selector(clicked) }
         scroll.documentView = table
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -182,6 +198,11 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
         let isText = !hasList
         let isChoice: Bool = { if case .choice = kind { return true }; return false }()
+        // A pick-by-key list is as tall as its entries, up to the keys panel's height.
+        var listRows: CGFloat = isCommands ? 14 : 8
+        if case let .keys(groups, _) = kind {
+            listRows = min(22, CGFloat(groups.reduce(0) { $0 + $1.items.count }) + CGFloat(groups.count) * 0.85 + 0.2)
+        }
         NSLayoutConstraint.activate([
             box.centerXAnchor.constraint(equalTo: centerXAnchor),
             box.topAnchor.constraint(equalTo: topAnchor, constant: floating ? 16 : 70),
@@ -193,7 +214,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             field.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
             field.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
             field.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -14),
-            field.heightAnchor.constraint(equalToConstant: isChoice ? 0 : field.intrinsicContentSize.height),
+            field.heightAnchor.constraint(equalToConstant: byKey ? 0 : field.intrinsicContentSize.height),
             buttons.topAnchor.constraint(equalTo: field.bottomAnchor, constant: isChoice ? 4 : 0),
             buttons.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
             buttons.heightAnchor.constraint(equalToConstant: isChoice ? 28 : 0),
@@ -203,7 +224,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             scroll.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 6),
             scroll.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -6),
-            scroll.heightAnchor.constraint(equalToConstant: isText ? 0 : (isCommands ? 14 : 8) * Theme.shared.rowHeight),
+            scroll.heightAnchor.constraint(equalToConstant: isText ? 0 : listRows * Theme.shared.rowHeight),
             hint.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 6),
             hint.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 14),
             hint.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -10),
@@ -212,7 +233,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
 
     /// Puts the cursor in the field (selecting part of the text for rename).
     func focus() {
-        if case .choice = kind {
+        if byKey {
             window?.makeFirstResponder(self)
             return
         }
@@ -222,13 +243,29 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
         }
     }
 
-    override var acceptsFirstResponder: Bool {
-        if case .choice = kind { return true }
-        return false
-    }
+    override var acceptsFirstResponder: Bool { byKey }
 
-    /// Choices are picked by their key.
+    /// Choices and pick-by-key entries are picked by their key.
     override func keyDown(with event: NSEvent) {
+        if case let .keys(_, other) = kind {
+            if event.keyCode == 53 { return close() }
+            if event.keyCode == 36 || event.keyCode == 76 { return confirm() }
+            if event.keyCode == 125 || event.keyCode == 126 { return move(event.keyCode == 125 ? 1 : -1) }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard flags.isDisjoint(with: [.command, .control, .option]),
+                  let typed = event.charactersIgnoringModifiers.map({ flags.contains(.shift) ? $0.uppercased() : $0 }),
+                  typed.count == 1
+            else { return NSSound.beep() }
+            if let row = commandRows.firstIndex(where: { if case let .item(i) = $0 { i.keys == typed } else { false } }) {
+                table.selectRowIndexes([row], byExtendingSelection: false)
+                return confirm()
+            }
+            if let other {
+                close()
+                return other(typed)
+            }
+            return NSSound.beep()
+        }
         guard case let .choice(options, _) = kind else { return super.keyDown(with: event) }
         if event.keyCode == 53 { return close() }
         if event.keyCode == 36 || event.keyCode == 76 { return choose(0) }
@@ -271,7 +308,7 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
             onSubmit(text)
         case .choice:
             choose(0)
-        case .commands:
+        case .commands, .keys:
             let row = table.selectedRow
             guard row >= 0, row < commandRows.count, case let .item(item) = commandRows[row] else { return NSSound.beep() }
             close()
@@ -287,6 +324,11 @@ final class PromptOverlay: NSView, NSTextFieldDelegate, NSTableViewDataSource, N
     }
 
     private func refreshResults() {
+        if case let .keys(groups, _) = kind {
+            commandRows = groups.flatMap { [.header($0.title)] + $0.items.map(CommandRow.item) }
+            table.reloadData()
+            return
+        }
         if case let .commands(groups) = kind {
             // Every word typed must appear in the entry or its keys.
             let words = field.stringValue.lowercased().split(separator: " ")

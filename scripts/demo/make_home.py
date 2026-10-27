@@ -1,6 +1,8 @@
-"""Builds a believable home folder for screenshots: projects, documents, photos, downloads
-with their origins, screenshots, an AirDrop, build output in idle projects, app caches,
-duplicates, a big old video and a few things in the Trash. Nothing in it is anyone's.
+"""Builds a believable home folder for screenshots, belonging to someone who makes a space
+game, watches the sky and bakes bread: projects, notes with maths, recipes, aurora and
+telescope photos, downloads with their origins, game screenshots, an AirDrop, build output
+in idle projects, app caches, duplicates, a big old video and a few things in the Trash.
+Nothing in it is anyone's; every image is drawn here.
 
     python3 scripts/demo/make_home.py <dir> [--appearance light|dark]
 
@@ -94,47 +96,194 @@ def font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
+def _noise(img: Image.Image, amount: float = 0.05) -> Image.Image:
+    """Grain, so JPEGs come out real-sized and nothing looks flat."""
+    return Image.blend(img, Image.effect_noise(img.size, 18).convert("RGB"), amount)
+
+
+def _gradient(d: ImageDraw.ImageDraw, w: int, h: int, top, bottom) -> None:
+    for y in range(h):
+        k = y / h
+        d.line([(0, y), (w, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * k) for i in range(3)))
+
+
+def _stars(d: ImageDraw.ImageDraw, r: random.Random, w: int, h: int, n: int, max_y: float = 1.0) -> None:
+    for _ in range(n):
+        x, y = r.randrange(w), r.randrange(int(h * max_y))
+        s = r.choice([1, 1, 1, 2, 2, 3])
+        c = r.randint(170, 255)
+        d.ellipse([x, y, x + s, y + s], fill=(c, c, min(255, c + 20)))
+
+
+def _ridge(d: ImageDraw.ImageDraw, r: random.Random, w: int, h: int, base: float, amp: float, color) -> None:
+    pts = [(0, h)]
+    phase = r.random() * 6
+    for x in range(0, w + 30, 30):
+        pts.append((x, h * base + amp * math.sin(x / 210 + phase) + amp * 0.5 * math.sin(x / 67 + phase * 2) + r.randint(-6, 6)))
+    pts.append((w, h))
+    d.polygon(pts, fill=color)
+
+
 def photo(path: Path, seed: int, size=(2400, 1600)) -> None:
-    """A soft landscape: sky gradient, layered hills, a sun. Noisy enough to be a real-sized JPEG."""
+    """A landscape at golden hour: sky gradient, a sun, layered hills."""
     r = random.Random(seed)
     w, h = size
     palettes = [
         ((255, 183, 128), (120, 86, 160), [(64, 52, 96), (40, 34, 70), (22, 20, 44)]),
-        ((170, 215, 240), (240, 245, 250), [(96, 140, 110), (60, 100, 80), (34, 64, 54)]),
         ((255, 220, 170), (255, 150, 120), [(120, 80, 90), (80, 50, 70), (40, 28, 46)]),
         ((120, 160, 210), (220, 230, 240), [(150, 160, 170), (90, 100, 115), (50, 58, 70)]),
     ]
     top, bottom, hills = palettes[seed % len(palettes)]
     img = Image.new("RGB", size)
     d = ImageDraw.Draw(img)
-    for y in range(h):
-        k = y / h
-        d.line([(0, y), (w, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * k) for i in range(3)))
+    _gradient(d, w, h, top, bottom)
     sx, sy = r.randint(w // 5, 4 * w // 5), r.randint(h // 6, h // 3)
     d.ellipse([sx - 110, sy - 110, sx + 110, sy + 110], fill=(255, 240, 210))
     for i, color in enumerate(hills):
-        base = h * (0.55 + 0.14 * i)
-        pts = [(0, h)]
-        phase, amp = r.random() * 6, 60 + 50 * i
-        for x in range(0, w + 40, 40):
-            pts.append((x, base + amp * math.sin(x / (260 + 90 * i) + phase) + r.randint(-8, 8)))
-        pts.append((w, h))
-        d.polygon(pts, fill=color)
-    img = img.filter(ImageFilter.GaussianBlur(1.2))
-    noise = Image.effect_noise(size, 18).convert("RGB")
-    img = Image.blend(img, noise, 0.06)
+        _ridge(d, r, w, h, 0.55 + 0.14 * i, 50 + 40 * i, color)
+    img = _noise(img.filter(ImageFilter.GaussianBlur(1.2)), 0.06)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path, quality=92)
 
 
-def document(path: Path, title: str, lines: list[str], total: str | None = None) -> None:
-    """An A4 page as a PDF: a header band, a title, lines, maybe a total."""
+def aurora(path: Path, seed: int, size=(2400, 1600)) -> None:
+    """The northern lights over black mountains and a still lake."""
+    from PIL import ImageChops
+    r = random.Random(seed)
+    w, h = size
+    img = Image.new("RGB", size)
+    d = ImageDraw.Draw(img)
+    _gradient(d, w, h, (4, 8, 24), (14, 30, 52))
+    _stars(d, r, w, h, 900, 0.7)
+    glow = Image.new("RGB", size, (0, 0, 0))
+    g = ImageDraw.Draw(glow)
+    hue = [(40, 255, 140), (60, 230, 170), (150, 90, 255)][seed % 3]
+    for band in range(3):
+        phase, base = r.random() * 6, h * (0.42 + 0.07 * band)
+        for x in range(0, w, 6):
+            y = base + 120 * math.sin(x / 380 + phase) + 50 * math.sin(x / 120 + phase * 3)
+            length = 260 + 140 * math.sin(x / 90 + band)
+            for k in range(0, int(length), 8):
+                fade = 1 - k / length
+                c = tuple(int(v * fade * 0.55) for v in (hue if k < length * 0.7 else (200, 80, 220)))
+                g.line([(x, y - k), (x + 5, y - k)], fill=c, width=3)
+    # Soft curtains with a sharper core.
+    img = ImageChops.add(img, glow.filter(ImageFilter.GaussianBlur(22)))
+    img = ImageChops.add(img, glow.filter(ImageFilter.GaussianBlur(4)))
+    d = ImageDraw.Draw(img)
+    _ridge(d, r, w, h, 0.66, 70, (6, 8, 14))
+    # The lake mirrors the sky, darker.
+    lake = img.crop((0, int(h * 0.42), w, int(h * 0.62))).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    lake = Image.blend(lake, Image.new("RGB", lake.size, (2, 6, 14)), 0.55).filter(ImageFilter.GaussianBlur(3))
+    img.paste(lake.resize((w, h - int(h * 0.8))), (0, int(h * 0.8)))
+    img = _noise(img, 0.04)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, quality=92)
+
+
+def nebula(path: Path, seed: int, size=(2880, 1800)) -> None:
+    """Gas clouds and stars, as from a telescope with a colour camera."""
+    from PIL import ImageChops
+    r = random.Random(seed)
+    w, h = size
+    img = Image.new("RGB", size, (3, 3, 10))
+    clouds = Image.new("RGB", size, (0, 0, 0))
+    c = ImageDraw.Draw(clouds)
+    # Many faint overlapping clouds along a diagonal, blurred into gas.
+    for _ in range(700):
+        t = r.random()
+        x = w * (0.15 + 0.7 * t) + r.gauss(0, w * 0.08)
+        y = h * (0.75 - 0.5 * t) + r.gauss(0, h * 0.1)
+        rad = r.randint(20, 140)
+        col = r.choice([(150, 40, 110), (210, 70, 90), (50, 90, 190), (240, 150, 90), (110, 50, 170)])
+        c.ellipse([x - rad, y - rad, x + rad, y + rad], fill=tuple(v // 6 for v in col))
+    wisps = clouds.filter(ImageFilter.GaussianBlur(40))
+    clouds = clouds.filter(ImageFilter.GaussianBlur(110))
+    img = ImageChops.add(img, ImageChops.add(clouds, clouds))
+    img = ImageChops.add(img, wisps)
+    d = ImageDraw.Draw(img)
+    _stars(d, r, w, h, 2500)
+    for _ in range(12):
+        x, y = r.randrange(w), r.randrange(h)
+        d.ellipse([x - 5, y - 5, x + 5, y + 5], fill=(255, 250, 235))
+        d.line([(x - 26, y), (x + 26, y)], fill=(255, 240, 220), width=2)
+        d.line([(x, y - 26), (x, y + 26)], fill=(255, 240, 220), width=2)
+    img = _noise(img, 0.03)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, quality=92)
+
+
+def moon(path: Path, size=(2000, 2000)) -> None:
+    """A waxing gibbous Moon with maria and craters."""
+    from PIL import ImageChops
+    r = random.Random(3)
+    w, h = size
+    img = Image.new("RGB", size, (2, 2, 6))
+    disc = Image.new("RGB", size, (0, 0, 0))
+    d = ImageDraw.Draw(disc)
+    cx, cy, rad = w // 2, h // 2, 820
+    d.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], fill=(196, 194, 186))
+    maria = Image.new("RGB", size, (0, 0, 0))
+    md = ImageDraw.Draw(maria)
+    for _ in range(14):
+        x, y, s = cx + r.randint(-450, 350), cy + r.randint(-450, 300), r.randint(90, 220)
+        md.ellipse([x - s, y - s * 0.8, x + s, y + s * 0.8], fill=(46, 46, 44))
+    disc = ImageChops.subtract(disc, maria.filter(ImageFilter.GaussianBlur(40)))
+    d = ImageDraw.Draw(disc)
+    for _ in range(110):
+        x, y, s = cx + r.randint(-760, 760), cy + r.randint(-760, 760), r.choice([4, 6, 8, 10, 14, 22])
+        if (x - cx) ** 2 + (y - cy) ** 2 < (rad - s) ** 2:
+            d.ellipse([x - s, y - s, x + s, y + s], outline=(120, 118, 114), width=2)
+    disc = _noise(disc.filter(ImageFilter.GaussianBlur(1.5)), 0.08)
+    mask = Image.new("L", size, 0)
+    m = ImageDraw.Draw(mask)
+    m.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], fill=255)
+    m.ellipse([cx - rad - 1150, cy - rad, cx + rad - 1150, cy + rad], fill=0)
+    m.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], outline=0)
+    mask = mask.filter(ImageFilter.GaussianBlur(26))
+    img.paste(disc, (0, 0), mask)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, quality=92)
+
+
+def star_chart(path: Path) -> None:
+    """The Southern Cross and the Pointers, with names, as a PNG."""
+    w, h = 1800, 1400
+    img = Image.new("RGB", (w, h), (10, 16, 38))
+    d = ImageDraw.Draw(img)
+    r = random.Random(5)
+    _stars(d, r, w, h, 700)
+    for x in range(0, w, 150):
+        d.line([(x, 0), (x, h)], fill=(22, 32, 64))
+    for y in range(0, h, 150):
+        d.line([(0, y), (w, y)], fill=(22, 32, 64))
+    cross = {"Acrux": (900, 1050, 22), "Mimosa": (680, 720, 20), "Gacrux": (930, 330, 19),
+             "Imai": (1120, 640, 13), "Ginan": (1010, 760, 9)}
+    pointers = {"Hadar": (300, 980, 21), "Rigil Kentaurus": (110, 1180, 24)}
+    gold = (255, 214, 120)
+    d.line([cross["Acrux"][:2], cross["Gacrux"][:2]], fill=(120, 150, 230), width=3)
+    d.line([cross["Mimosa"][:2], cross["Imai"][:2]], fill=(120, 150, 230), width=3)
+    d.line([pointers["Rigil Kentaurus"][:2], pointers["Hadar"][:2]], fill=(120, 150, 230), width=2)
+    for name, (x, y, s) in {**cross, **pointers}.items():
+        d.ellipse([x - s, y - s, x + s, y + s], fill=(255, 250, 240))
+        d.ellipse([x - s * 2, y - s * 2, x + s * 2, y + s * 2], outline=(255, 250, 240, 60), width=1)
+        d.text((x + s + 16, y - 18), name, font=font(34), fill=gold)
+    d.text((70, 60), "Crux, the Southern Cross", font=font(60, True), fill=(235, 240, 255))
+    d.text((70, 140), "Follow Acrux to Gacrux 4.5 times for the south celestial pole", font=font(32), fill=(160, 175, 220))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path)
+
+
+def document(path: Path, brand: str, title: str, lines: list[str], total: str | None = None,
+             band=(36, 41, 61), contact: str = "") -> None:
+    """An A4 page as a PDF: a coloured header band, a title, lines, maybe a total."""
     w, h = 1240, 1754
     img = Image.new("RGB", (w, h), "white")
     d = ImageDraw.Draw(img)
-    d.rectangle([0, 0, w, 150], fill=(36, 41, 61))
-    d.text((90, 52), "Northwind Studio", font=font(44, True), fill="white")
-    d.text((w - 420, 62), "hello@northwind.example", font=font(28), fill=(200, 205, 225))
+    d.rectangle([0, 0, w, 150], fill=band)
+    d.text((90, 52), brand, font=font(44, True), fill="white")
+    if contact:
+        d.text((w - 90, 62), contact, font=font(28), fill=(225, 230, 245), anchor="ra")
     d.text((90, 240), title, font=font(64, True), fill=(30, 30, 40))
     y = 360
     for line in lines:
@@ -155,20 +304,37 @@ def document(path: Path, title: str, lines: list[str], total: str | None = None)
     img.save(path, "PDF", resolution=150)
 
 
-def fake_screenshot(path: Path, seed: int) -> None:
-    """A screenshot of a made-up chart, as you'd take for a slide."""
+def game_screenshot(path: Path, seed: int) -> None:
+    """A screenshot of the game: a pixel-art starship drifting past planets, with a HUD."""
     r = random.Random(seed)
     w, h = 1600, 1000
-    img = Image.new("RGB", (w, h), (248, 249, 252))
+    px = 10
+    img = Image.new("RGB", (w, h), (12, 10, 28))
     d = ImageDraw.Draw(img)
-    d.rectangle([0, 0, w, 70], fill=(232, 235, 242))
-    for i, c in enumerate([(255, 95, 87), (254, 188, 46), (40, 200, 64)]):
-        d.ellipse([24 + i * 34, 24, 46 + i * 34, 46], fill=c)
-    d.text((80, 110), "Weekly active users", font=font(44, True), fill=(30, 30, 40))
-    bars = [r.randint(200, 640) for _ in range(12)]
-    for i, b in enumerate(bars):
-        x = 100 + i * 118
-        d.rounded_rectangle([x, 900 - b, x + 80, 900], 10, fill=(99, 102, 241) if i < 11 else (236, 72, 153))
+    for _ in range(320):
+        x, y = r.randrange(0, w, px), r.randrange(0, h, px)
+        d.rectangle([x, y, x + px - 1, y + px - 1], fill=r.choice([(90, 90, 140), (200, 200, 255), (255, 220, 160)]))
+    for cx, cy, rad, col in [(1220, 260, 150, (226, 120, 90)), (330, 760, 90, (90, 170, 220))]:
+        for y in range(cy - rad, cy + rad, px):
+            for x in range(cx - rad, cx + rad, px):
+                dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+                if dist < rad:
+                    shade = 1 - max(0, (x - cx + y - cy) / (rad * 2.4))
+                    stripe = 0.85 if (y // (px * 3)) % 2 else 1
+                    d.rectangle([x, y, x + px - 1, y + px - 1], fill=tuple(int(v * shade * stripe) for v in col))
+    ship = ["....##....", "...####...", "..##..##..", ".########.", "##.####.##", "#..####..#", "...#..#...", "..##..##.."]
+    sx, sy = 700 + seed * 60, 470
+    for j, row in enumerate(ship):
+        for i, c in enumerate(row):
+            if c == "#":
+                d.rectangle([sx + i * px * 2, sy + j * px * 2, sx + i * px * 2 + px * 2 - 1, sy + j * px * 2 + px * 2 - 1],
+                            fill=(220, 230, 255) if j < 4 else (140, 160, 220))
+    for k in range(4):
+        d.rectangle([sx + 6 * px + k * 8, sy + 16 * px, sx + 6 * px + k * 8 + 6, sy + 16 * px + 40 + r.randint(0, 40)],
+                    fill=(255, 170, 60))
+    d.rectangle([0, 0, w, 64], fill=(20, 18, 44))
+    d.text((24, 16), f"SECTOR 7-{seed + 3}   HULL ███████░░   FUEL {62 - seed * 9}%   CREDITS 1 2{seed}0", font=font(28, True), fill=(140, 255, 180))
+    path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path)
 
 
@@ -199,178 +365,250 @@ def tree_dates(root: Path, days_ago: float) -> None:
 def projects(home: Path) -> None:
     dev = home / "Developer"
 
-    api = dev / "api-server"
-    text(api / "Cargo.toml", """
+    game = dev / "starfield-roguelike"
+    text(game / "Cargo.toml", """
 [package]
-name = "api-server"
-version = "0.4.2"
+name = "starfield-roguelike"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.7"
+bevy = "0.14"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio"] }
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
 """)
-    text(api / "src/main.rs", """
-use axum::{routing::get, Router};
-use std::net::SocketAddr;
+    text(game / "src/main.rs", """
+use bevy::prelude::*;
 
-mod invoices;
-mod routes;
+mod sectors;
+mod ship;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    let pool = db::connect(&std::env::var("DATABASE_URL")?).await?;
-
-    let app = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .nest("/invoices", invoices::router())
-        .with_state(pool);
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-    tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
+/// A roguelike across procedurally generated star sectors.
+/// Run out of fuel between stars and it's game over.
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Starfield".into(),
+                resolution: (1280.0, 800.0).into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .insert_resource(ClearColor(Color::srgb(0.05, 0.04, 0.11)))
+        .add_systems(Startup, (sectors::generate, ship::spawn))
+        .add_systems(Update, (ship::thrust, ship::warp, ship::burn_fuel))
+        .run();
 }
 """)
-    text(api / "src/invoices.rs", """
-use axum::{extract::{Path, State}, routing::get, Json, Router};
-use serde::Serialize;
-use sqlx::PgPool;
+    text(game / "src/ship.rs", """
+use bevy::prelude::*;
 
-#[derive(Serialize, sqlx::FromRow)]
-pub struct Invoice {
-    pub id: i64,
-    pub client: String,
-    pub total_cents: i64,
-    pub paid: bool,
+#[derive(Component)]
+pub struct Ship {
+    pub fuel: f32,
+    pub hull: u8,
+    pub warp_charge: f32,
 }
 
-pub fn router() -> Router<PgPool> {
-    Router::new()
-        .route("/", get(list))
-        .route("/:id", get(show))
+const WARP_COST: f32 = 18.0;
+
+pub fn spawn(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.spawn((
+        Ship { fuel: 100.0, hull: 9, warp_charge: 0.0 },
+        SpriteBundle { texture: assets.load("ship.png"), ..default() },
+    ));
 }
 
-async fn list(State(db): State<PgPool>) -> Json<Vec<Invoice>> {
-    let rows = sqlx::query_as("select * from invoices order by id desc limit 50")
-        .fetch_all(&db)
-        .await
-        .unwrap_or_default();
-    Json(rows)
-}
-
-async fn show(State(db): State<PgPool>, Path(id): Path<i64>) -> Option<Json<Invoice>> {
-    sqlx::query_as("select * from invoices where id = $1")
-        .bind(id)
-        .fetch_optional(&db)
-        .await
-        .ok()
-        .flatten()
-        .map(Json)
+/// Hold space to charge the warp drive; let go to jump to the next sector.
+pub fn warp(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut ships: Query<&mut Ship>) {
+    for mut ship in &mut ships {
+        if keys.pressed(KeyCode::Space) {
+            ship.warp_charge = (ship.warp_charge + time.delta_seconds()).min(1.0);
+        } else if ship.warp_charge >= 1.0 && ship.fuel >= WARP_COST {
+            ship.fuel -= WARP_COST;
+            ship.warp_charge = 0.0;
+            info!("warp! {:.0}% fuel left", ship.fuel);
+        }
+    }
 }
 """)
-    text(api / "src/routes.rs", "pub mod health;\npub mod invoices;\n")
-    text(api / "README.md", "# api-server\n\nThe invoices API. `cargo run`, then `curl localhost:8080/health`.\n")
-    text(api / ".git/HEAD", "ref: refs/heads/main\n")
-    blob(api / "target/debug/api-server", 38)
-    blob(api / "target/debug/deps/libaxum.rlib", 12)
-    tree_dates(api, 0.1)
-    date(api / "src/invoices.rs", 0.02)
+    text(game / "src/sectors.rs", "use bevy::prelude::*;\n\npub fn generate(mut commands: Commands) {\n    // Stars, nebulae, a derelict or two.\n}\n")
+    text(game / "README.md", "# Starfield\n\nA tiny space roguelike. `cargo run --release`, hold **space** to warp.\n")
+    text(game / ".git/HEAD", "ref: refs/heads/main\n")
+    game_screenshot(game / "assets/ship-preview.png", 0)
+    blob(game / "target/debug/starfield-roguelike", 38)
+    blob(game / "target/debug/deps/libbevy.rlib", 12)
+    tree_dates(game, 0.1)
+    date(game / "src/ship.rs", 0.02)
 
-    site = dev / "portfolio-site"
-    text(site / "package.json", json.dumps({
-        "name": "portfolio-site", "private": True,
-        "scripts": {"dev": "next dev", "build": "next build"},
-        "dependencies": {"next": "14.2.5", "react": "18.3.1", "react-dom": "18.3.1"},
+    synth = dev / "synth-garden"
+    text(synth / "package.json", json.dumps({
+        "name": "synth-garden", "private": True,
+        "scripts": {"dev": "vite", "build": "vite build"},
+        "dependencies": {"react": "18.3.1", "react-dom": "18.3.1", "tone": "15.0.4"},
     }, indent=2) + "\n")
-    text(site / "src/app/page.tsx", """
-export default function Home() {
-  return (
-    <main className="mx-auto max-w-2xl p-8">
-      <h1 className="text-4xl font-bold">Hi, I make things.</h1>
-      <p className="mt-4 text-lg text-zinc-600">Design and code, mostly for small teams.</p>
-    </main>
-  );
+    text(synth / "src/Garden.tsx", """
+import * as Tone from "tone";
+
+// Every flower is an oscillator: tap one and it blooms into a chord.
+const scale = ["C4", "D4", "E4", "G4", "A4", "C5"];
+
+export function Flower({ index }: { index: number }) {
+  const bloom = async () => {
+    await Tone.start();
+    const synth = new Tone.PolySynth().toDestination();
+    synth.triggerAttackRelease([scale[index], scale[(index + 2) % 6]], "8n");
+  };
+  return <button className="flower" onClick={bloom}>🌸</button>;
 }
 """)
-    text(site / "README.md", "# portfolio-site\n\n`npm run dev`\n")
-    text(site / ".git/HEAD", "ref: refs/heads/main\n")
-    for i, pkg in enumerate(["next", "react", "react-dom", "typescript", "@swc/core", "caniuse-lite", "postcss"]):
-        blob(site / f"node_modules/{pkg}/dist/index.js", [42, 3, 6, 22, 31, 4, 2][i])
-    tree_dates(site, 140)
+    text(synth / "README.md", "# synth-garden\n\nA garden that plays music. `npm run dev`\n")
+    text(synth / ".git/HEAD", "ref: refs/heads/main\n")
+    for i, pkg in enumerate(["tone", "react", "react-dom", "typescript", "vite", "esbuild", "rollup"]):
+        blob(synth / f"node_modules/{pkg}/dist/index.js", [24, 3, 6, 22, 31, 14, 8][i])
+    tree_dates(synth, 140)
 
-    inv = dev / "invoice-generator"
-    text(inv / "main.py", """
-from pathlib import Path
-from jinja2 import Template
+    bread = dev / "sourdough-monitor"
+    text(bread / "monitor.py", """
+\"\"\"Watches the sourdough starter rise with a Raspberry Pi and a distance sensor.\"\"\"
+import time
+from gpiozero import DistanceSensor
 
-def render(client: str, items: list[tuple[str, float]]) -> str:
-    template = Template(Path("templates/invoice.html").read_text())
-    return template.render(client=client, items=items, total=sum(p for _, p in items))
+sensor = DistanceSensor(echo=24, trigger=23)
+EMPTY_JAR_CM = 14.0
+
+while True:
+    height = EMPTY_JAR_CM - sensor.distance * 100
+    if height > 9:
+        print("🍞 Peak rise: feed me or bake!")
+    time.sleep(600)
 """)
-    text(inv / "templates/invoice.html", "<h1>Invoice for {{ client }}</h1>\n")
-    text(inv / "requirements.txt", "jinja2==3.1.4\nweasyprint==62.3\n")
-    text(inv / ".git/HEAD", "ref: refs/heads/main\n")
-    blob(inv / ".venv/lib/python3.12/site-packages/weasyprint/core.so", 24)
-    tree_dates(inv, 210)
+    text(bread / "requirements.txt", "gpiozero==2.0.1\nmatplotlib==3.9.2\n")
+    text(bread / ".git/HEAD", "ref: refs/heads/main\n")
+    blob(bread / ".venv/lib/python3.12/site-packages/matplotlib/_path.so", 24)
+    tree_dates(bread, 210)
 
-    text(dev / "notes.md", "# Ideas\n\n- invoice reminders by email\n- dark mode for the site\n")
-    date(dev / "notes.md", 3)
+    text(dev / "ideas.md", "# Ideas\n\n- asteroid mining minigame\n- synth-garden: seasons change the scale\n- starter monitor: text me at peak rise\n")
+    date(dev / "ideas.md", 3)
 
 
 def documents(home: Path) -> None:
     docs = home / "Documents"
-    clients = ["Acme Studio", "Blue Fern Café", "Kestrel Labs", "Orbit Fitness", "Juniper & Co"]
-    for month in range(1, 11):
-        client = clients[month % len(clients)]
-        hours = 8 + (month * 7) % 30
-        p = docs / f"Invoices/2026/invoice-2026-{month:02d}.pdf"
-        document(p, f"Invoice 2026-{month:02d}", [
-            f"Billed to: {client}", f"Date: 2026-{month:02d}-28", "",
-            f"Design and development, {hours} h ..... R {hours * 950:,}".replace(",", " "),
-            "Hosting, monthly ..... R 450",
-        ], total=f"R {hours * 950 + 450:,}".replace(",", " "))
-        date(p, (10 - month) * 30 + 3)
-    contract = docs / "Contracts/Kestrel Labs - contract.pdf"
-    document(contract, "Services agreement", [
-        "Between Northwind Studio and Kestrel Labs (Pty) Ltd.", "",
-        "1. Scope: design and build of the customer portal.",
-        "2. Term: six months from signature.",
-        "3. Fees: as per the schedule, invoiced monthly.",
-    ])
-    date(contract, 75)
-    taxes = docs / "Taxes/Tax return 2025.pdf"
-    document(taxes, "Tax return 2025", ["Income ..... R 412 300", "Deductions ..... R 38 950"], total="R 373 350")
-    date(taxes, 120)
-    text(docs / "Notes/meeting-notes.md", """
-# Kestrel Labs, kickoff
+    text(docs / "Space/orbital-mechanics.md", r"""
+# Getting to Mars, the cheap way
 
-- Portal launches before the end of November
-- Invoices go out on the 28th
-- Next call: Thursday 10:00
+> [!tip] Hohmann transfer
+> Two engine burns and one half-ellipse: the least fuel between two circular orbits.
+
+The speed anywhere on an orbit comes from the **vis-viva equation**:
+
+$$
+v^2 = \mu \left( \frac{2}{r} - \frac{1}{a} \right)
+$$
+
+where $\mu = GM_\odot$ and $a$ is the semi-major axis. Leaving Earth's orbit ($r_1$)
+for Mars ($r_2$), the first burn is
+
+$$
+\Delta v_1 = \sqrt{\frac{\mu}{r_1}} \left( \sqrt{\frac{2 r_2}{r_1 + r_2}} - 1 \right) \approx 2.94\ \text{km/s}
+$$
+
+and the trip takes half an orbit of the transfer ellipse:
+
+$$
+t_H = \pi \sqrt{\frac{(r_1 + r_2)^3}{8 \mu}} \approx 259\ \text{days}
+$$
+
+| Planet | $a$ (AU) | Period | Moons |
+|---|---|---|---|
+| Earth | 1.00 | 365 d | 1 |
+| Mars | 1.52 | 687 d | 2 |
+| Jupiter | 5.20 | 11.9 y | 95 |
+
+> [!note] Launch windows
+> Earth and Mars line up every $\approx 26$ months: next window is late 2026.
+
+```python
+from math import pi, sqrt
+mu, r1, r2 = 1.327e20, 1.496e11, 2.279e11
+print(pi * sqrt((r1 + r2) ** 3 / (8 * mu)) / 86400)  # 258.9 days
+```
 """)
-    date(docs / "Notes/meeting-notes.md", 1.2)
-    text(docs / "Notes/reading-list.md", "# Reading\n\n- The Design of Everyday Things\n- Shape Up\n")
-    date(docs / "Notes/reading-list.md", 40)
+    date(docs / "Space/orbital-mechanics.md", 0.3)
+    text(docs / "Space/observing-log.md", """
+# Observing log
+
+| Date | Target | Seeing | Notes |
+|---|---|---|---|
+| 2026-10-17 | Moon | 4/5 | Terminator through Copernicus, gorgeous |
+| 2026-10-21 | Orion Nebula | 3/5 | The Trapezium split at 120× |
+| 2026-10-24 | Saturn | 4/5 | Cassini division visible! |
+""")
+    date(docs / "Space/observing-log.md", 3)
+    poster = docs / "Space/Mars launch windows.pdf"
+    document(poster, "Mission Planning Club", "Mars launch windows", [
+        "Window 1 ..... Nov 2026", "Window 2 ..... Dec 2028", "Window 3 ..... Feb 2031",
+        "", "Hohmann transfer: about 259 days, 2.94 km/s from LEO.",
+    ], band=(150, 52, 40), contact="ad astra")
+    date(poster, 12)
+
+    text(docs / "Recipes/sourdough.md", """
+# Weekend sourdough
+
+| Ingredient | Grams | Baker's % |
+|---|---|---|
+| Bread flour | 450 | 90% |
+| Wholewheat | 50 | 10% |
+| Water | 375 | 75% |
+| Starter | 100 | 20% |
+| Salt | 10 | 2% |
+
+- [x] Feed the starter (the monitor says when it peaks)
+- [x] Autolyse 1 h, then add starter and salt
+- [ ] Four sets of stretch and folds, 30 min apart
+- [ ] Cold proof overnight, bake at 250 °C in a Dutch oven
+""")
+    date(docs / "Recipes/sourdough.md", 2)
+    text(docs / "Recipes/tonkotsu-ramen.md", "# Tonkotsu ramen\n\n12 hours of broth. Worth it.\n\n1. Blanch the bones\n2. Boil hard, keep topping up\n3. Tare, noodles, chashu, ajitama\n")
+    date(docs / "Recipes/tonkotsu-ramen.md", 30)
+    text(docs / "Recipes/lemon-tart.md", "# Lemon tart\n\nSweet pastry, lemon curd, a blowtorch for the top.\n")
+    date(docs / "Recipes/lemon-tart.md", 60)
+
+    text(docs / "Game design/boss-fights.md", "# Boss fights\n\n## The Leviathan\nA space whale that eats your fuel. Lure it into the nebula.\n\n## The Archivist\nSteals your map. Every jump is blind until you beat it.\n")
+    date(docs / "Game design/boss-fights.md", 5)
+    text(docs / "Game design/level-ideas.md", "# Sectors\n\n- Ice field: drift slowly or crack the hull\n- Pulsar: the screen pulses with the beat\n- Derelict station: loot, and something still alive\n")
+    date(docs / "Game design/level-ideas.md", 9)
+
+    trip = docs / "Travel/Iceland aurora trip.pdf"
+    document(trip, "Aurora Tours", "Iceland, 3–10 Nov", [
+        "Fly Cape Town → Keflavík ..... 3 Nov", "Golden Circle and geysers ..... 4 Nov",
+        "Jökulsárlón ice lagoon ..... 6 Nov", "Aurora hunt, Kirkjufell ..... 8 Nov",
+        "Blue Lagoon, fly home ..... 10 Nov",
+    ], band=(24, 92, 84), contact="aurora forecast: Kp 5")
+    date(trip, 20)
 
 
 def pictures(home: Path) -> list[Path]:
-    trip = home / "Pictures/Iceland 2024"
     shots = []
-    for i in range(8):
+    trip = home / "Pictures/Iceland 2025"
+    for i in range(6):
         p = trip / f"IMG_{2041 + i}.jpg"
-        photo(p, i)
+        (aurora if i % 2 == 0 else photo)(p, i)
         date(p, 360 - i)
         shots.append(p)
-    for i, name in enumerate(["dunes.jpg", "harbour.jpg"]):
-        p = home / "Pictures/Wallpapers" / name
-        photo(p, 10 + i, (2880, 1800))
-        date(p, 90)
+    best = trip / "aurora over Kirkjufell.jpg"
+    aurora(best, 0)
+    date(best, 1.5)
+    astro = home / "Pictures/Astrophotography"
+    nebula(astro / "orion-nebula.jpg", 1)
+    date(astro / "orion-nebula.jpg", 6)
+    moon(astro / "moon-2026-10-17.jpg")
+    date(astro / "moon-2026-10-17.jpg", 10)
+    star_chart(astro / "southern-cross.png")
+    date(astro / "southern-cross.png", 25)
+    nebula(home / "Pictures/Wallpapers/carina.jpg", 4)
+    date(home / "Pictures/Wallpapers/carina.jpg", 90)
     return shots
 
 
@@ -378,24 +616,30 @@ def downloads(home: Path, photos: list[Path]) -> None:
     dl = home / "Downloads"
     dl.mkdir(parents=True, exist_ok=True)
 
-    q3 = dl / "Q3 report.pdf"
-    document(q3, "Q3 report", ["Revenue ..... R 1 240 000", "Costs ..... R 860 000", "New clients ..... 4"])
-    date(q3, 0.15)
-    downloaded(q3, "https://docs.google.com/document/d/1x/export?format=pdf", "Google Chrome")
+    bp = dl / "boarding-pass-CPT-KEF.pdf"
+    document(bp, "Icelandair", "Boarding pass", [
+        "Passenger ..... SAM RIVERA", "Flight ..... FI 0451", "From ..... Cape Town (CPT)",
+        "To ..... Keflavík (KEF)", "Seat ..... 23A, window", "Boarding ..... 05:40",
+    ], band=(16, 52, 120), contact="Have a great trip!")
+    date(bp, 0.15)
+    downloaded(bp, "https://mail.google.com/mail/u/0/?attid=0.1", "Google Chrome")
 
-    inv = dl / "invoice-kestrel-oct.pdf"
-    document(inv, "Invoice KL-2210", ["Billed to: Northwind Studio", "Hosting, October ..... R 1 200"], total="R 1 200")
-    date(inv, 1.1)
-    downloaded(inv, "https://mail.google.com/mail/u/0/?attid=0.1", "Google Chrome")
+    fc = dl / "aurora-forecast-week44.pdf"
+    document(fc, "Icelandic Met Office", "Aurora forecast, week 44", [
+        "Mon ..... Kp 3, cloudy", "Tue ..... Kp 4, clearing", "Wed ..... Kp 5, clear skies",
+        "Thu ..... Kp 6, clear: go!", "Fri ..... Kp 2",
+    ], band=(30, 70, 60))
+    date(fc, 1.1)
+    downloaded(fc, "https://en.vedur.is/weather/forecasts/aurora/", "Safari")
 
-    figma = dl / "Figma-124.3.dmg"
-    blob(figma, 6)
-    date(figma, 4)
-    downloaded(figma, "https://desktop.figma.com/mac-arm/Figma-124.3.dmg")
+    planetarium = dl / "Stellarium-24.3.dmg"
+    blob(planetarium, 6)
+    date(planetarium, 4)
+    downloaded(planetarium, "https://github.com/Stellarium/stellarium/releases/download/v24.3/Stellarium-24.3.dmg")
 
-    # An AirDrop from a phone.
-    air = dl / "IMG_3310.jpg"
-    photo(air, 21)
+    # An AirDrop from a phone: last night's sky.
+    air = dl / "IMG_4021.jpg"
+    aurora(air, 2)
     date(air, 0.4)
     airdropped(air)
 
@@ -405,16 +649,21 @@ def downloads(home: Path, photos: list[Path]) -> None:
     date(dup, 95)
     downloaded(dup, "https://photos.google.com/share/AF1Qip")
 
-    contract = dl / "Kestrel Labs - contract (1).pdf"
-    shutil.copyfile(home / "Documents/Contracts/Kestrel Labs - contract.pdf", contract)
-    date(contract, 76)
-    downloaded(contract, "https://mail.google.com/mail/u/0/?attid=0.2", "Google Chrome")
+    poster = dl / "Mars launch windows (1).pdf"
+    shutil.copyfile(home / "Documents/Space/Mars launch windows.pdf", poster)
+    date(poster, 13)
+    downloaded(poster, "https://mail.google.com/mail/u/0/?attid=0.2", "Google Chrome")
+
+    sprites = dl / "pixel-ship-sprites.png"
+    game_screenshot(sprites, 2)
+    date(sprites, 2.2)
+    downloaded(sprites, "https://itch.io/game-assets/free/tag-space")
 
     # Old downloads.
     for name, size, days, url in [
-        ("Xcode_15.4.xip", 120, 160, "https://developer.apple.com/services-account/download?path=/Developer_Tools/Xcode_15.4/Xcode_15.4.xip"),
-        ("Zoom.pkg", 9, 130, "https://zoom.us/client/latest/Zoom.pkg"),
-        ("brand-assets.zip", 14, 88, "https://drive.google.com/uc?id=1b"),
+        ("Godot_v4.3-stable_macos.universal.zip", 120, 160, "https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip"),
+        ("Steam.dmg", 9, 130, "https://cdn.cloudflare.steamstatic.com/client/installer/steam.dmg"),
+        ("lofi-synth-samples.zip", 14, 88, "https://freesound.org/people/synthgarden/packs/"),
     ]:
         p = dl / name
         blob(p, size)
@@ -427,34 +676,34 @@ def desktop(home: Path) -> None:
     desk.mkdir(parents=True, exist_ok=True)
     for i, (when, label) in enumerate([(0.05, "09.41.12"), (2.3, "16.02.55")]):
         p = desk / f"Screenshot 2026-10-{27 - int(when)} at {label}.png"
-        fake_screenshot(p, i)
+        game_screenshot(p, i + 1)
         date(p, when)
         screenshot(p)
-    text(desk / "todo.txt", "- send Kestrel invoice\n- renew domain\n- back up photos\n")
+    text(desk / "todo.txt", "- pack thermals for Iceland\n- feed the starter\n- fix the warp drive bug\n- clean the telescope mirror\n")
     date(desk / "todo.txt", 0.8)
 
 
 def media(home: Path) -> None:
-    raw = home / "Movies/Iceland 2024 - raw footage.mov"
+    raw = home / "Movies/aurora-timelapse-raw.mov"
     blob(raw, 160)
     date(raw, 340, opened=330)
 
 
 def library(home: Path) -> None:
     caches = home / "Library/Caches"
-    for bundle, mb in [("com.spotify.client", 46), ("com.tinyspeck.slackmacgap", 28), ("Homebrew", 34)]:
+    for bundle, mb in [("com.valvesoftware.steam", 46), ("com.spotify.client", 28), ("Homebrew", 34)]:
         blob(caches / bundle / "data.bin", mb)
     # Tilde's own frecency, so search ranks like a home folder that's been in use.
     t = int(NOW)
     entries = {
         str(home / p): {"score": s, "at": t - 3600, "dir": d}
         for p, s, d in [
-            ("Developer/api-server", 14.0, True),
-            ("Documents/Invoices/2026", 9.0, True),
+            ("Developer/starfield-roguelike", 14.0, True),
+            ("Documents/Space", 9.0, True),
             ("Downloads", 8.0, True),
             ("Developer", 6.0, True),
-            ("Developer/portfolio-site", 3.0, True),
-            ("Documents/Invoices/2026/invoice-2026-10.pdf", 4.0, False),
+            ("Documents/Recipes", 3.0, True),
+            ("Documents/Space/orbital-mechanics.md", 4.0, False),
         ]
     }
     support = home / "Library/Application Support/Tilde"
@@ -464,9 +713,9 @@ def library(home: Path) -> None:
 
 def trash(home: Path) -> None:
     t = home / ".Trash"
-    text(t / "old-logo-v1.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>\n")
-    blob(t / "screen-recording-draft.mov", 22)
-    text(t / "notes copy.txt", "old\n")
+    text(t / "ship-sprite-v1.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>\n")
+    blob(t / "trailer-draft.mov", 22)
+    text(t / "burnt-loaf-notes.txt", "too hot, too long\n")
 
 
 def config(home: Path, appearance: str) -> None:

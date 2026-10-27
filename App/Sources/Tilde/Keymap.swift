@@ -26,6 +26,9 @@ enum KeyAction: String {
     case filterEdited = "filter_edited"
     case filterAirdrop = "filter_airdrop"
     case inbox
+    case goto, bookmark, yank, paste
+    case pasteMove = "paste_move"
+    case hidden, refresh, close
 }
 
 /// The key bindings from the config, for matching key presses.

@@ -219,6 +219,7 @@ enum DebugSnapshot {
         case "\t": 48
         case "\r": 36
         case "\u{7f}": 51
+        case " ": 49
         default: 0
         }
         return NSEvent.keyEvent(

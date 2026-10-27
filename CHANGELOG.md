@@ -5,6 +5,28 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Some default keys changed, to be more consistent and more like the Finder and Vim. Keys
+you set yourself are kept.
+
+- **`space` previews**, as in the Finder (it was `p`); `⇧space` opens the Quick Look window
+  (was `P`). In preview mode, `⌃d` / `⌃u` page.
+- **`y` / `p` copy and paste files**, Vim style, and `P` pastes by moving them. `⌘C`,
+  `⌘V` and `⌥⌘V` do the same, as in the Finder, and work with the Finder and other apps.
+  Copying paths moved to `Y`.
+- **`g` goes places**: a list of places (`g h` Home, `g d` Downloads, `g D` Desktop…), views
+  (`g a` Activity, `g c` Clean Up, `g u` History) and your bookmarks, one key away. `g g` is
+  the top (it was `g`).
+- **Bookmarks**: `b` and a key bookmarks the folder, for `g` and that key.
+- **The Finder's Go menu**: `⌘↑` enclosing folder, `⌘↓` / `⌘O` open, `⇧⌘H` Home, `⌥⌘L`
+  Downloads, `⇧⌘D` Desktop, `⇧⌘O` Documents, `⇧⌘A` Applications, `⇧⌘C` Computer, `⇧⌘F`
+  Activity, `⇧⌘G` go to folder.
+- **`.` shows hidden files** (or hides them again).
+- **Leaving is the same everywhere**: `esc` and `h` back out one layer, the key that opened
+  a view closes it, and `q` closes preview, History, Clean Up or Activity.
+- **One meaning per key**: `R` reads the folder again (in Clean Up: looks again, was `r`);
+  redo in History is `U` / `⌃R` as everywhere (was `r`); History follows your own keys.
+- `space` no longer adds to the shelf (`x` does).
+
 ## [0.2.0] - 2026-10-27
 
 - **Markdown is rendered by Tilde.** The pane shows it as formatted text in 10–30 ms

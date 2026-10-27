@@ -619,8 +619,8 @@ final class ShelfBar: NSView {
             attributes: [.font: theme.badge, .foregroundColor: theme.colors.shelf])
         s.append(NSAttributedString(string: names + more, attributes: [.font: theme.small, .foregroundColor: theme.colors.text]))
         s.append(NSAttributedString(
-            string: "    " + [(KeyAction.move, "move"), (.copy, "copy"), (.trash, "trash"), (.tag, "tag"),
-                                 (.compress, "zip"), (.copyPath, "paths"), (.clear, "clear")]
+            string: "    " + [(KeyAction.move, "move"), (.copy, "copy"), (.yank, "yank"), (.trash, "trash"), (.tag, "tag"),
+                                 (.compress, "zip"), (.clear, "clear")]
                 .compactMap { action, label in
                     let key = Keymap.shared.key(action, in: .select)
                     return key.isEmpty ? nil : "\(key) \(label)"
@@ -741,7 +741,7 @@ final class StatusBar: NSView {
             }
         case .select where inHistory:
             modePill.stringValue = "HISTORY"
-            hints.stringValue = "\(move) move   u undo   r redo   ⏎ go to that state   esc back" + help
+            hints.stringValue = "\(move) move   " + hint([(.undo, "undo"), (.redo, "redo")]) + "   ⏎ go to that state   esc back" + help
         case .select where inActivity:
             modePill.stringValue = "SELECT"
             hints.stringValue = "\(move) move   " + hint([(.filterDownloads, "downloads"), (.inbox, "inbox"), (.enter, "reveal"), (.activity, "back")]) + help
@@ -753,7 +753,7 @@ final class StatusBar: NSView {
             modePill.stringValue = "SELECT"
             let inOut = "\(keys.key(.parent, in: .select)) \(keys.key(.enter, in: .select))"
             hints.stringValue = "\(move) move   \(inOut) out / in   " + hint([
-                (.shelf, "collect"), (.move, "move"), (.trash, "trash"), (.search, "search"),
+                (.shelf, "collect"), (.move, "move"), (.trash, "trash"), (.quickLook, "preview"), (.goto, "go to"), (.search, "search"),
             ]) + help
         case .edit:
             modePill.stringValue = "EDIT"

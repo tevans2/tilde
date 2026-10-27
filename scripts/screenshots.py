@@ -51,20 +51,33 @@ class Scene:
 
 
 SCENES = [
-    Scene("search", r"\w\winv\w"),
-    Scene("browse", r"\w\e\w", start="Developer/api-server/src"),
+    Scene("search", r"\w\waurora\w^j\w"),
+    Scene("browse", r"\w\ejj\w", start="Developer/starfield-roguelike/src"),
     Scene("activity", r"\w@\w\w"),
-    # r: duplicates are skipped in Low Power Mode until asked for.
-    Scene("cleanup", r"\w\w\eC\w\wr\w\w\w\wjl\w\w"),
-    Scene("preview", r"\w\ejjjp\w\w", start="Documents/Invoices/2026"),
-    Scene("hero", r"\winvo\w^j^j^j\t\w\el\wjj\wp\wjjj\wp\w", gif=True, key_delay=0.3),
-    # Collect two PDFs in Downloads, file them, then undo.
-    Scene("shelf", r"\w\ejjjjxjx\wm\w2026\w\r\w\wu\w\w", start="Downloads", gif=True,
+    # R: duplicates are skipped in Low Power Mode until asked for.
+    Scene("cleanup", r"\w\w\eC\w\wR\w\w\w\wjl\w\w"),
+    Scene("preview", r"\w\ejj \w\w\w", start="Documents/Space"),
+    Scene("hero", r"\wspace\w\t\w\ejj\w \w\wjjj\w \w", gif=True, key_delay=0.3),
+    # Collect two PDFs in Downloads, file them in Travel, then undo.
+    Scene("shelf", r"\w\exx\wm\wtravel\w\r\w\wu\w\w", start="Downloads", gif=True,
           key_delay=0.3, changes_files=True),
 ]
 
 
 def run_tilde(scene: Scene, out: Path, appearance: str, frames: Path | None) -> None:
+    """Runs the scene, again if the window was drawn at 1x: with a non-Retina display
+    attached, a window that first appears there can stay at its scale."""
+    for attempt in range(4):
+        if frames:
+            shutil.rmtree(frames, ignore_errors=True)
+        run_tilde_once(scene, out, appearance, frames)
+        if Image.open(out).width >= STILL_WIDTH * 1.4:
+            return
+        print(f"  drawn at 1x, again ({attempt + 1})")
+    raise SystemExit(f"{scene.name}: the window stayed at 1x; move it to a Retina display's workspace")
+
+
+def run_tilde_once(scene: Scene, out: Path, appearance: str, frames: Path | None) -> None:
     make_home.config(DEMO, appearance)
     env = {
         **os.environ,

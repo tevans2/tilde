@@ -192,6 +192,12 @@ enum MainMenu {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
         let newFolder = fileMenu.addItem(withTitle: "New Folder…", action: #selector(BrowserWindowController.newFolder(_:)), keyEquivalent: "n")
+        fileMenu.addItem(withTitle: "Open", action: #selector(BrowserWindowController.openSelected(_:)), keyEquivalent: "o")
+        // ⌘↓ as in the Finder, without a second line in the menu.
+        let openDown = fileMenu.addItem(withTitle: "Open", action: #selector(BrowserWindowController.openSelected(_:)),
+                                        keyEquivalent: String(UnicodeScalar(NSDownArrowFunctionKey)!))
+        openDown.isHidden = true
+        openDown.allowsKeyEquivalentWhenHidden = true
         fileMenu.addItem(withTitle: "Apply Edits", action: #selector(BrowserWindowController.applyEdits(_:)), keyEquivalent: "s")
         // "Stop Operation" when not editing.
         fileMenu.addItem(withTitle: "Cancel Edit", action: #selector(BrowserWindowController.cancelEdits(_:)), keyEquivalent: ".")
@@ -219,6 +225,11 @@ enum MainMenu {
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        // Held ⌥, as in the Finder: the copied files move here.
+        let moveHere = editMenu.addItem(withTitle: "Move Items Here", action: #selector(BrowserWindowController.pasteMoving(_:)),
+                                        keyEquivalent: "v")
+        moveHere.keyEquivalentModifierMask = [.command, .option]
+        moveHere.isAlternate = true
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         main.addItem(editItem)
@@ -250,6 +261,23 @@ enum MainMenu {
         let goMenu = NSMenu(title: "Go")
         goMenu.addItem(withTitle: "Back", action: #selector(BrowserWindowController.goBack(_:)), keyEquivalent: "[")
         goMenu.addItem(withTitle: "Forward", action: #selector(BrowserWindowController.goForward(_:)), keyEquivalent: "]")
+        goMenu.addItem(withTitle: "Enclosing Folder", action: #selector(BrowserWindowController.enclosingFolder(_:)),
+                       keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
+        goMenu.addItem(.separator())
+        // The Finder's places and shortcuts; g and a key does the same.
+        for place in BrowserWindowController.places {
+            let item = goMenu.addItem(withTitle: place.title, action: #selector(BrowserWindowController.goToPlace(_:)),
+                                      keyEquivalent: place.menuKey ?? "")
+            item.keyEquivalentModifierMask = place.menuModifiers
+            item.representedObject = place.path
+        }
+        goMenu.addItem(.separator())
+        let activity = goMenu.addItem(withTitle: "Activity", action: #selector(BrowserWindowController.showActivityMenu(_:)),
+                                      keyEquivalent: "f")
+        activity.keyEquivalentModifierMask = [.command, .shift]
+        let goTo = goMenu.addItem(withTitle: "Go to Folder…", action: #selector(BrowserWindowController.goToFolder(_:)),
+                                  keyEquivalent: "g")
+        goTo.keyEquivalentModifierMask = [.command, .shift]
         goItem.submenu = goMenu
         main.addItem(goItem)
 

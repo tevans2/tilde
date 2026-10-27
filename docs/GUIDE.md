@@ -20,13 +20,14 @@ key for where you are, with the menu's shortcuts. Type to find one; `⏎` or a c
 | Mode | Keys |
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
-| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` `G` top / bottom · `⌃o` / `⌃i` back / forward · `s` sort · `/` → GO · `esc` clear filter, then shelf |
-| SELECT: files | `x` or `space` add to / remove from shelf · `a` all shown · `m` move · `c` copy · `d` trash · `t` tags · `p` Quick Look · `w` open with · `r` rename · `n` new folder · `z` compress · `y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `C` Clean Up · `X` hide from search |
+| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` go to (`g g` top) · `G` bottom · `b` bookmark · `⌃o` / `⌃i` back / forward · `s` sort · `.` hidden files · `R` read again · `/` → GO · `esc` clear filter, then shelf |
+| SELECT: files | `x` add to / remove from shelf · `a` all shown · `y` copy (yank) · `p` paste · `P` paste, moving · `m` move to… · `c` copy to… · `d` trash · `t` tags · `space` preview · `w` open with · `r` rename · `n` new folder · `z` compress · `Y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `C` Clean Up · `X` hide from search |
+| Views (preview, History, Clean Up, Activity) | `esc` or `h` backs out one layer · the key that opened a view closes it · `q` closes any of them |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
-| Anywhere | `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
+| Anywhere (as in the Finder) | `⌘C` / `⌘V` copy and paste files · `⌥⌘V` move them here · `⌘↑` enclosing folder · `⌘↓` or `⌘O` open · `⇧⌘H` Home · `⌥⌘L` Downloads · `⇧⌘D` Desktop · `⇧⌘O` Documents · `⇧⌘A` Applications · `⇧⌘C` Computer · `⇧⌘F` Activity · `⇧⌘G` go to folder · `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
-<img src="images/shelf.gif" width="800" alt="Two PDFs in Downloads are collected with x, moved to Documents/Invoices/2026 with m, then put back with u">
+<img src="images/shelf.gif" width="800" alt="An aurora forecast and a boarding pass in Downloads are collected with x, moved to Documents/Travel with m, then put back with u">
 
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (the folders you use most
@@ -45,7 +46,7 @@ onto a folder row to put them in that folder: a move on the same disk, a copy to
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="images/browse-light.png">
-  <img src="images/browse-dark.png" alt="A Rust file previewed with syntax highlighting beside the folder list">
+  <img src="images/browse-dark.png" alt="A Rust file from a space game previewed with syntax highlighting beside the folder list">
 </picture>
 
 **The preview pane** is instant: a thumbnail rendered for the pane (images, the first
@@ -55,11 +56,11 @@ Markdown rendered as text, Quick Look's view for folders and apps. The full, int
 preview (every page of a PDF, video playback, zoom, the whole of a code or text file in a
 larger font, Markdown rendered like GitHub with tables, images and maths, HTML pages
 rendered with their own styles but no scripts and nothing fetched) comes on request with
-`p`. To make that
+`space`. To make that
 quick, it's loaded invisibly once you rest on a file for a moment, and dropped when you
-move on; so `p` usually shows it at once. That background load is skipped where it would
+move on; so `space` usually shows it at once. That background load is skipped where it would
 cost something: files only in iCloud (they'd be downloaded), on network drives, video and
-audio, and anything over 50 MB. Those load when you press `p`, with a spinner.
+audio, and anything over 50 MB. Those load when you press `space`, with a spinner.
 
 **File dialogs.** Turn on Settings › General › File dialogs (or `[dialog] enabled = true`)
 and give Tilde the Accessibility permission. Then, in any app's Open or Save dialog,
@@ -72,19 +73,19 @@ pickers aren't supported. You can also drag from Tilde onto any dialog.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="images/preview-light.png">
-  <img src="images/preview-dark.png" alt="An invoice PDF in preview mode">
+  <img src="images/preview-dark.png" alt="A Markdown note with maths in preview mode">
 </picture>
 
-**Quick Look and Open With.** `p` toggles **PREVIEW**: the full preview fills 75% of the
+**Quick Look and Open With.** `space` toggles **PREVIEW**, as in the Finder: the full preview fills 75% of the
 window (`[preview] mode_width`, or Settings › Preview) and has the keyboard, so `j` / `k`
-scroll, `space` / `⇧space` page and `g` / `G` jump to the top or bottom; `f` gives it the
+scroll, `⌃d` / `⌃u` (or `⌃f` / `⌃b`, `⇟` / `⇞`) page and `g g` / `G` jump to the top or bottom; `f` gives it the
 whole window, hiding the list, and `f` again brings the list back (`f` from the list goes
 straight there). `v` swaps a rendered view (Markdown, HTML, an SVG…) for the file's whole
 source, highlighted by bat, and `v` again swaps back; from the list, `v` goes straight to
-the source. `p` again, `esc`, `h` or a click on the list goes back. PDFs,
+the source. `space` again, `esc`, `h`, `q` or a click on the list goes back. PDFs,
 code, text and Markdown scroll in small steps; documents Quick Look draws (Office, Pages
-and so on) move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
-Quick Look window; with items on the shelf, or the preview pane turned off, `p` opens it
+and so on) move a page at a time, since Quick Look only takes page keys. `⇧space` (or `⌘Y`) opens the
+Quick Look window; with items on the shelf, or the preview pane turned off, `space` opens it
 too. `w` lists the apps that can open the item, your default first; type to narrow it down.
 Right-click a row for Open, Open With, Quick Look, Show in Finder, Copy Path, Tags, Rename
 and Move to Trash. The shelf is kept when you quit, and comes back in the first window.
@@ -106,12 +107,12 @@ marked **now**. The side shows what the selected operation did and what each key
 - `u` undoes just that operation. Later operations that touched the same files (or
   things inside a folder it touched) are undone first, newest first, so nothing is left
   half-reverted.
-- `r` redoes it, after redoing the undone operations it builds on.
+- `U` (or `⌃R`) redoes it, after redoing the undone operations it builds on.
 
 Anything involving more than one operation lists them and asks first. If something
 outside Tilde got in the way (a file moved again, a name now taken), the run stops there
 and says why; what was done so far stays recorded. `u` / `⌘Z` and `U` / `⌘⇧Z` move back
-and forward along the current branch. `j` / `k` move, `esc` goes back. The history is
+and forward along the current branch. `j` / `k` move, `esc`, `h`, `q` or `H` goes back. The history is
 shared by all windows and kept across restarts (the last 200 operations from the past 30
 days, in `~/Library/Application Support/Tilde/undo.json`).
 
@@ -138,14 +139,14 @@ days, in `~/Library/Application Support/Tilde/undo.json`).
 
 It looks in the background, from the search index plus a measuring pass, so the page
 opens at once and fills in. `j` / `k` move, `l` or `⏎` opens a category, `h` or `⌫` goes
-back, `r` looks again, `esc` or `C` closes. In a category: `x` collects an item on the
+back, `R` looks again, `esc`, `q` or `C` closes. In a category: `x` collects an item on the
 shelf, `a` collects all of them, `d` trashes (the collected items, or the highlighted
-one), `m` moves, `X` never suggests it again, `p` previews, `⏎` shows it in its folder.
+one), `m` moves, `X` never suggests it again, `space` previews, `⏎` shows it in its folder.
 Before trashing, each item is checked to still be what was suggested (same size and
 date; for a duplicate, still identical to the copy kept), and a running app's cache is
 left alone. Everything goes to the Trash and can be undone, except emptying the Trash
 (`d` in the Trash category), which asks first. In Low Power Mode the duplicate check is
-skipped until you press `r`. Settings › Clean Up (or `[cleanup]`) has the thresholds.
+skipped until you press `R`. Settings › Clean Up (or `[cleanup]`) has the thresholds.
 
 While typing in the bar, `⌘⌫` and `⌃⌫` clear what's typed; Move to Trash (`⌘⌫`) only
 works from the list in SELECT.
@@ -168,7 +169,7 @@ Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contai
 
 ## Maths
 
-Markdown previews (`p`) typeset maths with [KaTeX](https://katex.org), as in Obsidian,
+Markdown previews (`space`) typeset maths with [KaTeX](https://katex.org), as in Obsidian,
 GitHub and Jupyter:
 
 - `$…$` inline and `$$…$$` display, including blocks over several lines with blank lines
@@ -187,6 +188,27 @@ it; the rest of the note renders. What doesn't work: `\label` and `\eqref`, siun
 TikZ, the physics package's `\dv`/`\qty`, and `\href` or `\includegraphics` (turned
 off so a note can't link out or load anything). The pane's quick preview shows maths as
 its TeX.
+
+## Going places, bookmarks, copy and paste
+
+**`g`** lists where it can take you, each a key away: `g h` Home, `g d` Downloads, `g D`
+Desktop, `g o` Documents, `g A` Applications, `g i` iCloud Drive, `g t` Trash, `g v`
+Volumes, `g /` the whole disk; `g a` Activity, `g c` Clean Up, `g u` History; and `g g` the
+first item of whatever is showing (the list, a preview, History). The Go menu has the same
+places with the Finder's shortcuts (`⇧⌘H`, `⌥⌘L`, `⇧⌘D`…), plus Enclosing Folder (`⌘↑`)
+and Go to Folder… (`⇧⌘G`, the folder picker).
+
+**Bookmarks**: in a folder, `b` and then a key bookmarks it, and `g` with that key goes
+back to it from anywhere. The keys `g` already uses are taken. `b` and a key in use
+moves that bookmark to this folder; on its own folder, it removes it. Bookmarks show at the
+bottom of the `g` list.
+
+**Copy and paste**, Vim style and Finder style: `y` (or `⌘C`) copies the highlighted
+item, or the shelf, as the Finder copies files; `p` (or `⌘V`) pastes copies into the open
+folder, and `P` (or `⌥⌘V`) moves them here instead. It works across apps: copy in the
+Finder and paste in Tilde, or copy in Tilde and paste into a mail. Pasting into the same
+folder makes copies (`report 2.pdf`); names that clash elsewhere ask first. Everything is
+undoable.
 
 ## Using the mouse
 
@@ -212,7 +234,7 @@ on the mouse:
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="images/search-light.png">
-  <img src="images/search-dark.png" alt="Search results for inv from the whole home folder">
+  <img src="images/search-dark.png" alt="Search results for aurora from the whole home folder">
 </picture>
 
 Typing shows matches in the current folder first, then an **Everywhere** section from an
