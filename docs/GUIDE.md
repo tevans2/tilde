@@ -24,6 +24,8 @@ the new key) or in the config file (see [CONFIG.md](CONFIG.md)).
 | EDIT (the folder as text) | `e` edit the folder · `r` rename (cursor on the name, `⏎` applies) · `o` new line below (`⏎` applies) · `⌘S` apply · `esc` discard (twice if changed) · in Neovim: `:w` apply, `:q` discard, `⌘.` cancel |
 | Anywhere | `⌥⌘Z` History · `⌘Y` Quick Look · `⌘[` / `⌘]` back / forward · `⌘Z` / `⌘⇧Z` undo / redo · `⌘⌫` trash · `⌘.` stop a running operation · `⌘⇧N` new folder · `⌘⇧.` show hidden files · `⌘⇧I` search index · `⌘N` new window · `⌘,` settings · `⌥⌘,` open config file · `⌘R` reload config |
 
+<img src="images/shelf.gif" width="800" alt="Two PDFs in Downloads are collected with x, moved to Documents/Invoices/2026 with m, then put back with u">
+
 File actions apply to the shelf when it has anything, otherwise to the highlighted row.
 Move and copy open a folder picker: type to fuzzy-search folders (the folders you use most
 show first), or type a path like `~/Documents/`. If something with the same name is
@@ -38,6 +40,11 @@ always arrives as a copy, so nothing moves without Tilde knowing. Drag a shelved
 the whole shelf goes. Drop files onto the list to bring them into the open folder, or
 onto a folder row to put them in that folder: a move on the same disk, a copy to another
 (hold ⌥ to copy). Drops ask about name clashes and undo like any move.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="images/browse-light.png">
+  <img src="images/browse-dark.png" alt="A Rust file previewed with syntax highlighting beside the folder list">
+</picture>
 
 **The preview pane** is instant: a thumbnail rendered for the pane (images, the first
 page of PDFs and documents, a frame of video), the icon and details for files without
@@ -56,6 +63,11 @@ there; pick a file and an Open dialog selects it (`confirm = true` also presses 
 while a Save dialog goes to its folder and keeps the name you typed. It works with
 dialogs that use the standard macOS panel (most apps and browsers); apps with their own
 pickers aren't supported. You can also drag from Tilde onto any dialog.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="images/preview-light.png">
+  <img src="images/preview-dark.png" alt="An invoice PDF in preview mode">
+</picture>
 
 **Quick Look and Open With.** `p` toggles **PREVIEW**: the full preview fills 75% of the
 window (`[preview] mode_width`, or Settings › Preview) and has the keyboard, so `j` / `k`
@@ -111,6 +123,11 @@ days, in `~/Library/Application Support/Tilde/undo.json`).
   (a folder with `.git`, `package.json`, `Cargo.toml`…) nothing has changed in for 90 days.
 - **Trash**: what's in it.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="images/cleanup-light.png">
+  <img src="images/cleanup-dark.png" alt="Clean Up listing old downloads with their sites">
+</picture>
+
 It looks in the background, from the search index plus a measuring pass, so the page
 opens at once and fills in. `j` / `k` move, `l` or `⏎` opens a category, `h` or `⌫` goes
 back, `r` looks again, `esc` or `C` closes. In a category: `x` collects an item on the
@@ -142,6 +159,11 @@ arrived instead of when they changed.
 Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
 
 ## Search
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="images/search-light.png">
+  <img src="images/search-dark.png" alt="Search results for inv from the whole home folder">
+</picture>
 
 Typing shows matches in the current folder first, then an **Everywhere** section from an
 index of your home folder. The first launch builds it in the background (the status bar
@@ -205,6 +227,11 @@ ones.
 - If nvim can't be found, EDIT says why and uses the built-in editor.
 
 ## Activity
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="images/activity-light.png">
+  <img src="images/activity-dark.png" alt="Activity grouped by day">
+</picture>
 
 `@` shows what arrived or changed recently: downloads (with the site they came from),
 screenshots and screen recordings, AirDrops, and files you created or edited, newest first

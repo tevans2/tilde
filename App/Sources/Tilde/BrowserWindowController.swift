@@ -141,7 +141,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         applyTheme(Theme.shared)
         window.setContentSize(NSSize(width: 1100, height: 680))
         window.center()
+        #if DEBUG
+        // Snapshots set their own size and mustn't change the one saved for real use.
+        if !DebugSnapshot.isRunning { window.setFrameAutosaveName("TildeBrowser") }
+        #else
         window.setFrameAutosaveName("TildeBrowser")
+        #endif
         var start = engine.homeDir()
         #if DEBUG
         // Development aid: start somewhere else (used with the snapshot hook).
@@ -1461,13 +1466,20 @@ extension BrowserWindowController: OpsEventsDelegate {
     private func restoreShelf() {
         guard !Self.shelfRestored else { return }
         Self.shelfRestored = true
-        let saved = UserDefaults.standard.stringArray(forKey: Self.shelfKey) ?? []
+        var saved = UserDefaults.standard.stringArray(forKey: Self.shelfKey) ?? []
+        #if DEBUG
+        if DebugSnapshot.isRunning { saved = [] }
+        #endif
         let existing = saved.filter { FileManager.default.fileExists(atPath: $0) }
         if !existing.isEmpty { setShelf(existing) }
     }
 
     private func setShelf(_ paths: [String]) {
+        #if DEBUG
+        if !DebugSnapshot.isRunning { UserDefaults.standard.set(paths, forKey: Self.shelfKey) }
+        #else
         UserDefaults.standard.set(paths, forKey: Self.shelfKey)
+        #endif
         shelf = paths
         shelfSet = Set(paths)
         shelfBar.update(paths: paths)

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/browse.png" width="720" alt="Tilde showing a project folder with a preview of Cargo.toml">
+  <img src="docs/images/hero.gif" width="800" alt="Typing inv finds the Invoices folder; tab goes in, and p opens the full preview of an invoice, scrolled with j">
 </p>
 
 ## Why Tilde
@@ -38,6 +38,15 @@
   build output in idle projects and app caches, and checks each one again before anything
   goes to the Trash.
 - **Fast.** A Rust core, an index kept up to date live, and instant previews.
+
+## A look around
+
+| | |
+|---|---|
+| **Search here and everywhere**, the folders you use first | **Activity**: downloads with their sites, screenshots, AirDrops, edits |
+| <picture>  <source media="(prefers-color-scheme: light)" srcset="docs/images/search-light.png">  <img src="docs/images/search-dark.png" alt="Typing inv lists matching invoices, folders and code from the whole home folder, with a preview of the first"></picture> | <picture>  <source media="(prefers-color-scheme: light)" srcset="docs/images/activity-light.png">  <img src="docs/images/activity-dark.png" alt="Activity grouped under Today, Yesterday and This week, with where each download came from"></picture> |
+| **Preview mode** (`p`): the full preview, scrolled with `j` `k` | **Clean Up** (`C`): old downloads, with the site each came from |
+| <picture>  <source media="(prefers-color-scheme: light)" srcset="docs/images/preview-light.png">  <img src="docs/images/preview-dark.png" alt="An invoice PDF in preview mode taking most of the window"></picture> | <picture>  <source media="(prefers-color-scheme: light)" srcset="docs/images/cleanup-light.png">  <img src="docs/images/cleanup-dark.png" alt="Clean Up listing old downloads such as an Xcode installer from developer.apple.com"></picture> |
 
 ## Install
 

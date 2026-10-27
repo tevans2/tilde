@@ -71,6 +71,26 @@ snapshots that window instead:
 TILDE_SNAPSHOT=/tmp/tilde.png TILDE_SNAPSHOT_KEYS='Dev\tprojects\t' App/.build/debug/Tilde
 ```
 
+### Screenshots and GIFs
+
+The images in the README and guide (`docs/images/`) are made by a script, so they can be
+redone after a UI change:
+
+```sh
+pip3 install pillow                      # once
+swift build --package-path App
+python3 scripts/screenshots.py           # every scene; --list shows them
+python3 scripts/screenshots.py hero      # or some
+```
+
+It builds a made-up home folder in `build/demo-home` (`scripts/demo/make_home.py`:
+projects, invoices, photos, downloads with their sites, screenshots, an AirDrop, idle build
+output, caches, a big old video) and runs the debug build in it with `HOME` pointed there,
+so none of your files appear and your own Tilde's settings aren't touched. Each scene plays
+keys and saves exactly Tilde's window at 1200×750 points: stills in light and dark, GIFs
+with a caption of the keys pressed. AeroSpace, if running, is asked to float the window.
+To add a scene, add a `Scene` to `SCENES` in the script.
+
 ## Pull requests
 
 - Keep `cargo fmt`, `cargo clippy -D warnings` and the tests passing.
