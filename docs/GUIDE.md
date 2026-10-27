@@ -20,7 +20,7 @@ key for where you are, with the menu's shortcuts. Type to find one; `⏎` or a c
 | Mode | Keys |
 |---|---|
 | GO (typing searches) | type to search this folder and everywhere · `↑` `↓` or `⌃j` `⌃k` move · `⏎` open · `tab`, `/` or `⌃l` go into folder (or reveal an Everywhere file) · `⌫` on empty bar or `⌃h` goes up · `~` home · `@` Activity · `⌃o` / `⌃i` back / forward · `esc` → SELECT |
-| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` go to (`g g` top) · `G` bottom · `b` bookmark · `⌃o` / `⌃i` back / forward · `s` sort · `.` hidden files · `R` read again · `/` → GO · `esc` clear filter, then shelf |
+| SELECT | `j` `k` (or `⌃j` `⌃k`) move · `h` `l` (or `⌃h` `⌃l`) out / in · `⏎` open · `g` go to (`g g` top) · `G` bottom · `b` bookmark · `⌃o` / `⌃i` back / forward · a count first repeats a move (`5j`, `2h`, `4x`; `12G` row 12) · `s` sort · `S` reverse · `.` hidden files · `R` read again · `/` → GO · `esc` clear filter, then shelf |
 | SELECT: files | `x` add to / remove from shelf · `a` all shown · `y` copy (yank) · `p` paste · `P` paste, moving · `m` move to… · `c` copy to… · `d` trash · `t` tags · `space` preview · `w` open with · `r` rename · `n` new folder · `z` compress · `Y` copy paths · `u` undo · `U` or `⌃R` redo · `H` history · `C` Clean Up · `X` hide from search |
 | Views (preview, History, Clean Up, Activity) | `esc` or `h` backs out one layer · the key that opened a view closes it · `q` closes any of them |
 | Activity (`@`, again or `⌫` to go back) | `1` all · `2` downloads · `3` screenshots · `4` edited · `5` AirDrop · `i` inbox only · `tab` reveal in its folder · file actions as in SELECT |
@@ -139,7 +139,7 @@ days, in `~/Library/Application Support/Tilde/undo.json`).
 
 It looks in the background, from the search index plus a measuring pass, so the page
 opens at once and fills in. `j` / `k` move, `l` or `⏎` opens a category, `h` or `⌫` goes
-back, `R` looks again, `esc`, `q` or `C` closes. In a category: `x` collects an item on the
+back, `1`–`6` open a category by its number (shown beside it), `R` looks again, `esc`, `q` or `C` closes. In a category: `x` collects an item on the
 shelf, `a` collects all of them, `d` trashes (the collected items, or the highlighted
 one), `m` moves, `X` never suggests it again, `space` previews, `⏎` shows it in its folder.
 Before trashing, each item is checked to still be what was suggested (same size and

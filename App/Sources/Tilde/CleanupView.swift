@@ -207,6 +207,9 @@ final class CleanupView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         return f.string(fromByteCount: Int64(n))
     }
 
+    /// Each category's number key (`1`–`6`), fixed so it doesn't move as sizes come in.
+    static let numbered: [CleanupKind] = [.bigFiles, .oldDownloads, .duplicates, .buildOutput, .appCaches, .trash]
+
     static func title(_ kind: CleanupKind) -> String {
         switch kind {
         case .buildOutput: "Build output in idle projects"
@@ -339,6 +342,9 @@ final class CleanupCell: NSView {
         case let .category(cat):
             let size = cat.state == .waiting ? "…" : CleanupView.bytes(cat.bytes)
             let sizeWidth: CGFloat = 90
+            if let n = CleanupView.numbered.firstIndex(of: cat.kind) {
+                draw("\(n + 1)", theme.small, selected ? text : c.textDim, x: 8, y: 8, width: 14)
+            }
             draw(CleanupView.title(cat.kind), theme.listBold, text, x: left, y: 6, width: bounds.width - left - sizeWidth - 20)
             var note = CleanupView.explanation(cat.kind)
             switch cat.state {

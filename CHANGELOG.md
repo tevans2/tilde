@@ -26,6 +26,10 @@ you set yourself are kept.
 - **One meaning per key**: `R` reads the folder again (in Clean Up: looks again, was `r`);
   redo in History is `U` / `⌃R` as everywhere (was `r`); History follows your own keys.
 - `space` no longer adds to the shelf (`x` does).
+- **Counts**: a number before a move repeats it, as in Vim: `5j`, `3k`, `2h` (two folders
+  up), `4x` (shelve four), `12G` (row 12). Not in Activity, where `1`–`5` filter.
+- **`S` reverses the sort** in one key.
+- **Clean Up numbers**: `1`–`6` open a category straight away; each shows its number.
 
 ## [0.2.0] - 2026-10-27
 

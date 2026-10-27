@@ -29,6 +29,7 @@ enum KeyAction: String {
     case goto, bookmark, yank, paste
     case pasteMove = "paste_move"
     case hidden, refresh, close
+    case reverseSort = "reverse_sort"
 }
 
 /// The key bindings from the config, for matching key presses.

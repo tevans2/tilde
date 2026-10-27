@@ -735,7 +735,7 @@ final class StatusBar: NSView {
             modePill.stringValue = "CLEAN UP"
             switch inCleanup! {
             case .categories:
-                hints.stringValue = "\(move) move   " + hint([(.enter, "open"), (.cleanup, "close")]) + help
+                hints.stringValue = "\(move) move   1–6 category   " + hint([(.enter, "open"), (.cleanup, "close")]) + help
             case .items, .trash:
                 hints.stringValue = "\(move) move   " + hint([(.shelf, "collect"), (.trash, "trash"), (.parent, "back")]) + help
             }

@@ -100,6 +100,7 @@ pub const SELECT_ACTIONS: &[ActionSpec] = &[
     a("paste_move", "Move copied files into this folder (⌥⌘V)", &["P"]),
     a("copy_path", "Copy the path", &["Y"]),
     a("sort", "Sort the folder (again to reverse)", &["s"]),
+    a("reverse_sort", "Reverse the folder's order", &["S"]),
     a("quick_look", "Preview mode: the full preview, scrollable (again to leave)", &["space"]),
     a("quick_look_window", "Quick Look window (⌘Y)", &["shift+space"]),
     a("preview_full", "In preview mode: the whole window (again for the list)", &["f"]),

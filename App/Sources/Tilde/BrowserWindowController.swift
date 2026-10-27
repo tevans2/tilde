@@ -92,6 +92,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var inActivity = false
     /// A drag held over a folder row opens it after a moment.
     private var springWork: DispatchWorkItem?
+    /// Digits typed before an action in SELECT: `5j` moves five rows.
+    private var pendingCount: Int?
     private var springRow: Int?
     private var activityFilter = ActivityFilter(origin: .all, inbox: false)
     /// From the latest results: inbox count and date headings.
@@ -509,10 +511,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         engine.openActivity(filter: activityFilter, generation: nextGeneration())
     }
 
-    private func goUp() {
+    /// Up to the parent folder (`levels` folders up, as far as `/`), selecting the one
+    /// we came from.
+    private func goUp(levels: Int = 1) {
         if inActivity { return open(folder: currentFolder) }
         guard currentFolder != "/" else { return }
-        let url = URL(fileURLWithPath: currentFolder)
+        var url = URL(fileURLWithPath: currentFolder)
+        for _ in 1..<max(levels, 1) where url.deletingLastPathComponent().path != "/" {
+            url = url.deletingLastPathComponent()
+        }
         open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
     }
 
@@ -614,7 +621,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     // MARK: SELECT keys
 
     private func handleSelectKey(_ event: NSEvent) -> Bool {
-        guard let action = Keymap.shared.action(for: event, in: .select) else {
+        let action = Keymap.shared.action(for: event, in: .select)
+        if let digit = countDigit(event, action: action) {
+            pendingCount = min((pendingCount ?? 0) * 10 + digit, 9999)
+            statusBar.flash("\(pendingCount!)…")
+            return true
+        }
+        let count = pendingCount ?? 1
+        pendingCount = nil
+        guard let action else {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.isDisjoint(with: [.command, .control, .option]),
                let c = event.charactersIgnoringModifiers, c.count == 1, c.first!.isLetter {
@@ -623,22 +638,36 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             }
             return false
         }
-        perform(action)
+        perform(action, count: count)
         return true
     }
 
-    /// A SELECT action (from the keymap).
-    private func perform(_ action: KeyAction) {
+    /// A digit that starts or continues a count: not in Activity (where `1`–`5` filter),
+    /// and only for keys that are digits or bound to nothing else.
+    private func countDigit(_ event: NSEvent, action: KeyAction?) -> Int? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !inActivity, flags.isDisjoint(with: [.command, .control, .option]),
+              let c = event.charactersIgnoringModifiers, c.count == 1, let digit = c.first?.wholeNumberValue,
+              digit > 0 || pendingCount != nil
+        else { return nil }
+        let filters: Set<KeyAction> = [.filterAll, .filterDownloads, .filterScreenshots, .filterEdited, .filterAirdrop]
+        guard action == nil || filters.contains(action!) else { return nil }
+        return digit
+    }
+
+    /// A SELECT action (from the keymap). `count` repeats the simple ones: moving, going up,
+    /// shelving; with `G` and `g g` it's the row to go to.
+    private func perform(_ action: KeyAction, count: Int = 1) {
         switch action {
-        case .down: moveSelection(by: 1)
-        case .up: moveSelection(by: -1)
-        case .parent: goUp()
+        case .down: moveSelection(by: count)
+        case .up: moveSelection(by: -count)
+        case .parent: goUp(levels: count)
         case .enter: goIntoOrActivate()
         case .open: activateHighlighted()
         case .back: jump(back: true)
         case .forward: jump(back: false)
-        case .top: select(row: 0)
-        case .bottom: select(row: results.tableRows - 1)
+        case .top: select(row: count - 1)
+        case .bottom: select(row: count > 1 ? count - 1 : results.tableRows - 1)
         case .search, .selectMode: setMode(.go)
         case .activity: toggleActivity()
         case .home: open(folder: engine.homeDir())
@@ -655,14 +684,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             }
         case .close:
             if inActivity { toggleActivity() } else { statusBar.flash("Nothing to close") }
-        case .goto: showGoTo { [weak self] in self?.select(row: 0) }
+        case .goto: showGoTo { [weak self] in self?.select(row: count - 1) }
         case .bookmark: chooseBookmark()
         case .yank: yankFiles()
         case .paste: pasteFiles(move: false)
         case .pasteMove: pasteFiles(move: true)
         case .hidden: toggleHidden(nil)
         case .refresh: refresh()
-        case .shelf: toggleShelf()
+        case .shelf: for _ in 0..<min(count, results.tableRows) { toggleShelf() }
         case .shelfAll: toggleShelfAll()
         case .move: pickDestination(copy: false)
         case .copy: pickDestination(copy: true)
@@ -672,6 +701,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         case .compress: compressTargets()
         case .hide: hideHighlightedFromSearch()
         case .sort: chooseSort()
+        case .reverseSort: reverseSort()
         case .history: showHistory()
         case .cleanup: showCleanup()
         case .help: showKeys()
@@ -853,6 +883,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             title: "Sort “\(FileManager.default.displayName(atPath: currentFolder))” by… now \(Self.describe(sort))",
             kind: .choice(options: options, onChoose: { [weak self] i in self?.setSort(Self.sortKeys[i].0) }),
             hint: "press a key   the current one reverses   esc cancel"))
+    }
+
+    /// `S`: the same order, the other way round.
+    private func reverseSort() {
+        guard !inActivity else { return statusBar.flash("Activity is in time order, newest first.") }
+        engine.setSort(by: sort.by, reverse: !sort.reverse, generation: nextGeneration())
+        statusBar.flash("Sorted by \(Self.describe(FolderSort(by: sort.by, reverse: !sort.reverse, custom: true)))")
     }
 
     /// Sorts by `by`, reversing if it's already the order.
@@ -2407,6 +2444,12 @@ extension BrowserWindowController {
             cleanupBack()
             return true
         }
+        // 1–6: straight to a category, from anywhere in Clean Up.
+        if plain, let digit = event.charactersIgnoringModifiers.flatMap({ $0.count == 1 ? $0.first?.wholeNumberValue : nil }),
+           (1...CleanupView.numbered.count).contains(digit) {
+            cleanupOpen(CleanupView.numbered[digit - 1])
+            return true
+        }
         guard let action = Keymap.shared.action(for: event, in: .select) else {
             if plain, let c = event.charactersIgnoringModifiers, c.count == 1, c.first!.isLetter {
                 statusBar.flash("\(c) does nothing in Clean Up.")
@@ -2472,6 +2515,14 @@ extension BrowserWindowController {
             open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
         default: break
         }
+    }
+
+    /// `1`–`6`: opens a category by its number.
+    private func cleanupOpen(_ kind: CleanupKind) {
+        if let category = cleanupView.category(kind), category.state == .waiting { return statusBar.flash("Still looking…") }
+        cleanupView.open(kind)
+        reloadCleanup()
+        cleanupView.select(0)
     }
 
     /// `h` / `⌫`: back to the categories, or out of Clean Up.
@@ -2692,6 +2743,7 @@ extension BrowserWindowController {
             groups = [group("Clean Up", [
                 item(.down, "Next"), item(.up, "Previous"), item(.enter, "Open the category, or show the item in its folder"),
                 item(.parent, "Back to the categories"), item(.refresh, "Look again"),
+                fixed("Open a category by its number", "1–6", key: "1"),
                 item(.shelf, "Collect"), item(.shelfAll, "Collect all"), item(.trash, "Trash (or empty the Trash)"),
                 item(.move), item(.hide, "Never suggest this again"), item(.quickLook), item(.goto),
                 item(.cleanup, "Close Clean Up"), item(.close, "Close Clean Up"),
@@ -2711,6 +2763,7 @@ extension BrowserWindowController {
             groups += [
                 group("Move around", [
                     item(.down), item(.up), item(.parent), item(.enter), item(.open), item(.goto), item(.top), item(.bottom),
+                    CommandItem(label: "A count first repeats a move: 5j, 3k, 2h, 4x; 12G goes to row 12", keys: "1–9") {},
                     item(.back), item(.forward), item(.bookmark), item(.home), item(.search),
                 ]),
                 group("Files", [
@@ -2724,7 +2777,7 @@ extension BrowserWindowController {
                     item(.previewSource, "Preview mode showing the source"), item(.quickLookWindow, "Quick Look window"),
                 ]),
                 group("Undo and views", [
-                    item(.undo), item(.redo), item(.history), item(.sort), item(.hidden), item(.refresh),
+                    item(.undo), item(.redo), item(.history), item(.sort), item(.reverseSort), item(.hidden), item(.refresh),
                     item(.activity), item(.cleanup),
                 ]),
             ]
