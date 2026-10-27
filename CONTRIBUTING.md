@@ -88,7 +88,8 @@ projects, invoices, photos, downloads with their sites, screenshots, an AirDrop,
 output, caches, a big old video) and runs the debug build in it with `HOME` pointed there,
 so none of your files appear and your own Tilde's settings aren't touched. Each scene plays
 keys and saves exactly Tilde's window at 1200×750 points: stills in light and dark, GIFs
-with a caption of the keys pressed. AeroSpace, if running, is asked to float the window.
+with a caption of the keys pressed. With AeroSpace, each window is floated and sent
+to workspace 9 (`TILDE_SNAPSHOT_WORKSPACE`) so it stays out of your way.
 To add a scene, add a `Scene` to `SCENES` in the script.
 
 ## Pull requests

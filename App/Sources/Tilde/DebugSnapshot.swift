@@ -90,8 +90,8 @@ enum DebugSnapshot {
         if window.contentRect(forFrameRect: window.frame).size == size {
             return next()
         }
+        // Not moved: a window manager may have put it on another workspace, off screen.
         window.setContentSize(size)
-        window.center()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { holdSize(tries: tries - 1, then: next) }
     }
 

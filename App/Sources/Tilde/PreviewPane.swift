@@ -3,9 +3,13 @@ import PDFKit
 import QuickLookThumbnailing
 import Quartz
 import TildeFFI
+import WebKit
 
-/// The preview on the right: code and other text files rendered by bat (syntax
-/// highlighted, with line numbers), everything else, including Markdown, through Quick Look.
+/// The preview on the right: code and text rendered by bat (syntax highlighted, with line
+/// numbers), Markdown rendered by Tilde as native text (MarkdownView.swift), everything
+/// else through Quick Look. In PREVIEW (`p`), code and text stay in bat, the whole file in
+/// a larger font; Markdown goes to Tilde's web rendering (`[preview] markdown`: or native
+/// text, larger, or Quick Look), preloaded while the selection rests so `p` is instant.
 ///
 /// Quick Look shows an instant preview: a thumbnail rendered for the pane (images, the
 /// first page of PDFs and documents, a frame of video), or the icon and details when there
@@ -63,6 +67,21 @@ final class PreviewPane: NSView {
     /// `p` asked for the full preview of the item showing: a late bat render mustn't
     /// replace it.
     private var fullRequested = false
+    /// PREVIEW of code or text: bat's view of the whole file, rather than Quick Look's.
+    private var textFull = false
+    /// PREVIEW of Markdown rendered by Tilde: "web" or "native".
+    private var markdownFull: String?
+    private let webLinks = WebLinks()
+    /// Made on the first Markdown file (WebKit is slow to start and costs memory), then
+    /// reused for every page.
+    private var web: WKWebView?
+    /// The page in `web` (file, size, date, appearance), and whether it's finished loading.
+    private var webPage: (key: String, loaded: Bool)?
+    /// `p` asked for the web page: show it as soon as it's loaded.
+    private var revealWeb = false
+    private var webWork: DispatchWorkItem?
+    /// Markdown files larger than this get Quick Look.
+    private static let markdownLimit: UInt64 = 5_000_000
 
     /// How long the selection must rest before the full preview loads in the background.
     private static let restBeforePreload: TimeInterval = 0.3
@@ -78,6 +97,8 @@ final class PreviewPane: NSView {
     private var generation = 0
 
     private static let markdown: Set<String> = ["md", "markdown", "mdown", "mkd", "mdx"]
+    /// The most lines bat renders for PREVIEW (files over `batSizeLimit` aren't bat's anyway).
+    private static let wholeFileLines: UInt32 = 200_000
     private static let batSizeLimit: UInt64 = 5_000_000
 
     override init(frame: NSRect) {
@@ -222,6 +243,12 @@ final class PreviewPane: NSView {
         shownStamp = row.map { ($0.size, $0.modified) }
         fullPath = nil
         fullRequested = false
+        textFull = false
+        markdownFull = nil
+        revealWeb = false
+        webWork?.cancel()
+        web?.isHidden = true
+        setWrapping(false)
         let current = generation
         showTags(row?.path)
         guard let row else { return showQuickLook(nil) }
@@ -229,6 +256,19 @@ final class PreviewPane: NSView {
         // Look, which is quick: no thumbnail stage or spinner.
         if row.kind == .folder || row.kind == .package {
             return showQuickLookNow(row.path)
+        }
+        if Self.isMarkdown(row) {
+            let (path, dark) = (row.path, isDark)
+            Task.detached {
+                let blocks = markdownBlocks(path: path, dark: dark)
+                await MainActor.run {
+                    guard current == self.generation, !self.fullRequested else { return }
+                    guard let blocks else { return self.showQuickLook(path) }
+                    self.showMarkdown(blocks)
+                    self.preloadWeb(row)
+                }
+            }
+            return
         }
         let theme = Theme.shared
         guard theme.previewBat, Self.usesBat(row) else { return showQuickLook(row.path) }
@@ -290,6 +330,7 @@ final class PreviewPane: NSView {
     /// text. `nil` while the full preview is still loading.
     var focusTarget: NSView? {
         if full == .shown { return usingPDF ? pdfView : quickLook }
+        if markdownFull == "web", let web, !web.isHidden { return web }
         if !textScroll.isHidden { return textView }
         return nil
     }
@@ -301,6 +342,7 @@ final class PreviewPane: NSView {
     func scroll(_ how: Scroll) {
         pinPDFToTop = false
         pdfSpot = nil
+        if markdownFull == "web", let web, !web.isHidden { return MarkdownRender.scroll(web, how) }
         if full == .shown, usingPDF, let scroll = pdfView.documentView?.enclosingScrollView {
             return Self.scroll(scroll, how)
         }
@@ -370,7 +412,10 @@ final class PreviewPane: NSView {
     /// The next `show` redraws even the same item (new tags, a new theme).
     func invalidate() {
         shownPath = nil
+        webPage = nil
     }
+
+    private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
     func close() {
         cancelQuickLook()
@@ -382,7 +427,19 @@ final class PreviewPane: NSView {
     /// with a spinner until it's loaded. Returns false when it's already showing (`p` then
     /// opens the Quick Look window).
     func loadFull(for path: String?) -> Bool {
-        guard let path, path == shownPath, full != .shown else { return false }
+        guard let path, path == shownPath, full != .shown, !textFull, markdownFull == nil else { return false }
+        if let row, Self.fullIsText(row), !textScroll.isHidden {
+            textFull = true
+            loadWholeText(path)
+            return true
+        }
+        let mode = Theme.shared.previewMarkdown
+        // The pane's native rendering is up (else it fell back to Quick Look).
+        if let row, Self.isMarkdown(row), mode != "quicklook", !textScroll.isHidden {
+            markdownFull = mode
+            if mode == "web" { showWeb(row) } else { renderNativeFull(path) }
+            return true
+        }
         fullRequested = true
         revealWhenReady = true
         fullWork?.cancel()
@@ -430,14 +487,174 @@ final class PreviewPane: NSView {
         loading.isHidden = true
     }
 
-    /// Code, plain text and unknown types (bat checks they're really text). Markdown goes
-    /// to Quick Look.
+    /// Code, plain text and unknown types (bat checks they're really text). Not Markdown,
+    /// which Tilde renders.
     private static func usesBat(_ row: RowView) -> Bool {
         guard row.kind == .file, row.size <= batSizeLimit, !markdown.contains(row.ext) else { return false }
         switch row.category {
         case .code, .text, .other: return true
         default: return false
         }
+    }
+
+    /// PREVIEW stays in bat for everything bat shows.
+    private static func fullIsText(_ row: RowView) -> Bool {
+        usesBat(row)
+    }
+
+    private static func isMarkdown(_ row: RowView) -> Bool {
+        row.kind == .file && markdown.contains(row.ext) && row.size <= markdownLimit
+    }
+
+    /// PREVIEW of code or text: the bat view on screen stays (so it's instant), and bat
+    /// renders the whole file, not just the first `max_lines`, in the larger list font.
+    /// The swap keeps the same line at the top.
+    private func loadWholeText(_ path: String) {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let theme = Theme.shared
+        let batTheme = isDark ? theme.batThemeDark : theme.batThemeLight
+        let (current, lines) = (generation, Self.wholeFileLines)
+        Task.detached {
+            let preview = batPreview(path: path, theme: batTheme, maxLines: lines)
+            await MainActor.run {
+                guard current == self.generation, self.textFull, let preview else { return }
+                self.swapText(preview)
+            }
+        }
+    }
+
+    private func swapText(_ preview: TextPreview) {
+        let clip = textScroll.contentView
+        let old = Self.lineHeight(Theme.shared.small)
+        let topLine = max(clip.bounds.origin.y - textView.textContainerInset.height, 0) / old
+        let font = Theme.shared.list
+        textView.textStorage?.setAttributedString(Self.attributed(preview, font: font))
+        textView.layoutSubtreeIfNeeded()
+        let y = topLine.rounded(.down) * Self.lineHeight(font)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: y))
+        textScroll.reflectScrolledClipView(clip)
+    }
+
+    /// The pane's Markdown: native text at the pane's size, wrapped.
+    private func showMarkdown(_ blocks: [MarkdownBlock], size: CGFloat = Theme.shared.small.pointSize) {
+        cancelQuickLook()
+        quickLook.previewItem = nil
+        quickLook.isHidden = true
+        pdfView.isHidden = true
+        thumbnail.isHidden = true
+        textScroll.isHidden = false
+        setWrapping(true)
+        textView.linkTextAttributes = [.foregroundColor: Theme.shared.colors.match, .cursor: NSCursor.pointingHand]
+        let width = textScroll.contentSize.width
+        textView.textStorage?.setAttributedString(MarkdownRender.attributed(blocks, width: width, size: size))
+        textView.scroll(.zero)
+    }
+
+    /// PREVIEW with `markdown = "native"`: the same text, in the larger list font.
+    private func renderNativeFull(_ path: String) {
+        let (current, dark) = (generation, isDark)
+        Task.detached {
+            let blocks = markdownBlocks(path: path, dark: dark)
+            await MainActor.run {
+                guard current == self.generation, self.markdownFull == "native", let blocks else { return }
+                self.showMarkdown(blocks, size: Theme.shared.list.pointSize)
+            }
+        }
+    }
+
+    /// What identifies a web page: the file as it is now, in this appearance.
+    private func webKey(_ row: RowView) -> String {
+        "\(row.path)|\(row.size)|\(row.modified)|\(isDark)"
+    }
+
+    /// Renders the web page in the background once the selection rests on a Markdown file,
+    /// so `p` shows it at once.
+    private func preloadWeb(_ row: RowView) {
+        guard Theme.shared.previewMarkdown == "web" else { return }
+        webWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.shownPath == row.path else { return }
+            self.loadWebPage(row)
+        }
+        webWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.restBeforePreload, execute: work)
+    }
+
+    private func loadWebPage(_ row: RowView) {
+        let key = webKey(row)
+        guard webPage?.key != key else { return }
+        webPage = (key, false)
+        let (path, dark) = (row.path, isDark)
+        Task.detached {
+            let html = markdownHtml(path: path, dark: dark)
+            await MainActor.run {
+                guard self.webPage?.key == key, let html else { return }
+                let web = self.webView()
+                self.webLinks.onLoad = { [weak self] in
+                    guard let self, self.webPage?.key == key else { return }
+                    self.webPage?.loaded = true
+                    if self.revealWeb, self.markdownFull == "web", self.shownPath == path { self.revealWebPage() }
+                }
+                web.loadHTMLString(MarkdownRender.page(body: html, appearance: self.effectiveAppearance), baseURL: nil)
+            }
+        }
+    }
+
+    /// `p` on Markdown: the web page, now if it was preloaded, else when it loads (the
+    /// native text stays up until then).
+    private func showWeb(_ row: RowView) {
+        webWork?.cancel()
+        revealWeb = true
+        if let page = webPage, page.key == webKey(row) {
+            if page.loaded { revealWebPage() }
+            return
+        }
+        loadWebPage(row)
+    }
+
+    private func revealWebPage() {
+        guard let web else { return }
+        revealWeb = false
+        // Focus moves to the page before the text it replaces hides: a moment with no
+        // focus would end PREVIEW.
+        web.isHidden = false
+        onFullShown?()
+        textScroll.isHidden = true
+    }
+
+    private func webView() -> WKWebView {
+        if let web { return web }
+        let web = MarkdownRender.makeWebView(links: webLinks)
+        web.isHidden = true
+        web.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(web, positioned: .below, relativeTo: loading)
+        NSLayoutConstraint.activate([
+            web.topAnchor.constraint(equalTo: topAnchor),
+            web.bottomAnchor.constraint(equalTo: tagLine.topAnchor, constant: -4),
+            web.leadingAnchor.constraint(equalTo: leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        self.web = web
+        return web
+    }
+
+    /// Code scrolls sideways; rendered Markdown wraps to the pane.
+    private func setWrapping(_ wrap: Bool) {
+        guard textView.textContainer?.widthTracksTextView != wrap else { return }
+        textScroll.hasHorizontalScroller = !wrap
+        textView.isHorizontallyResizable = !wrap
+        textView.autoresizingMask = wrap ? [.width] : []
+        textView.textContainer?.widthTracksTextView = wrap
+        if wrap {
+            textView.frame.size.width = textScroll.contentSize.width
+            textView.textContainer?.containerSize = NSSize(width: textScroll.contentSize.width, height: .greatestFiniteMagnitude)
+        } else {
+            textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        }
+    }
+
+    private static func lineHeight(_ font: NSFont) -> CGFloat {
+        NSLayoutManager().defaultLineHeight(for: font)
     }
 
     /// Straight to the full Quick Look view, for items where there's nothing to stage.
@@ -686,9 +903,8 @@ final class PreviewPane: NSView {
         textView.scroll(.zero)
     }
 
-    private static func attributed(_ preview: TextPreview) -> NSAttributedString {
+    static func attributed(_ preview: TextPreview, font: NSFont = Theme.shared.small) -> NSAttributedString {
         let theme = Theme.shared
-        let font = theme.small
         let s = NSMutableAttributedString(
             string: preview.text, attributes: [.font: font, .foregroundColor: theme.colors.text])
         let length = (preview.text as NSString).length

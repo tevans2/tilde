@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DialogHelper.shared.configure(hotkey: Theme.shared.dialogHotkey, confirm: Theme.shared.dialogConfirm)
         #if DEBUG
-        if DebugSnapshot.runIfRequested() { return }
+        if PreviewBench.runIfRequested() || DebugSnapshot.runIfRequested() { return }
         #endif
         if !WelcomeWindowController.seen { showWelcome(nil) }
     }

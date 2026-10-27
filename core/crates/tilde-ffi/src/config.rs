@@ -25,6 +25,8 @@ pub struct AppConfig {
     /// bat theme for dark appearance; empty uses bat's own config.
     pub bat_theme_dark: String,
     pub bat_max_lines: u32,
+    /// How PREVIEW draws Markdown: "web", "native" or "quicklook".
+    pub preview_markdown: String,
     /// EDIT uses Neovim instead of the built-in editor.
     pub editor_nvim: bool,
     /// The file-dialog helper's hotkey, when it's on (and the hotkey is valid).
@@ -95,6 +97,12 @@ pub fn load_config() -> ConfigLoad {
             bat_theme_light,
             bat_theme_dark,
             bat_max_lines: loaded.config.preview.max_lines,
+            preview_markdown: match loaded.config.preview.markdown {
+                tilde_config::MarkdownView::Web => "web",
+                tilde_config::MarkdownView::Native => "native",
+                tilde_config::MarkdownView::Quicklook => "quicklook",
+            }
+            .into(),
             editor_nvim: loaded.config.edit.editor == tilde_config::EditorKind::Nvim,
             dialog_hotkey: loaded
                 .config

@@ -1,6 +1,8 @@
-//! Text previews: code and other text files rendered by `bat` with syntax highlighting.
+//! Text previews: code and other text files rendered by `bat` with syntax highlighting,
+//! and Markdown rendered for reading.
 
 mod ansi;
+pub mod markdown;
 
 pub use ansi::{Span, StyledText, parse};
 

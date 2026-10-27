@@ -48,6 +48,8 @@ final class Theme {
     /// Empty uses bat's own config.
     let batThemeDark: String
     let batMaxLines: Int
+    /// Markdown in PREVIEW: "web", "native" or "quicklook".
+    let previewMarkdown: String
     /// EDIT runs in Neovim.
     let editorNvim: Bool
     /// The file-dialog helper's hotkey (nil when it's off).
@@ -92,6 +94,7 @@ final class Theme {
         batThemeLight = load.config.batThemeLight
         batThemeDark = load.config.batThemeDark
         batMaxLines = Int(load.config.batMaxLines)
+        previewMarkdown = load.config.previewMarkdown
         editorNvim = load.config.editorNvim
         dialogHotkey = load.config.dialogHotkey
         dialogConfirm = load.config.dialogConfirm

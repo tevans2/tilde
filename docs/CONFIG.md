@@ -22,10 +22,11 @@ preset = "default"          # default (macOS colours), catppuccin, gruvbox, nord
 visible = true
 width = 0.5                 # share of the window (0.15–0.85)
 mode_width = 0.75           # in preview mode (p), 0.3–0.95; f there takes the whole window
-bat = true                  # syntax-highlight code and text with bat; Markdown uses Quick Look
+bat = true                  # syntax-highlight code and text with bat
 bat_theme_light = ""        # empty: matches the preset, else "GitHub"
 bat_theme_dark = ""         # empty: matches the preset, else your bat config
 max_lines = 1000
+markdown = "web"            # Markdown in preview mode (p): web, native or quicklook
 
 [index]                     # apply with Rebuild (⌘⇧I)
 enabled = true
@@ -82,6 +83,19 @@ badge_audio badge_pdf badge_document badge_code badge_text badge_archive badge_o
 Values are `#RRGGBB` or `#RRGGBBAA`. Anything unset uses the preset, or the system colour
 for `default`. Mistakes are reported in the status bar and skipped.
 
-The preview pane shows code and other text files through [bat](https://github.com/sharkdp/bat)
-when it's installed (with line numbers, in a bat theme that matches light or dark), and
-everything else, including Markdown, through Quick Look.
+The preview pane shows code and text through [bat](https://github.com/sharkdp/bat) when
+it's installed (with line numbers, in a bat theme that matches light or dark), Markdown
+rendered by Tilde, and everything else through Quick Look. In PREVIEW (`p`), code and text
+stay in bat, showing the whole file in a larger font.
+
+Markdown is drawn by Tilde, so it looks the same on every Mac and in your theme. The pane
+shows it as native text, which takes 10–30 ms even for long files. In PREVIEW,
+`markdown` picks how:
+
+- `"web"` (the default): rendered like GitHub, with tables, images next to the file,
+  HTML, code highlighting and maths (`$…$`, `$$…$$`, `` ```math ``). It's prepared in
+  the background while you rest on a Markdown file, so `p` shows it at once. Images on
+  the web aren't fetched (their alt text shows), and nothing in the file runs.
+- `"native"`: the pane's text, larger. Lighter; tables show as aligned text, HTML is
+  left out and maths shows as LaTeX.
+- `"quicklook"`: macOS's own preview. It doesn't scroll with Tilde's keys.

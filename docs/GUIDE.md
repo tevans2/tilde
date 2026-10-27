@@ -48,8 +48,11 @@ onto a folder row to put them in that folder: a move on the same disk, a copy to
 
 **The preview pane** is instant: a thumbnail rendered for the pane (images, the first
 page of PDFs and documents, a frame of video), the icon and details for files without
-one, bat for code and text, Quick Look's view for folders and apps. The full, interactive
-preview (every page of a PDF, video playback, zoom) comes on request with `p`. To make that
+one, bat for code and text (highlighted, with line numbers, the first `max_lines`),
+Markdown rendered as text, Quick Look's view for folders and apps. The full, interactive
+preview (every page of a PDF, video playback, zoom, the whole of a code or text file in a
+larger font, Markdown rendered like GitHub with tables, images and maths) comes on request
+with `p`. To make that
 quick, it's loaded invisibly once you rest on a file for a moment, and dropped when you
 move on; so `p` usually shows it at once. That background load is skipped where it would
 cost something: files only in iCloud (they'd be downloaded), on network drives, video and
@@ -74,8 +77,8 @@ window (`[preview] mode_width`, or Settings › Preview) and has the keyboard, s
 scroll, `space` / `⇧space` page and `g` / `G` jump to the top or bottom; `f` gives it the
 whole window, hiding the list, and `f` again brings the list back (`f` from the list goes
 straight there). `p` again, `esc`, `h` or a click on the list goes back. PDFs,
-code and text scroll in small steps; documents Quick Look draws (Office, Pages and so on)
-move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
+code, text and Markdown scroll in small steps; documents Quick Look draws (Office, Pages
+and so on) move a page at a time, since Quick Look only takes page keys. `P` (or `⌘Y`) opens the
 Quick Look window; with items on the shelf, or the preview pane turned off, `p` opens it
 too. `w` lists the apps that can open the item, your default first; type to narrow it down.
 Right-click a row for Open, Open With, Quick Look, Show in Finder, Copy Path, Tags, Rename

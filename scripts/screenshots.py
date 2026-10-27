@@ -95,12 +95,17 @@ def run_tilde(scene: Scene, out: Path, appearance: str, frames: Path | None) -> 
         raise SystemExit(f"{scene.name}: no image was written")
 
 
+# AeroSpace workspace the windows go to, out of the way of whatever you're working on.
+WORKSPACE = os.environ.get("TILDE_SNAPSHOT_WORKSPACE", "9")
+
+
 def float_window(pid: int) -> None:
-    """Tiling window managers resize new windows; AeroSpace is asked to leave this one be.
-    (Tilde also puts its size back until it stays; floating it just avoids the shuffle.)"""
+    """With AeroSpace, the window is floated (tiling would resize it) and sent to
+    WORKSPACE, so it doesn't land on the workspace you're using. Tilde captures its own
+    window, which works on a workspace that isn't showing."""
     if not shutil.which("aerospace"):
         return
-    for _ in range(40):
+    for _ in range(100):
         r = subprocess.run(
             ["aerospace", "list-windows", "--monitor", "all", "--pid", str(pid), "--format", "%{window-id}"],
             capture_output=True, text=True,
@@ -110,9 +115,10 @@ def float_window(pid: int) -> None:
         ids = r.stdout.split()
         if ids:
             for wid in ids:
+                subprocess.run(["aerospace", "move-node-to-workspace", "--window-id", wid, WORKSPACE], capture_output=True)
                 subprocess.run(["aerospace", "layout", "--window-id", wid, "floating"], capture_output=True)
             return
-        time.sleep(0.05)
+        time.sleep(0.02)
 
 
 def save_still(src: Path, dest: Path) -> None:

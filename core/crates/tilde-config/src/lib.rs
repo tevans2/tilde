@@ -220,8 +220,8 @@ pub struct PreviewConfig {
     /// Share of the window's width in PREVIEW (`p`), 0.3–0.95. `f` there takes the whole
     /// window.
     pub mode_width: f64,
-    /// Render code and other text files with `bat` (if installed). Markdown and
-    /// everything else use Quick Look.
+    /// Render code and text files with `bat` (if installed). Markdown is rendered by
+    /// Tilde; everything else uses Quick Look.
     pub bat: bool,
     /// bat themes (`bat --list-themes`) for light and dark appearance. Empty picks one to
     /// match the theme preset, else (dark) your bat config or (light) "GitHub".
@@ -229,6 +229,21 @@ pub struct PreviewConfig {
     pub bat_theme_dark: String,
     /// Lines rendered by bat.
     pub max_lines: u32,
+    /// How Markdown's full preview (`p`) is drawn.
+    pub markdown: MarkdownView,
+}
+
+/// How PREVIEW renders Markdown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownView {
+    /// Tilde's renderer in a web view: tables, images and HTML as on GitHub.
+    #[default]
+    Web,
+    /// Tilde's renderer as native text: instant and light; tables as aligned text.
+    Native,
+    /// Quick Look's own view.
+    Quicklook,
 }
 
 const PREVIEW_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 0.15..=0.85;
@@ -258,6 +273,7 @@ impl Default for PreviewConfig {
             bat_theme_light: String::new(),
             bat_theme_dark: String::new(),
             max_lines: 1000,
+            markdown: MarkdownView::Web,
         }
     }
 }
@@ -586,8 +602,8 @@ visible = true
 width = 0.5
 # Share it takes in preview mode (p), 0.3–0.95; f there takes the whole window.
 mode_width = 0.75
-# Syntax-highlight code and other text files with bat (if installed). Markdown and
-# everything else use Quick Look.
+# Syntax-highlight code and text with bat (if installed). Markdown is rendered by Tilde;
+# everything else uses Quick Look.
 bat = true
 # bat themes (from `bat --list-themes`) for light and dark appearance. Empty matches
 # the theme preset, else uses your bat config (dark) or "GitHub" (light).
@@ -595,6 +611,10 @@ bat_theme_light = ""
 bat_theme_dark = ""
 # Lines rendered by bat.
 max_lines = 1000
+# Markdown in preview mode (p): "web" (like GitHub: tables, images, HTML, maths),
+# "native" (the pane's text, larger; lighter) or "quicklook". The pane always shows it
+# as native text, which is instant.
+markdown = "web"
 
 # What searching Everywhere covers. Apply changes with Rebuild in the Index window (⌘⇧I).
 [index]

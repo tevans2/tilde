@@ -5,6 +5,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Markdown is rendered by Tilde.** The pane shows it as formatted text in 10–30 ms
+  (bat took up to 330 ms on long files, and Markdown no longer needs bat). `p` shows it
+  like GitHub, with tables, images, HTML, highlighted code and LaTeX maths, prepared in
+  the background so it appears at once, and scrolls with `j` / `k`. `[preview] markdown`
+  picks `web` (default), `native` or `quicklook`. Remote images aren't fetched.
+- **Code and text in preview mode stay highlighted.** `p` shows the whole file through
+  bat in a larger font, instead of Quick Look's plain text, and scrolls with `j` / `k`.
+
 ## [0.1.0] - 2026-10-27
 
 The first release.
