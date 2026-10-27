@@ -1,0 +1,94 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds Tilde.app for Apple silicon and Intel and publishes it
+# as a GitHub release. Running the workflow by hand builds the same files without
+# publishing them (they're kept as a workflow artifact).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the build number counts commits
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -1)"
+          if [[ "${GITHUB_REF_NAME}" != "v$version" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match core/Cargo.toml ($version)"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # The same certificate signs every release, so permissions survive updates
+      # (scripts/make-release-cert.sh makes it). Without it the build is signed ad hoc.
+      - name: Import the signing certificate
+        env:
+          P12: ${{ secrets.TILDE_SIGNING_P12 }}
+          PASSWORD: ${{ secrets.TILDE_SIGNING_PASSWORD }}
+        run: |
+          if [[ -z "$P12" ]]; then
+            echo "::warning::No TILDE_SIGNING_P12 secret: signing ad hoc, so permissions won't survive updates."
+            echo "TILDE_ADHOC=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          kc_password="$(openssl rand -hex 24)"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/release.p12"
+          security create-keychain -p "$kc_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kc_password" "$keychain"
+          security import "$RUNNER_TEMP/release.p12" -k "$keychain" -P "$PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/release.p12"
+          echo "TILDE_SIGN_IDENTITY=Tilde Release Signing" >> "$GITHUB_ENV"
+
+      - name: Build Tilde.app
+        run: scripts/bundle.sh --universal
+
+      - name: Package
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tilde
+          path: dist/*
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The notes are this version's section of CHANGELOG.md.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[?" v "\\]?" { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          cat docs/release-footer.md >> "$RUNNER_TEMP/notes.md"
+          # Versions like 0.3.0-beta.1 are prereleases (get.sh and Homebrew skip them).
+          prerelease=""
+          [[ "$VERSION" == *-* ]] && prerelease="--prerelease"
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Tilde $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" $prerelease
