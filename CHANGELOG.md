@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-27
+
 - **Markdown is rendered by Tilde.** The pane shows it as formatted text in 10–30 ms
   (bat took up to 330 ms on long files, and Markdown no longer needs bat). `p` shows it
   like GitHub, with tables, images, HTML, highlighted code and LaTeX maths, prepared in
@@ -56,5 +58,6 @@ The first release.
 - Jump list (`⌃o` / `⌃i`), sorting per folder, drag and drop, Quick Look, themes,
   configurable keys, a Settings window and a welcome window.
 
-[Unreleased]: https://github.com/tevans2/tilde/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/tevans2/tilde/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/tevans2/tilde/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tevans2/tilde/releases/tag/v0.1.0

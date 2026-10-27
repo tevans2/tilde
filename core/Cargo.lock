@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-activity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "plist",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-cleanup"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "rayon",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "tempfile",
@@ -1004,14 +1004,14 @@ dependencies = [
 
 [[package]]
 name = "tilde-edit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tilde-ops",
 ]
 
 [[package]]
 name = "tilde-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rayon",
  "serde_json",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-fs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "core-foundation",
  "core-foundation-sys",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "nucleo",
@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-nvim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rmpv",
  "tempfile",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-ops"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "objc2",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-preview"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "pulldown-cmark",
@@ -1090,7 +1090,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-query"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nucleo-matcher",
  "tilde-types",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "tilde-types"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "time"
