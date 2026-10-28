@@ -117,15 +117,21 @@ pub(crate) fn run(job: Job, index: Option<Arc<IndexService>>, current: Arc<Atomi
         }
         notes.push("Spotlight elsewhere".into());
     } else if elsewhere && let Some(index) = &index {
+        // Judged inside the index's pass, so only the files read become paths.
+        // The open folder as the index keys it: relative to home, or absolute.
+        let folder = match job.folder.strip_prefix(&job.home) {
+            Ok(rel) => rel.to_string_lossy().into_owned(),
+            Err(_) => job.folder.to_string_lossy().into_owned(),
+        };
         let candidates: Vec<PathBuf> = index
-            .recent(now - 2 * 365 * 86_400, RECENT_FILES * 8)
-            .into_iter()
-            .filter(|c| {
-                c.size <= RECENT_MAX_SIZE
-                    && matches!(kind_for(c.kind, &name_of(&c.path)), Kind::Code | Kind::Text)
-                    && !c.path.starts_with(&job.folder)
+            .recent_where(now - 2 * 365 * 86_400, RECENT_FILES, |key, m| {
+                let inside =
+                    key == folder || (key.starts_with(&folder) && key.as_bytes().get(folder.len()) == Some(&b'/'));
+                m.size <= RECENT_MAX_SIZE
+                    && !inside
+                    && matches!(kind_for(m.kind, key.rsplit('/').next().unwrap_or(key)), Kind::Code | Kind::Text)
             })
-            .take(RECENT_FILES)
+            .into_iter()
             .map(|c| c.path)
             .collect();
         let read = candidates.len();

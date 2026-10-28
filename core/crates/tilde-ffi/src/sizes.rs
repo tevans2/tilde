@@ -11,9 +11,9 @@
 //! [`CHANGE_FACTOR`] times that, and otherwise once it's [`FRESH_FACTOR`] times that old.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;

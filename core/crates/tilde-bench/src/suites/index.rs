@@ -260,6 +260,17 @@ fn lookups(r: &mut Runner, index: &GlobalIndex, ds: &str, now: i64) {
     r.bench(SUITE, ds, "Clean Up: files over 100 MB", || {
         handle.select(|_, m| m.kind == EntryKind::File && m.size > 100_000_000).len()
     });
+    r.bench(SUITE, ds, "text: without Spotlight: text files, 2 years", || {
+        handle
+            .recent_where(now - 2 * 365 * 86_400, 4_000, |key, m| {
+                m.size <= 1 << 20
+                    && matches!(
+                        tilde_query::kind_for(m.kind, key.rsplit('/').next().unwrap_or(key)),
+                        tilde_query::Kind::Code | tilde_query::Kind::Text
+                    )
+            })
+            .len()
+    });
     r.bench(SUITE, ds, "Index window: largest folders", || handle.largest_folders(20).len());
     r.bench(SUITE, ds, "Index window: memory estimate", || handle.memory_estimate() as usize);
     r.bench(SUITE, ds, "status", || handle.status().items as usize);

@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use tilde_config::IndexList;
-use tilde_index::{Frecency, GlobalHit, GlobalIndex, IndexConfig, IndexHandle, ScanConfig, Use, Zoxide};
+use tilde_index::{Frecency, GlobalHit, GlobalIndex, IndexConfig, IndexHandle, ItemMeta, ScanConfig, Use, Zoxide};
 use tilde_query::Query;
 
 use crate::config::ConfigError;
@@ -391,9 +391,20 @@ impl IndexService {
 
     /// Visible files modified since `since`, newest first, for the Activity feed.
     pub(crate) fn recent(&self, since: i64, limit: usize) -> Vec<tilde_activity::Candidate> {
+        self.recent_where(since, limit, |_, _| true)
+    }
+
+    /// Like `recent`, counting only items `keep` accepts (given the key, relative to home or
+    /// absolute, and the metadata).
+    pub(crate) fn recent_where(
+        &self,
+        since: i64,
+        limit: usize,
+        keep: impl Fn(&str, &ItemMeta) -> bool,
+    ) -> Vec<tilde_activity::Candidate> {
         let Some(handle) = self.live.lock().unwrap().handle.clone() else { return Vec::new() };
         handle
-            .recent(since, limit)
+            .recent_where(since, limit, keep)
             .into_iter()
             .map(|(path, meta)| tilde_activity::Candidate {
                 path,

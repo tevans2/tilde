@@ -304,9 +304,15 @@ pub fn idle_projects(index: &[Indexed], rules: &Rules, home: &Path, now: i64) ->
 /// an `.xcodeproj`, …).
 pub fn project_of(path: &Path, kind: EntryKind) -> Option<PathBuf> {
     let name = path.file_name()?.to_string_lossy();
-    let marker = kind == EntryKind::File && PROJECT_MARKERS.contains(&name.as_ref());
-    let xcode = name.ends_with(".xcodeproj") || name.ends_with(".xcworkspace");
-    if marker || xcode { path.parent().map(Path::to_path_buf) } else { None }
+    if is_project_marker(&name, kind) { path.parent().map(Path::to_path_buf) } else { None }
+}
+
+/// An item called `name` marks its folder as a project (`Cargo.toml`, `package.json`, an
+/// Xcode project…).
+pub fn is_project_marker(name: &str, kind: EntryKind) -> bool {
+    (kind == EntryKind::File && PROJECT_MARKERS.contains(&name))
+        || name.ends_with(".xcodeproj")
+        || name.ends_with(".xcworkspace")
 }
 
 /// Records a change at `path` (modified at `modified`) against the projects it's inside

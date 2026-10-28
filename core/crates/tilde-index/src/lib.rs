@@ -195,22 +195,34 @@ impl IndexHandle {
         if key.starts_with('/') { PathBuf::from(key) } else { self.shared.home.join(key) }
     }
 
-    /// Every indexed item `keep` accepts (given its absolute path and metadata). Walks the
-    /// whole index (a few ms per 100k items) without the search lock.
-    pub fn select(&self, mut keep: impl FnMut(&Path, &ItemMeta) -> bool) -> Vec<(PathBuf, ItemMeta)> {
-        let home = &self.shared.home;
-        let absolute = |key: &str| if key.starts_with('/') { PathBuf::from(key) } else { home.join(key) };
-        self.shared
-            .select(|key, meta| keep(&absolute(key), meta))
-            .into_iter()
-            .map(|(key, meta)| (absolute(&key), meta))
-            .collect()
+    /// The key form of a path (relative to home, or absolute). Empty for home itself.
+    pub fn key(&self, path: &Path) -> String {
+        self.shared.key(path)
+    }
+
+    /// Every indexed item `keep` accepts, as (absolute path, metadata). `keep` sees the
+    /// key (relative to home, or absolute; [`IndexHandle::absolute`] makes it a path) and
+    /// the metadata without anything being copied, so test the metadata first. Walks the
+    /// whole index without the search lock.
+    pub fn select(&self, keep: impl FnMut(&str, &ItemMeta) -> bool) -> Vec<(PathBuf, ItemMeta)> {
+        self.shared.select(keep).into_iter().map(|(key, meta)| (self.absolute(&key), meta)).collect()
     }
 
     /// Visible files modified at or after `since` (seconds since the epoch), newest
     /// first, as (absolute path, metadata). Doesn't wait for the search lock.
     pub fn recent(&self, since: i64, limit: usize) -> Vec<(PathBuf, ItemMeta)> {
-        self.shared.recent(since, limit).into_iter().map(|(key, meta)| (self.absolute(&key), meta)).collect()
+        self.recent_where(since, limit, |_, _| true)
+    }
+
+    /// Like [`IndexHandle::recent`], counting only items `keep` accepts (given the key and
+    /// metadata, as for [`IndexHandle::select`]).
+    pub fn recent_where(
+        &self,
+        since: i64,
+        limit: usize,
+        keep: impl Fn(&str, &ItemMeta) -> bool,
+    ) -> Vec<(PathBuf, ItemMeta)> {
+        self.shared.recent(since, limit, keep).into_iter().map(|(key, meta)| (self.absolute(&key), meta)).collect()
     }
 }
 
@@ -563,7 +575,7 @@ fn filtered_newest(
         .collect()
 }
 
-fn with_str<R>(s: &Utf32String, f: impl FnOnce(&str) -> R) -> R {
+pub(crate) fn with_str<R>(s: &Utf32String, f: impl FnOnce(&str) -> R) -> R {
     match s.slice(..) {
         // SAFETY: nucleo stores a string as ASCII bytes only when every byte is ASCII.
         Utf32Str::Ascii(bytes) => f(unsafe { std::str::from_utf8_unchecked(bytes) }),
@@ -680,6 +692,79 @@ mod tests {
         assert_eq!(paths[0], "Documents/Finance/2026/invoice-oct.pdf");
         assert!(!paths.iter().any(|p| p.contains("notes.md") || p.contains('.') && p.starts_with('.')));
         assert_eq!(index.handle().recent(since, 2).len(), 2);
+    }
+
+    /// The lookups that walk the whole index give exactly what copying every key, filtering
+    /// and sorting gave: same items, same order (ties by position), at any limit.
+    #[test]
+    fn whole_index_lookups_match_a_plain_filter_and_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let names = ["report.pdf", ".hidden", "café notes.md", "IMG_0001.HEIC", "Résumé.pages", "x.rs"];
+        let folders = ["Documents", "Developer/.git", "Pictures/Photos Library.photoslibrary", "Music", "日本"];
+        let mut items = Vec::new();
+        for i in 0..3_000u32 {
+            let kind = match i % 11 {
+                0 => EntryKind::Folder,
+                1 => EntryKind::Package,
+                _ => EntryKind::File,
+            };
+            let name = if i % 97 == 0 { "Photos Library.photoslibrary" } else { names[i as usize % names.len()] };
+            let key = format!("{}/{i}/{name}", folders[(i as usize / 7) % folders.len()]);
+            // Few distinct dates, so many ties.
+            let meta = ItemMeta {
+                id: i,
+                kind,
+                size: (i as u64 * 7919) % 5_000_000,
+                modified: 1_000 + (i as i64 % 40),
+                child_count: None,
+                extra: false,
+            };
+            items.push((key, meta));
+        }
+        let mut config = config(&home);
+        config.cache_path = Some(dir.path().join("index.bin"));
+        write_saved(&config, &items).unwrap();
+        let index = start_and_wait(config);
+        let shared = &index.shared;
+
+        let plain_recent = |since: i64, limit: usize| {
+            let mut found: Vec<(String, ItemMeta)> = shared
+                .snapshot()
+                .into_iter()
+                .filter(|(key, m)| {
+                    let mut folders = key.split('/');
+                    folders.next_back();
+                    m.modified >= since
+                        && matches!(m.kind, EntryKind::File | EntryKind::Package)
+                        && !(m.kind == EntryKind::Package && key.ends_with("library"))
+                        && !key.split('/').any(|p| p.starts_with('.'))
+                        && !folders.any(tilde_fs::is_package_name)
+                })
+                .collect();
+            found.sort_by_key(|(_, m)| std::cmp::Reverse(m.modified));
+            found.truncate(limit);
+            found
+        };
+        for (since, limit) in [(0, 10_000), (0, 1), (1_020, 25), (1_039, 3), (1_000, 0), (5_000, 10)] {
+            assert_eq!(
+                shared.recent(since, limit, |_, _| true),
+                plain_recent(since, limit),
+                "since {since}, limit {limit}"
+            );
+        }
+        let pdfs = shared.recent(0, 50, |key, _| key.ends_with(".pdf"));
+        assert_eq!(
+            pdfs,
+            plain_recent(0, 10_000).into_iter().filter(|(k, _)| k.ends_with(".pdf")).take(50).collect::<Vec<_>>()
+        );
+
+        let big: Vec<_> = shared.snapshot().into_iter().filter(|(_, m)| m.size > 4_000_000).collect();
+        assert_eq!(shared.select(|_, m| m.size > 4_000_000), big);
+        let accented: Vec<_> = shared.snapshot().into_iter().filter(|(k, _)| k.contains('é')).collect();
+        assert!(!accented.is_empty());
+        assert_eq!(shared.select(|k, _| k.contains('é')), accented);
     }
 
     #[test]

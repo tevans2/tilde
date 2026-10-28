@@ -155,13 +155,15 @@ mod tests {
             }
         }
         let kept = Mutex::new(Vec::new());
-        let total = folder_size(root, 2, &|| false, &|p, size| kept.lock().unwrap().push((p.to_path_buf(), size))).unwrap();
+        let total =
+            folder_size(root, 2, &|| false, &|p, size| kept.lock().unwrap().push((p.to_path_buf(), size))).unwrap();
         assert_eq!(total, reference(root));
         let kept = kept.into_inner().unwrap();
         for (p, size) in &kept {
             assert_eq!(*size, reference(p), "{p:?}");
         }
-        let levels = |d: usize| kept.iter().filter(|(p, _)| p.strip_prefix(root).unwrap().components().count() == d).count();
+        let levels =
+            |d: usize| kept.iter().filter(|(p, _)| p.strip_prefix(root).unwrap().components().count() == d).count();
         assert_eq!((levels(0), levels(1), levels(3)), (1, 12, 0), "kept down to two levels");
     }
 

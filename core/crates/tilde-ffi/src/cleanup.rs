@@ -337,9 +337,10 @@ fn run(scan: Scan, handle: Option<tilde_index::IndexHandle>, duplicates: bool) {
     let mut dup_paths = Vec::new();
     let mut projects = HashSet::new();
     if let Some(h) = &handle {
-        for (path, m) in h.select(|path, m| {
-            m.kind == EntryKind::File && (m.size >= rules.duplicates_min.min(rules.big_file) || is_marker(path))
-                || is_marker(path)
+        // Judged on size and name, so only big files and project markers become paths.
+        let min = rules.duplicates_min.min(rules.big_file);
+        for (path, m) in h.select(|key, m| {
+            (m.kind == EntryKind::File && m.size >= min) || is_marker(key.rsplit('/').next().unwrap_or(key))
         }) {
             if let Some(dir) = tilde_cleanup::project_of(&path, m.kind) {
                 projects.insert(dir);
@@ -372,10 +373,23 @@ fn run(scan: Scan, handle: Option<tilde_index::IndexHandle>, duplicates: bool) {
 
     // Build output: projects' newest changes from a second pass, then measure.
     scan.set(BuildOutput, Working, None, None);
-    let mut newest = HashMap::new();
+    let mut newest: HashMap<PathBuf, i64> = HashMap::new();
     if let Some(h) = &handle {
-        h.select(|path, m| {
-            tilde_cleanup::note_change(&projects, &mut newest, &home, path, m.modified);
+        // Projects by key, so each item's folders are looked up without making paths.
+        let by_key: HashMap<String, &PathBuf> = projects.iter().map(|p| (h.key(p), p)).collect();
+        h.select(|key, m| {
+            let mut k = key;
+            while let Some((parent, _)) = k.rsplit_once('/') {
+                if let Some(project) = by_key.get(parent) {
+                    match newest.get_mut(*project) {
+                        Some(t) => *t = (*t).max(m.modified),
+                        None => {
+                            newest.insert((*project).clone(), m.modified);
+                        }
+                    }
+                }
+                k = parent;
+            }
             false
         });
     }
@@ -471,9 +485,8 @@ fn run(scan: Scan, handle: Option<tilde_index::IndexHandle>, duplicates: bool) {
     }
 }
 
-fn is_marker(path: &Path) -> bool {
-    tilde_cleanup::project_of(path, EntryKind::File).is_some()
-        || tilde_cleanup::project_of(path, EntryKind::Folder).is_some()
+fn is_marker(name: &str) -> bool {
+    tilde_cleanup::is_project_marker(name, EntryKind::File) || tilde_cleanup::is_project_marker(name, EntryKind::Folder)
 }
 
 fn hidden_or_packaged(path: &Path, home: &Path) -> bool {

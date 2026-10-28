@@ -3,7 +3,8 @@
 //! again. A compact per-folder table of what's indexed lets a fresh listing of any
 //! changed folder be diffed and applied.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -14,7 +15,7 @@ use tilde_fs::{FsEvent, ListOptions, is_package_name, list_dir};
 use tilde_types::{Entry, EntryKind};
 
 use crate::walk::{ScanConfig, walk_sequential};
-use crate::{ItemMeta, key_for};
+use crate::{ItemMeta, key_for, with_str};
 
 /// What the index holds for one entry of a folder.
 struct Child {
@@ -115,13 +116,23 @@ impl Shared {
         DeadSet(self.dead.read().unwrap())
     }
 
-    /// Live files and packages modified at or after `since`, newest first, at most
-    /// `limit`. Skips anything hidden, inside a hidden folder, or inside a package (a
-    /// Photos library's internals aren't activity). Library packages themselves (Photos,
-    /// Music) change constantly and are skipped too.
-    pub fn recent(&self, since: i64, limit: usize) -> Vec<(String, ItemMeta)> {
+    /// Live files and packages modified at or after `since` that `keep` accepts (given
+    /// the key and metadata), newest first, at most `limit`. Skips anything hidden, inside
+    /// a hidden folder, or inside a package (a Photos library's internals aren't
+    /// activity). Library packages themselves (Photos, Music) change constantly and are
+    /// skipped too.
+    ///
+    /// One pass over the index that copies nothing: items are judged by their metadata,
+    /// then their key where it's stored, and only the newest `limit` so far are kept
+    /// (by position); just those keys are copied at the end.
+    pub fn recent(&self, since: i64, limit: usize, keep: impl Fn(&str, &ItemMeta) -> bool) -> Vec<(String, ItemMeta)> {
+        if limit == 0 {
+            return Vec::new();
+        }
         let dead = self.dead();
-        let mut found: Vec<(String, ItemMeta)> = Vec::new();
+        // The newest so far, the worst on top: newer wins, then earlier position (as a
+        // stable sort by date would order them).
+        let mut best: BinaryHeap<Reverse<(i64, Reverse<u32>)>> = BinaryHeap::with_capacity(limit + 1);
         for i in 0..self.injector.injected_items() {
             let Some(item) = self.injector.get(i) else { continue };
             let meta = *item.data;
@@ -131,21 +142,38 @@ impl Shared {
             {
                 continue;
             }
-            let key = item.matcher_columns[0].to_string();
-            let mut folders = key.split('/');
-            folders.next_back();
-            let library = meta.kind == EntryKind::Package && key.ends_with("library");
-            if library || key.split('/').any(|part| part.starts_with('.')) || folders.any(is_package_name) {
+            let rank = (meta.modified, Reverse(i));
+            if best.len() == limit && best.peek().is_some_and(|Reverse(worst)| rank <= *worst) {
                 continue;
             }
-            found.push((key, meta));
+            let wanted = with_str(&item.matcher_columns[0], |key| {
+                let mut parts = key.split('/');
+                let name = parts.next_back().unwrap_or("");
+                let library = meta.kind == EntryKind::Package && key.ends_with("library");
+                let hidden = name.starts_with('.') || parts.clone().any(|part| part.starts_with('.'));
+                !library && !hidden && !parts.any(is_package_name) && keep(key, &meta)
+            });
+            if !wanted {
+                continue;
+            }
+            best.push(Reverse(rank));
+            if best.len() > limit {
+                best.pop();
+            }
         }
-        found.sort_by_key(|(_, m)| std::cmp::Reverse(m.modified));
-        found.truncate(limit);
-        found
+        let mut ranked: Vec<(i64, Reverse<u32>)> = best.into_iter().map(|Reverse(r)| r).collect();
+        ranked.sort_unstable_by(|a, b| b.cmp(a));
+        ranked
+            .into_iter()
+            .filter_map(|(_, Reverse(i))| {
+                let item = self.injector.get(i)?;
+                Some((item.matcher_columns[0].to_string(), *item.data))
+            })
+            .collect()
     }
 
-    /// Live items that `keep` accepts (given the key and metadata), as (key, metadata).
+    /// Live items that `keep` accepts (given the key, where it's stored, and metadata), as
+    /// (key, metadata). Only accepted keys are copied.
     pub fn select(&self, mut keep: impl FnMut(&str, &ItemMeta) -> bool) -> Vec<(String, ItemMeta)> {
         let dead = self.dead();
         let mut found = Vec::new();
@@ -155,9 +183,9 @@ impl Shared {
             if dead.contains(meta.id) || meta.extra {
                 continue;
             }
-            let key = item.matcher_columns[0].to_string();
-            if keep(&key, &meta) {
-                found.push((key, meta));
+            let column = &item.matcher_columns[0];
+            if with_str(column, |key| keep(key, &meta)) {
+                found.push((column.to_string(), meta));
             }
         }
         found
@@ -354,25 +382,25 @@ impl Shared {
     /// subfolder (that subfolder is listed instead). Folders at the top of a root aren't
     /// candidates only when they're a root themselves.
     pub fn largest_folders(&self, limit: usize) -> Vec<FolderSize> {
+        // Counted with keys borrowed from the tables (no copies), under their lock.
         let tables = self.children.lock().unwrap();
-        let mut totals: HashMap<String, u64> = HashMap::new();
+        let mut totals: HashMap<&str, u64> = HashMap::with_capacity(tables.len());
         for (key, table) in tables.iter() {
             let n = table.len() as u64;
-            *totals.entry(key.clone()).or_default() += n;
+            *totals.entry(key.as_str()).or_default() += n;
             let mut k = key.as_str();
             while let Some((parent, _)) = k.rsplit_once('/') {
                 if parent.is_empty() {
                     break;
                 }
-                *totals.entry(parent.to_string()).or_default() += n;
+                *totals.entry(parent).or_default() += n;
                 k = parent;
             }
             if !key.is_empty() && !key.starts_with('/') && !key.contains('/') {
                 // Top-level folder under home also counts towards home.
-                *totals.entry(String::new()).or_default() += n;
+                *totals.entry("").or_default() += n;
             }
         }
-        drop(tables);
         let total_items = self.live_items().max(1);
         let threshold = (total_items / 50).max(500);
         let mut candidates: Vec<FolderSize> = totals
@@ -385,8 +413,10 @@ impl Shared {
                     .iter()
                     .any(|(k, n)| k.starts_with(&prefix) && !k[prefix.len()..].contains('/') && *n * 5 >= **items * 4)
             })
-            .map(|(key, items)| FolderSize { key: key.clone(), items: *items })
+            .map(|(key, items)| FolderSize { key: key.to_string(), items: *items })
             .collect();
+        drop(totals);
+        drop(tables);
         candidates.sort_by(|a, b| b.items.cmp(&a.items).then_with(|| a.key.cmp(&b.key)));
         candidates.truncate(limit);
         candidates
