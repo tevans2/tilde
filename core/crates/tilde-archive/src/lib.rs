@@ -165,6 +165,12 @@ struct Tree {
     files: HashMap<String, u64>,
 }
 
+/// Forgets every cached listing (benchmarks measure reading an archive afresh).
+#[doc(hidden)]
+pub fn clear_cache() {
+    CACHE.lock().unwrap().clear();
+}
+
 /// Listings by archive, newest last, with the size and modification time they were read at.
 type Cache = Vec<(PathBuf, u64, i64, Arc<Tree>)>;
 static CACHE: Mutex<Cache> = Mutex::new(Vec::new());

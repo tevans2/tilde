@@ -11,3 +11,6 @@ build/
 
 .DS_Store
 dist/
+
+# Benchmark runs (bench/baseline.json is committed)
+bench/results/

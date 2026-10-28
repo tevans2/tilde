@@ -110,6 +110,16 @@ pub struct GlobalHit {
     pub score: i64,
 }
 
+/// What the index holds internally: everything ever added to the matcher (nucleo only
+/// appends), the dead entries among them, and the per-folder tables.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexCounts {
+    pub injected: u64,
+    pub dead: u64,
+    pub folder_tables: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndexStatus {
     pub items: u64,
@@ -136,6 +146,13 @@ impl IndexHandle {
 
     pub fn max_items(&self) -> u64 {
         self.shared.max_items
+    }
+
+    /// Internals for benchmarks (`tilde-bench`).
+    #[doc(hidden)]
+    pub fn counts(&self) -> IndexCounts {
+        let (injected, dead, folders) = self.shared.counts();
+        IndexCounts { injected, dead, folder_tables: folders }
     }
 
     /// Rough bytes of memory the index uses.

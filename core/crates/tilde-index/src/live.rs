@@ -100,6 +100,12 @@ impl Shared {
         key_for(&self.home, path)
     }
 
+    /// Items ever added to nucleo, items marked dead among them, and folder tables.
+    pub fn counts(&self) -> (u64, u64, u64) {
+        let folders = self.children.lock().unwrap().len() as u64;
+        (self.injector.injected_items() as u64, self.killed.load(Ordering::Relaxed) as u64, folders)
+    }
+
     /// Items currently searchable.
     pub fn live_items(&self) -> u64 {
         self.injector.injected_items() as u64 - self.killed.load(Ordering::Relaxed) as u64

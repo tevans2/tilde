@@ -323,6 +323,18 @@ impl Drop for Engine {
 }
 
 impl Engine {
+    /// An engine with fixed sort settings and per-folder orders kept in memory, so
+    /// nothing is read from or written to the user's files (`tilde-bench`).
+    #[doc(hidden)]
+    pub fn with_settings(
+        listener: Arc<dyn EngineListener>,
+        home: PathBuf,
+        index: Option<Arc<IndexService>>,
+        sort: SortConfig,
+    ) -> Arc<Self> {
+        Engine::start(listener, home, index, None, SortMemory::in_memory(), Some(sort))
+    }
+
     /// `index: None` disables the Everywhere scope, and `activity` and `sort` replace the
     /// Activity and sort settings from the config (all for tests).
     fn start(

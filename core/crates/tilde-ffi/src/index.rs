@@ -265,9 +265,9 @@ impl IndexService {
 }
 
 impl IndexService {
-    /// A service with fixed settings (tests).
-    #[cfg(test)]
-    pub(crate) fn with_config(config: IndexConfig, record_uses: bool) -> Arc<Self> {
+    /// A service with fixed settings (tests and `tilde-bench`).
+    #[doc(hidden)]
+    pub fn with_config(config: IndexConfig, record_uses: bool) -> Arc<Self> {
         let frecency = config.frecency.clone().unwrap_or_else(|| Arc::new(Mutex::new(Frecency::in_memory())));
         let service = Arc::new(IndexService {
             home: config.home.clone(),
@@ -488,6 +488,14 @@ fn config_from_file(home: &Path, frecency: &Arc<Mutex<Frecency>>) -> (Option<Ind
         cache_path: Some(cache_path()),
     };
     (Some(index), uses)
+}
+
+/// The index settings Tilde uses from the user's config, with their frecency loaded
+/// (read-only: nothing is saved through it). `None` if indexing is off (`tilde-bench`).
+#[doc(hidden)]
+pub fn user_index_config() -> Option<IndexConfig> {
+    let frecency = Arc::new(Mutex::new(load_frecency()));
+    config_from_file(&home_dir(), &frecency).0
 }
 
 /// `~/Library/Application Support/Tilde/frecency.json`.

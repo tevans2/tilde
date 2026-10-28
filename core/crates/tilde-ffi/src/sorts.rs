@@ -26,7 +26,7 @@ impl SortMemory {
         }
     }
 
-    #[cfg(test)]
+    /// Kept in memory only (tests and benchmarks).
     pub(crate) fn in_memory() -> SortMemory {
         SortMemory { file: None, memory: BTreeMap::new() }
     }

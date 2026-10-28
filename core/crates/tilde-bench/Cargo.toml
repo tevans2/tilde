@@ -1,0 +1,21 @@
+[package]
+name = "tilde-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Measures Tilde's core: the index, folder listing, sizes, contents search, archives and the engine."
+
+[dependencies]
+tilde-types.workspace = true
+tilde-fs.workspace = true
+tilde-query.workspace = true
+tilde-config.workspace = true
+tilde-index.workspace = true
+tilde-contents.workspace = true
+tilde-archive.workspace = true
+tilde-ffi = { path = "../tilde-ffi" }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

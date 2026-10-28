@@ -1025,6 +1025,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-bench"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilde-archive",
+ "tilde-config",
+ "tilde-contents",
+ "tilde-ffi",
+ "tilde-fs",
+ "tilde-index",
+ "tilde-query",
+ "tilde-types",
+]
+
+[[package]]
 name = "tilde-cleanup"
 version = "0.2.0"
 dependencies = [

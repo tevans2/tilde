@@ -32,7 +32,7 @@ pub use edit::{EditLineError, EditPreview, EditSession, PendingChange};
 pub use engine::{
     ActivityFilter, ActivityInfo, Engine, EngineListener, FolderSort, OriginFilter, ResultsInfo, RowGroup, SortBy,
 };
-pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus};
+pub use index::{Destination, FolderInfo, IndexInfo, IndexService, IndexState, IndexStatus, user_index_config};
 pub use nvim::{NvimEditor, NvimLaunch, NvimListener, NvimOpenMode, NvimStatus, find_nvim};
 pub use ops::{
     ClashPolicy, FileOps, HistoryEntry, HistoryPreview, HistoryState, OpError, OpKind, OpOutcome, OpPhase, OpRequest,
