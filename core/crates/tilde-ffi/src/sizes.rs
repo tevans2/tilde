@@ -11,6 +11,8 @@
 //! [`CHANGE_FACTOR`] times that, and otherwise once it's [`FRESH_FACTOR`] times that old.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -72,7 +74,8 @@ struct Owner {
 struct State {
     cache: HashMap<PathBuf, Known>,
     queue: Vec<Job>,
-    running: HashSet<PathBuf>,
+    /// Folders being measured, each with a flag that stops it.
+    running: HashMap<PathBuf, Arc<AtomicBool>>,
     owners: HashMap<u64, Owner>,
     started: bool,
     /// Where sizes are saved (`None` in tests).
@@ -109,7 +112,7 @@ pub(crate) fn want(owner: u64, paths: Vec<PathBuf>, tx: Sender<Command>) {
     // What's asked for now goes before what was asked for earlier.
     let mut jobs = Vec::new();
     for path in &paths {
-        if state.running.contains(path) || state.queue.iter().any(|j| j.path == *path) {
+        if state.running.contains_key(path) || state.queue.iter().any(|j| j.path == *path) {
             continue;
         }
         let not_before = match state.cache.get(path) {
@@ -127,9 +130,13 @@ pub(crate) fn want(owner: u64, paths: Vec<PathBuf>, tx: Sender<Command>) {
     } else {
         state.owners.insert(owner, Owner { wanted: paths.into_iter().collect(), tx });
     }
-    // Nobody wants the rest any more.
-    let State { queue, owners, .. } = &mut *state;
+    // Nobody wants the rest any more: drop what's queued, stop what's running, and
+    // let a stopped walk run on if something wants it again.
+    let State { queue, owners, running, .. } = &mut *state;
     queue.retain(|j| owners.values().any(|o| o.wanted.contains(&j.path)));
+    for (path, stop) in running.iter() {
+        stop.store(!owners.values().any(|o| o.wanted.contains(path)), Ordering::Relaxed);
+    }
     if !state.started && !state.queue.is_empty() {
         state.started = true;
         for i in 0..THREADS {
@@ -168,19 +175,26 @@ fn worker(s: &'static Service) {
             continue;
         };
         let path = state.queue.remove(i).path;
-        state.running.insert(path.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        state.running.insert(path.clone(), stop.clone());
         drop(state);
 
-        // Stops if no window shows it any more.
-        let cancel = || !s.state.lock().unwrap().owners.values().any(|o| o.wanted.contains(&path));
+        // Stops once no window shows it any more (`want` sets the flag).
         let started = Instant::now();
-        let mut found = Vec::new();
-        let result = tilde_fs::folder_size(&path, KEEP_LEVELS, &cancel, &mut |p, n| found.push((p.to_path_buf(), n)));
+        let found = Mutex::new(Vec::new());
+        let result = tilde_fs::folder_size(&path, KEEP_LEVELS, &|| stop.load(Ordering::Relaxed), &|p, n| {
+            found.lock().unwrap().push((p.to_path_buf(), n))
+        });
         let took = started.elapsed();
+        let found = found.into_inner().unwrap();
 
         state = s.state.lock().unwrap();
         state.running.remove(&path);
         if result.is_err() {
+            // Wanted again since it was stopped: measure it afresh.
+            if state.owners.values().any(|o| o.wanted.contains(&path)) {
+                state.queue.insert(0, Job { path, not_before: SystemTime::now() });
+            }
             continue;
         }
         if state.cache.len() + found.len() > MAX_CACHED {

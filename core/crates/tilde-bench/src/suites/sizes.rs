@@ -32,10 +32,13 @@ fn measure(r: &mut Runner, ds: &str, name: &str, dir: &Path) {
         name,
         || (),
         |_| {
-            let mut folders = 0usize;
+            let folders = std::sync::atomic::AtomicUsize::new(0);
             let t = std::time::Instant::now();
-            let total = tilde_fs::folder_size(dir, usize::MAX, &|| false, &mut |_, _| folders += 1)
-                .map_err(|e| e.to_string())?;
+            let total = tilde_fs::folder_size(dir, usize::MAX, &|| false, &|_, _| {
+                folders.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .map_err(|e| e.to_string())?;
+            let folders = folders.into_inner();
             Ok(info([
                 ("total_bytes", total as f64),
                 ("folders", folders as f64),

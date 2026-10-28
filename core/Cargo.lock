@@ -1117,6 +1117,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "libc",
+ "rayon",
  "tempfile",
  "tilde-types",
 ]

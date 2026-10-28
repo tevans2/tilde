@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 tilde-types.workspace = true
 libc.workspace = true
+rayon = "1"
 core-foundation = "0.10.1"
 core-foundation-sys = "0.8.7"
 
