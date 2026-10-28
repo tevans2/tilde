@@ -1,0 +1,102 @@
+#!/bin/bash
+# Opens Tilde from a terminal. Shipped inside Tilde.app (Contents/Resources/bin/tilde);
+# Homebrew links it onto your PATH.
+#
+#   tilde [folder|file]        a Tilde window on a folder (here by default), or on a
+#                              file's folder with the file highlighted
+#   tilde --cd [folder|file]   the same, then waits: when the window closes (q or ⌘W),
+#                              prints the folder it was on
+#   tilde init zsh|bash|fish   prints a shell function `t` that runs `tilde --cd` and
+#                              goes to that folder. Add to your shell's config:
+#                                eval "$(tilde init zsh)"       (~/.zshrc)
+#                                eval "$(tilde init bash)"      (~/.bashrc)
+#                                tilde init fish | source       (~/.config/fish/config.fish)
+set -euo pipefail
+
+usage() {
+  sed -n '5,13s/^# \{0,1\}//p' "$0" >&2
+  exit "${1:-0}"
+}
+
+# Percent-encodes a URL query value, byte by byte.
+encode() {
+  local LC_ALL=C s="$1" out="" c n i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9._~/-]) out+="$c" ;;
+      *)
+        # Bytes over 127 come out negative in some bashes.
+        printf -v n '%d' "'$c"
+        printf -v c '%%%02X' $((n & 255))
+        out+="$c"
+        ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+init() {
+  case "${1:-}" in
+    zsh | bash)
+      cat <<'SH'
+t() {
+  local dir
+  dir="$(command tilde --cd "$@")" || return
+  [ -n "$dir" ] && [ "$dir" != "$PWD" ] && cd -- "$dir"
+}
+SH
+      ;;
+    fish)
+      cat <<'FISH'
+function t
+    set -l dir (command tilde --cd $argv); or return
+    test -n "$dir"; and test "$dir" != "$PWD"; and cd -- $dir
+end
+FISH
+      ;;
+    *) echo "tilde init: zsh, bash or fish" >&2; exit 1 ;;
+  esac
+}
+
+wait=false
+case "${1:-}" in
+  -h | --help) usage ;;
+  init) init "${2:-}"; exit ;;
+  --cd) wait=true; shift ;;
+esac
+[[ $# -le 1 ]] || usage 1
+
+target="${1:-.}"
+select=""
+if [[ -d "$target" ]]; then
+  folder="$(cd "$target" && pwd)"
+elif [[ -e "$target" ]]; then
+  folder="$(cd "$(dirname "$target")" && pwd)"
+  select="$(basename "$target")"
+else
+  echo "tilde: no such file or folder: $target" >&2
+  exit 1
+fi
+
+url="tilde://open?path=$(encode "$folder")&select=$(encode "$select")"
+# The terminal app, to come back to it (macOS sets this for apps' child processes).
+url+="&return=$(encode "${__CFBundleIdentifier:-}")"
+
+# TILDE_APP picks a copy of Tilde.app (otherwise macOS picks the one handling tilde://).
+launch() {
+  if [[ -n "${TILDE_APP:-}" ]]; then open -a "$TILDE_APP" "$1"; else open "$1"; fi
+}
+
+if ! $wait; then
+  launch "$url"
+  exit
+fi
+
+dir="$(mktemp -d "${TMPDIR:-/tmp}/tilde-cd.XXXXXX")"
+trap 'rm -rf "$dir"' EXIT
+mkfifo -m 600 "$dir/reply"
+launch "$url&reply=$(encode "$dir/reply")"
+# Blocks until the window closes and Tilde writes its folder.
+IFS= read -r result < "$dir/reply" || true
+[[ -n "$result" ]] && printf '%s\n' "$result"

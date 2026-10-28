@@ -31,6 +31,7 @@ cask "tilde" do
   depends_on macos: :sonoma
 
   app "Tilde.app"
+  binary "#{appdir}/Tilde.app/Contents/Resources/bin/tilde"
 
   # Tilde isn't notarized, so a quarantined copy wouldn't open the first time.
   # Every release is signed with the same certificate (see scripts/signing.sh).

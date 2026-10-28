@@ -663,12 +663,61 @@ def downloads(home: Path, photos: list[Path]) -> None:
     for name, size, days, url in [
         ("Godot_v4.3-stable_macos.universal.zip", 120, 160, "https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_macos.universal.zip"),
         ("Steam.dmg", 9, 130, "https://cdn.cloudflare.steamstatic.com/client/installer/steam.dmg"),
-        ("lofi-synth-samples.zip", 14, 88, "https://freesound.org/people/synthgarden/packs/"),
     ]:
         p = dl / name
         blob(p, size)
         date(p, days)
         downloaded(p, url)
+    # A real zip, to browse into.
+    samples = dl / "lofi-synth-samples.zip"
+    sample_pack(samples)
+    date(samples, 88)
+    downloaded(samples, "https://freesound.org/people/synthgarden/packs/")
+
+
+def sample_pack(path: Path) -> None:
+    """A zip of samples in folders, with a readme and cover art."""
+    import io
+    import zipfile
+
+    stamp = time.localtime(NOW - 120 * 86400)[:6]
+
+    def add(z: zipfile.ZipFile, name: str, data: bytes) -> None:
+        z.writestr(zipfile.ZipInfo(name, stamp), data)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        add(z, "lofi-synth-samples/README.md", b"""# Lofi synth samples
+
+48 one-shots and loops from a Juno-60 and a cassette deck, recorded for
+**synth-garden**. 44.1 kHz, 24-bit. Loops are at 82 BPM.
+
+| Folder | What |
+| --- | --- |
+| drums | dusty kicks, brushed snares, vinyl crackle |
+| keys | Rhodes chords, detuned |
+| pads | slow Juno pads, tape-warbled |
+
+Free to use, credit appreciated (CC BY 4.0).
+""")
+        add(z, "lofi-synth-samples/LICENSE.txt", b"Creative Commons Attribution 4.0 International\n")
+        for folder, names in [
+            ("drums", ["kick-dusty-01", "kick-dusty-02", "snare-brush-01", "hat-closed-tape", "vinyl-crackle-loop"]),
+            ("keys", ["rhodes-Cmaj9", "rhodes-Am11", "rhodes-Fmaj7-loop-82bpm"]),
+            ("pads", ["juno-warm-pad-C", "juno-warm-pad-G", "tape-warble-loop-82bpm", "night-drive-pad"]),
+        ]:
+            for n in names:
+                add(z, f"lofi-synth-samples/{folder}/{n}.wav", RNG.randbytes(RNG.randint(400, 1600) * 1024))
+        cover = io.BytesIO()
+        img = Image.new("RGB", (600, 600), (36, 22, 60))
+        d = ImageDraw.Draw(img)
+        for i in range(12):
+            y = 330 + i * 18
+            d.line([(0, y), (600, y)], fill=(255, 120 + i * 8, 180), width=3)
+        d.ellipse([200, 120, 400, 320], fill=(255, 170, 90))
+        d.text((40, 40), "LOFI SYNTH SAMPLES", font=font(40, True), fill=(255, 230, 240))
+        img.save(cover, "PNG")
+        add(z, "lofi-synth-samples/cover.png", cover.getvalue())
 
 
 def desktop(home: Path) -> None:

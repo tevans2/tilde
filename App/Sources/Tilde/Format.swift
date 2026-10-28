@@ -23,20 +23,26 @@ enum Format {
         Theme.shared.colors.badge(category)
     }
 
-    /// Size for files, item count for folders.
+    /// Size for files and measured folders (and apps), item count for other folders.
     static func meta(_ row: RowView) -> String {
         switch row.kind {
+        case .folder where row.measured, .package where row.measured:
+            return bytes(row.size)
         case .folder:
             guard let n = row.childCount else { return "" }
             return "\(n) item\(n == 1 ? "" : "s")"
         case .file:
-            let f = ByteCountFormatter()
-            f.countStyle = .file
-            f.allowsNonnumericFormatting = false // "0 bytes", not "Zero KB"
-            return f.string(fromByteCount: Int64(clamping: row.size))
+            return bytes(row.size)
         case .package, .symlink, .other:
             return ""
         }
+    }
+
+    static func bytes(_ size: UInt64) -> String {
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        f.allowsNonnumericFormatting = false // "0 bytes", not "Zero KB"
+        return f.string(fromByteCount: Int64(clamping: size))
     }
 
     /// Compact age: now, 5m, 3h, 2d, 4w, 6mo, 2y.

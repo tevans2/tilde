@@ -232,6 +232,12 @@ private struct GeneralSettings: View {
         }
     }()
 
+    /// Links the command shipped in the app onto the PATH.
+    static var linkCommand: String {
+        let tool = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/bin/tilde").path
+        return "ln -sf \"\(tool)\" /usr/local/bin/tilde"
+    }
+
     var body: some View {
         Form {
             Section("Appearance") {
@@ -275,6 +281,25 @@ private struct GeneralSettings: View {
                 ), in: 1...365) {
                     Text("Show the last \(model.settings.activityDays) days")
                 }
+            }
+            Section("Terminal") {
+                Text("The tilde command opens Tilde on a folder from a terminal. With the shell function t, closing the window (q or ⌘W) leaves the terminal in the folder you ended up in.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                CommandRow(label: "Put tilde on your PATH (Homebrew does this)", command: Self.linkCommand)
+                CommandRow(label: "Add t to ~/.zshrc", command: #"eval "$(tilde init zsh)""#)
+            }
+            Section("Folders") {
+                Toggle("Sort every folder the same way", isOn: model.bool("sort.same_everywhere") { $0.sortSameEverywhere })
+                Text(model.settings.sortSameEverywhere
+                    ? "A sort chosen with s applies to every folder you open, and is kept for next time."
+                    : "Each folder keeps the sort chosen in it; others use name order.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Show folder sizes", isOn: model.bool("sort.folder_sizes") { $0.folderSizes })
+                Text("Folders are measured in the background, at low priority, so they show their total size and sort by it. Sizes are remembered between launches.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("File dialogs") {
                 Toggle("Search with Tilde in other apps' Open and Save dialogs", isOn: Binding(
@@ -622,6 +647,31 @@ private struct KeyRow: View {
                     .help("Add another key")
                 if binding.customized {
                     Button("Reset") { model.reset("keys.\(mode).\(binding.action)") }
+                }
+            }
+        }
+    }
+}
+
+/// A shell command to copy, with what it's for.
+private struct CommandRow: View {
+    let label: String
+    let command: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+            HStack {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                Spacer()
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copied = true
                 }
             }
         }

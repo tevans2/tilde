@@ -24,6 +24,8 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L\(vendor)/lib"]),
                 .linkedLibrary("tilde_ffi"),
+                // The system's libarchive, for browsing archives (tilde-archive).
+                .linkedLibrary("archive"),
             ]
         ),
         .executableTarget(

@@ -159,9 +159,12 @@ window keeps its own list.
 
 `s` sorts the folder: then `n` name, `m` date modified, `a` date added, `s` size or `k`
 kind (by extension); picking the current order again reverses it. Also View › Sort By
-(`⌃⌘1`–`⌃⌘5`). Each folder remembers its order (Downloads by date added, a project by
-name), and the status bar shows it when it isn't the default. Folders stay on top; a size
-sort orders folders by how many items they hold. Typing a search ranks by match, while
+(`⌃⌘1`–`⌃⌘5`). The order applies to every folder you open, and is kept for next time
+(it's saved as `[sort] by` and `reverse`); the status bar shows it when it isn't by name.
+To have each folder keep its own order instead (Downloads by date added, a project by
+name), turn off Settings › General › Sort every folder the same way. Folders stay on top;
+a size sort orders them by their size once it's measured (see Folder sizes), by how many
+items they hold before. Typing a search ranks by match, while
 filters like `ext:pdf` keep the folder's order. Sorting by date added shows when items
 arrived instead of when they changed.
 
@@ -231,6 +234,48 @@ folder, and `P` (or `⌥⌘V`) moves them here instead. It works across apps: co
 Finder and paste in Tilde, or copy in Tilde and paste into a mail. Pasting into the same
 folder makes copies (`report 2.pdf`); names that clash elsewhere ask first. Everything is
 undoable.
+
+## Archives
+
+A zip, tar (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`…), 7z, rar, xar, cpio or ISO opens
+like a folder: `l` (or `tab`) goes in, `h` comes back out, and its folders show their sizes.
+`⏎` still opens the archive itself (Archive Utility unpacks it). Documents that are zips
+inside, like `.docx` or `.key`, aren't treated as archives.
+
+Inside, everything previews (each file is unpacked on its own when it's highlighted, kept in
+`~/Library/Caches/Tilde/Archives` for a few days), and `⏎`, Quick Look and Open With work.
+Archives are read-only: copy files out with `c` (to a folder you pick) or `y` and then `p`
+where you want them, or drag them out. Moving, renaming, trashing and editing inside an
+archive aren't possible. Searching inside files (`text:`) doesn't look in archives.
+
+## Folder sizes
+
+Folders show their total size instead of an item count, and sorting by size (`s s`) sorts
+them by it, as soon as they've been measured. Measuring happens in the background, at low
+priority: the folders you're looking at are measured, a couple of levels inside them are
+remembered too (so going in shows sizes at once), and everything is saved for the next
+launch. A size is measured again when something inside changes, but not too often for big
+folders: one that took a second to measure waits at least 20 seconds, one that took a
+minute, 20 minutes. Volumes mounted inside a folder aren't counted. Turn it off in
+Settings › General (`[sort] folder_sizes`).
+
+## From the terminal
+
+The `tilde` command opens Tilde: `tilde` on the current folder, `tilde ~/Downloads` on a
+folder, `tilde notes.md` on a file's folder with the file highlighted. Homebrew puts it on
+your `PATH`; otherwise it's inside the app (Settings › General has the line to link it).
+
+`tilde --cd` also waits: when the window closes, it prints the folder the window was on.
+`tilde init zsh` (or `bash`, `fish`) prints a shell function `t` that uses it to take the
+terminal there:
+
+```sh
+eval "$(tilde init zsh)"     # in ~/.zshrc; ~/.bashrc with bash
+tilde init fish | source     # in ~/.config/fish/config.fish
+```
+
+Then `t` opens Tilde where you are; find your way somewhere, press `q` (or `⌘W`, or quit
+Tilde), and the terminal is back in front, in that folder.
 
 ## Using the mouse
 

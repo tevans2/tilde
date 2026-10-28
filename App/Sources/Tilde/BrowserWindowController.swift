@@ -86,7 +86,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var shownGeneration: UInt64 = 0
     private var currentFolder = ""
     /// The folder showing (empty in Activity), for the file-dialog helper.
-    var folderShowing: String? { inActivity || currentFolder.isEmpty ? nil : currentFolder }
+    var folderShowing: String? { inActivity || currentFolder.isEmpty || archive != nil ? nil : currentFolder }
     /// Activity is showing (or has been asked for). `currentFolder` is where it was opened
     /// from, and where `⌫` / `h` / `@` go back to.
     private var inActivity = false
@@ -100,6 +100,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var activity: ActivityInfo?
     /// From the latest results: a `text:` search's progress, when the query has one.
     private var contents: ContentsInfo?
+    /// From the latest results: the archive file, when the open folder is inside one.
+    private var archive: String?
+    /// Members of archives written out to real files (to preview, open or copy), by
+    /// their path inside the archive.
+    private var extracted: [String: String] = [:]
     /// Row to select when the next results arrive (the folder we came up from, or a
     /// revealed file).
     private var pendingSelection: String?
@@ -118,8 +123,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var pendingAction: (() -> Void)?
     private var indexTimer: Timer?
     private var indexStatus = IndexStatus(state: .scanning, items: 0, capped: false)
+    /// Opened by `tilde --cd` in a terminal: closing the window sends the folder back.
+    private var terminalReturn: TerminalReturn?
 
-    init(index: IndexService, ops: FileOps) {
+    /// `start`: the folder to open (home if nil), highlighting `select`. `terminal`: opened
+    /// by `tilde --cd`.
+    init(index: IndexService, ops: FileOps, start: String? = nil, select: String? = nil, terminal: TerminalReturn? = nil) {
+        terminalReturn = terminal
         self.index = index
         self.ops = ops
         engine = Engine(listener: events, index: index)
@@ -154,12 +164,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         #else
         window.setFrameAutosaveName("TildeBrowser")
         #endif
-        var start = engine.homeDir()
+        var folder = start ?? engine.homeDir()
         #if DEBUG
         // Development aid: start somewhere else (used with the snapshot hook).
-        if let dir = ProcessInfo.processInfo.environment["TILDE_START"] { start = dir }
+        if start == nil, let dir = ProcessInfo.processInfo.environment["TILDE_START"] { folder = dir }
         #endif
-        open(folder: start)
+        open(folder: folder, select: select)
+        if terminal != nil {
+            statusBar.flash("\(Keymap.shared.key(.close, in: .select)) or ⌘W goes back to the terminal, in the folder you're in")
+        }
         setMode(.go)
         restoreShelf()
         startIndexProgress()
@@ -474,7 +487,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         guard let here else { return }
         let exists = { (place: Place) -> Bool in
             guard case let .folder(path) = place else { return true }
-            return FileManager.default.fileExists(atPath: path)
+            return FileManager.default.fileExists(atPath: path) || archiveContaining(path: path) != nil
         }
         if let target = jumps.step(back: back, from: here, exists: exists) {
             let name = target.select.map { ($0 as NSString).lastPathComponent }
@@ -570,6 +583,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             open(folder: folder)
             return true
         }
+        // Archives open like folders.
+        if row.kind == .file, row.section == .here, row.origin == nil, isArchive(name: row.name) {
+            open(folder: row.path)
+            return true
+        }
         if row.section == .everywhere || row.origin != nil {
             let url = URL(fileURLWithPath: row.path)
             open(folder: url.deletingLastPathComponent().path, select: url.lastPathComponent)
@@ -585,9 +603,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             open(folder: folder)
             return
         }
-        NSWorkspace.shared.open(URL(fileURLWithPath: row.path))
-        index.recordOpen(path: row.path)
-        statusBar.flash("Opened \(row.name)")
+        withRealFiles([row.path]) { [weak self] paths in
+            NSWorkspace.shared.open(URL(fileURLWithPath: paths[0]))
+            self?.index.recordOpen(path: row.path)
+            self?.statusBar.flash("Opened \(row.name)")
+        }
     }
 
     /// Moves by `delta` rows, stepping over the Everywhere header.
@@ -685,7 +705,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
                 toggleActivity()
             }
         case .close:
-            if inActivity { toggleActivity() } else { statusBar.flash("Nothing to close") }
+            if inActivity {
+                toggleActivity()
+            } else if terminalReturn != nil {
+                // Opened from a terminal: back to it, here.
+                window?.close()
+            } else {
+                statusBar.flash("Nothing to close")
+            }
         case .goto: showGoTo { [weak self] in self?.select(row: count - 1) }
         case .bookmark: chooseBookmark()
         case .yank: yankFiles()
@@ -923,7 +950,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// has items (the window shows the shelf).
     private func quickLookKey() {
         if let panel = QLPreviewPanel.shared(), panel.isVisible { return panel.orderOut(nil) }
-        let row = previewRow
+        let row = previewRow.map(realRow)
         guard shelf.isEmpty, Theme.shared.previewVisible, row != nil else { return toggleQuickLook(nil) }
         // The pane follows the selection after a moment: bring it up to date first.
         if preview.shownPath != row?.path {
@@ -941,7 +968,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             panel.orderOut(nil)
         } else {
             guard !targets.isEmpty else { return statusBar.flash("Nothing selected") }
-            panel.makeKeyAndOrderFront(nil)
+            withRealFiles(targets) { _ in panel.makeKeyAndOrderFront(nil) }
         }
     }
 
@@ -949,7 +976,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         guard QLPreviewPanel.sharedPreviewPanelExists(), let panel = QLPreviewPanel.shared(),
               panel.isVisible, panel.dataSource === self
         else { return }
-        quickLookItems = targets.map { URL(fileURLWithPath: $0) }
+        quickLookItems = targets.map { URL(fileURLWithPath: extracted[$0] ?? $0) }
         panel.reloadData()
     }
 
@@ -958,7 +985,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     // Quick Look calls these on the main thread.
     override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
         MainActor.assumeIsolated {
-            quickLookItems = targets.map { URL(fileURLWithPath: $0) }
+            quickLookItems = targets.map { URL(fileURLWithPath: extracted[$0] ?? $0) }
             panel.dataSource = self
             panel.delegate = self
             panel.reloadData()
@@ -974,8 +1001,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     /// `w`: pick an app (fuzzy, the default first) to open the targets with.
     private func openWith() {
-        let paths = targets
-        guard let first = paths.first else { return statusBar.flash("Nothing selected") }
+        let virtual = targets
+        guard !virtual.isEmpty else { return statusBar.flash("Nothing selected") }
+        withRealFiles(virtual) { [weak self] paths in self?.openWith(paths) }
+    }
+
+    private func openWith(_ paths: [String]) {
+        guard let first = paths.first else { return }
         let urls = paths.map { URL(fileURLWithPath: $0) }
         let apps = Self.apps(toOpen: URL(fileURLWithPath: first))
         guard !apps.isEmpty else { return statusBar.flash("No app opens \(describe(paths))") }
@@ -1063,6 +1095,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         var parts: [String] = []
         if pathBar.field.stringValue.isEmpty {
             parts.append(n(results.hereCount, "item"))
+            if archive != nil { parts.append("archive, read-only") }
             if !inActivity, sort.custom || sort.by != .name || sort.reverse {
                 parts.append("by \(Self.describe(sort))")
             }
@@ -1107,7 +1140,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     /// `X` in SELECT: leave the highlighted item out of search for good (adds it to
     /// `[index] hide` in the config and rebuilds).
     private func hideHighlightedFromSearch() {
-        guard let row = selectedRow else { return }
+        guard let row = selectedRow, !refuseInArchive([row.path]) else { return }
         do {
             try index.addExclusion(path: row.path, hide: true)
             statusBar.flash("Hid \(row.name) from search. Undo in the config (⌘,), then Rebuild (⌘⇧I).")
@@ -1121,7 +1154,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         let row = previewRow
         let work = DispatchWorkItem { [weak self] in
             guard let self, Theme.shared.previewVisible else { return }
-            self.preview.show(row)
+            // A file in an archive is written out first (once), then previewed.
+            if let row, row.kind == .file, self.isArchived(row.path), self.extracted[row.path] == nil,
+               row.size <= Self.archivePreviewLimit {
+                self.withRealFiles([row.path], quiet: true) { [weak self] _ in
+                    guard let self, self.previewRow?.path == row.path else { return }
+                    self.preview.show(self.realRow(row))
+                }
+                return
+            }
+            self.preview.show(row.map(self.realRow))
         }
         previewWork = work
         // Short delay so holding j doesn't render every file on the way.
@@ -1266,11 +1308,22 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        returnToTerminal()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         cleanup?.cancel()
         indexTimer?.invalidate()
         preview.close()
         terminal?.terminate()
+    }
+}
+
+extension BrowserWindowController {
+    /// Opened by `tilde --cd`: the terminal goes to the folder showing (an archive's own
+    /// folder, from inside one). On closing the window or quitting.
+    func returnToTerminal() {
+        let folder = archive.map { ($0 as NSString).deletingLastPathComponent } ?? currentFolder
+        terminalReturn?.finish(folder: folder)
+        terminalReturn = nil
     }
 }
 
@@ -1287,6 +1340,8 @@ extension BrowserWindowController: EngineEventsDelegate {
         currentFolder = info.folder
         activity = info.activity
         contents = info.contents
+        if archive != info.archive { extracted = [:] }
+        archive = info.archive
         sort = info.sort
         results.reset(
             generation: generation, hereCount: Int(info.hereCount), everywhereCount: Int(info.everywhereCount),
@@ -1408,6 +1463,13 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         guard mode != .edit, let r = results.row(row) else { return nil }
+        // Out of an archive: written out first, if it's not too big to wait for.
+        if isArchived(r.path) {
+            if let real = extracted[r.path] { return URL(fileURLWithPath: real) as NSURL }
+            guard r.size <= Self.archivePreviewLimit, let real = try? extractFromArchives(paths: [r.path]).first else { return nil }
+            extracted[r.path] = real
+            return URL(fileURLWithPath: real) as NSURL
+        }
         return URL(fileURLWithPath: r.path) as NSURL
     }
 
@@ -1494,7 +1556,7 @@ extension BrowserWindowController: NSTableViewDataSource, NSTableViewDelegate {
     /// leaves only copy in the source's mask). Nothing when everything is there already.
     private func dragOperation(_ info: NSDraggingInfo, into folder: String) -> NSDragOperation {
         let paths = droppedPaths(info)
-        guard !paths.isEmpty else { return [] }
+        guard !paths.isEmpty, !isArchived(folder) else { return [] }
         if paths.allSatisfy({ ($0 as NSString).deletingLastPathComponent == folder }) { return [] }
         let volume = { (path: String) in
             (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeIdentifierKey]))?.volumeIdentifier as? NSObject
@@ -1671,9 +1733,16 @@ extension BrowserWindowController: OpsEventsDelegate {
     }
 
     private func pickDestination(copy: Bool) {
-        let sources = targets
-        guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
-        let here = currentFolder
+        let virtual = targets
+        guard !virtual.isEmpty else { return statusBar.flash("Nothing selected") }
+        if !copy, refuseInArchive(virtual) { return }
+        // Copies out of an archive are of its members, written out first.
+        withRealFiles(virtual) { [weak self] sources in self?.pickDestination(copy: copy, sources: sources) }
+    }
+
+    private func pickDestination(copy: Bool, sources: [String]) {
+        // Not into an archive (copying "here" from one goes to its folder instead).
+        let here = archive.map { ($0 as NSString).deletingLastPathComponent } ?? currentFolder
         let title = "\(copy ? "Copy" : "Move") \(describe(sources)) to…"
         showOverlay(PromptOverlay(title: title, kind: .destination(
             search: { [index, weak self] query in
@@ -1723,6 +1792,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     private func trashTargets() {
         let sources = targets
         guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
+        if refuseInArchive(sources) { return }
         submit(OpRequest(kind: .trash, sources: sources, clash: .keepBoth),
                describing: "Moved \(describe(sources)) to the Trash")
         setShelf([])
@@ -1731,6 +1801,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     private func compressTargets() {
         let sources = targets
         guard !sources.isEmpty else { return statusBar.flash("Nothing selected") }
+        if refuseInArchive(sources) { return }
         submit(OpRequest(kind: .compress, sources: sources, clash: .keepBoth),
                describing: "Compressed \(describe(sources))")
         setShelf([])
@@ -1749,6 +1820,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     private func tagTargets() {
         let paths = targets
         guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        if refuseInArchive(paths) { return }
         let current = commonTags(paths: paths)
         let initial = current.joined(separator: ", ")
         let length = (initial as NSString).length
@@ -1769,7 +1841,7 @@ extension BrowserWindowController: OpsEventsDelegate {
     }
 
     private func renameHighlighted() {
-        guard let row = selectedRow else { return }
+        guard let row = selectedRow, !refuseInArchive([row.path]) else { return }
         let name = row.name
         // Select the part before the extension, like the Finder.
         let stem: Int = {
@@ -1789,6 +1861,7 @@ extension BrowserWindowController: OpsEventsDelegate {
 
     @objc func newFolder(_ sender: Any?) {
         guard !inActivity else { return statusBar.flash("Activity isn't a folder. Go to a folder to create one.") }
+        if refuseInArchive([], folder: true) { return }
         let parent = currentFolder
         showOverlay(PromptOverlay(
             title: "New folder in \(display(parent))",
@@ -1948,6 +2021,7 @@ extension BrowserWindowController {
     /// applies.
     private func enterEdit(focus: String?, selectName: Bool, newLine: Bool, quick: Bool) {
         guard !currentFolder.isEmpty, overlay == nil, !inActivity, !inHistory else { return }
+        if refuseInArchive([], folder: true) { return }
         let session: EditSession
         do {
             session = try EditSession(dir: currentFolder, showHidden: showHidden)
@@ -3037,8 +3111,12 @@ extension BrowserWindowController {
     /// `y` / ⌘C: the files on the pasteboard, as the Finder copies them, so they paste here
     /// (`p`), in the Finder, or into a mail.
     func yankFiles() {
-        let paths = targets
-        guard !paths.isEmpty else { return statusBar.flash("Nothing selected") }
+        let virtual = targets
+        guard !virtual.isEmpty else { return statusBar.flash("Nothing selected") }
+        withRealFiles(virtual) { [weak self] paths in self?.yank(paths) }
+    }
+
+    private func yank(_ paths: [String]) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects(paths.map { URL(fileURLWithPath: $0) as NSURL })
         let paste = Keymap.shared.key(.paste, in: .select), move = Keymap.shared.key(.pasteMove, in: .select)
@@ -3049,6 +3127,7 @@ extension BrowserWindowController {
     /// them, and empties the pasteboard (they've gone from where it says).
     func pasteFiles(move: Bool) {
         guard canPasteHere else { return statusBar.flash("Paste into a folder") }
+        if refuseInArchive([], folder: true) { return }
         let sources = Self.pasteboardFiles()
         guard !sources.isEmpty else { return statusBar.flash("No files copied. \(Keymap.shared.key(.yank, in: .select)) copies them.") }
         let here = currentFolder
@@ -3112,5 +3191,57 @@ extension BrowserWindowController {
                 self?.index.recordDestination(path: dest)
                 self?.open(folder: dest)
             })))
+    }
+}
+
+// MARK: Archives
+
+extension BrowserWindowController {
+    /// Files bigger than this inside an archive aren't written out just to preview or drag.
+    static let archivePreviewLimit: UInt64 = 512 << 20
+
+    /// Inside an archive (or its top, as a folder): not a real file, and read-only.
+    func isArchived(_ path: String) -> Bool {
+        if let archive, path == archive || path.hasPrefix(archive + "/") { return true }
+        return archiveContaining(path: path) != nil
+    }
+
+    /// Says archives can't be changed and returns true when any of `paths` is in one (or,
+    /// with `folder`, when the open folder is).
+    func refuseInArchive(_ paths: [String], folder: Bool = false) -> Bool {
+        guard (folder && archive != nil) || paths.contains(where: isArchived) else { return false }
+        let copy = Keymap.shared.key(.copy, in: .select), yank = Keymap.shared.key(.yank, in: .select)
+        statusBar.flash("Archives are read-only. Copy files out with \(copy) or \(yank).")
+        return true
+    }
+
+    /// `row` with the real file it was written out to, if it's in an archive and was.
+    func realRow(_ row: RowView) -> RowView {
+        guard let real = extracted[row.path] else { return row }
+        var copy = row
+        copy.path = real
+        return copy
+    }
+
+    /// Calls `done` with real files for `paths`: members of archives are written out first,
+    /// in the background (once; then they're remembered).
+    func withRealFiles(_ paths: [String], quiet: Bool = false, _ done: @escaping @MainActor ([String]) -> Void) {
+        let missing = paths.filter { extracted[$0] == nil && isArchived($0) }
+        guard !missing.isEmpty else { return done(paths.map { extracted[$0] ?? $0 }) }
+        if !quiet { statusBar.setActivity("Reading \(describe(missing)) from the archive…") }
+        Task.detached {
+            let result = Result { try extractFromArchives(paths: missing) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if !quiet { self.statusBar.setActivity(nil) }
+                switch result {
+                case let .success(real):
+                    for (path, file) in zip(missing, real) { self.extracted[path] = file }
+                    done(paths.map { self.extracted[$0] ?? $0 })
+                case let .failure(error):
+                    self.statusBar.flash(error.message)
+                }
+            }
+        }
     }
 }

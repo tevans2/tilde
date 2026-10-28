@@ -207,13 +207,25 @@ pub struct SortConfig {
     /// Against the natural direction (Z→A, oldest first, smallest first).
     pub reverse: bool,
     pub folders_first: bool,
-    /// Remember the order chosen for each folder.
+    /// A sort chosen with `s` becomes the order for every folder (saved here as `by` and
+    /// `reverse`), instead of only the folder it was chosen in.
+    pub same_everywhere: bool,
+    /// Remember the order chosen for each folder (when not `same_everywhere`).
     pub remember: bool,
+    /// Measure folders in the background, so they show their size and sort by it.
+    pub folder_sizes: bool,
 }
 
 impl Default for SortConfig {
     fn default() -> Self {
-        SortConfig { by: "name".into(), reverse: false, folders_first: true, remember: true }
+        SortConfig {
+            by: "name".into(),
+            reverse: false,
+            folders_first: true,
+            same_everywhere: true,
+            remember: true,
+            folder_sizes: true,
+        }
     }
 }
 
@@ -696,8 +708,13 @@ by = "name"
 # Against the natural direction: Z→A, oldest first, smallest first.
 reverse = false
 folders_first = true
-# Remember the order chosen for each folder.
+# A sort chosen with s applies to every folder, and is saved here as by and reverse.
+same_everywhere = true
+# Otherwise: remember the order chosen for each folder.
 remember = true
+# Measure folders in the background (at low priority), so they show their total size
+# and sort by it.
+folder_sizes = true
 
 # The file-dialog helper: in any app's Open or Save dialog, press the hotkey to search
 # with Tilde, and the dialog goes to what you pick. Needs the Accessibility permission

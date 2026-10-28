@@ -28,7 +28,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.initial]) { _, _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { Self.updateDockIcon() } }
         }
-        newWindow(nil)
+        // Launched to open a folder (`tilde` in a terminal, or a folder dropped on the Dock
+        // icon): that makes the window. Otherwise, one at home.
+        let isDefault = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool ?? true
+        if isDefault {
+            newWindow(nil)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                guard let self, !self.windows.contains(where: { $0.window?.isVisible == true }) else { return }
+                self.newWindow(nil)
+            }
+        }
         NSApp.activate()
         DialogHelper.shared.index = index
         DialogHelper.shared.currentFolder = { [weak self] in
@@ -44,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Quitting with windows opened by `tilde --cd` sends their terminals back too.
+        windows.forEach { $0.returnToTerminal() }
         // So the next launch loads instead of scanning.
         index.save()
     }
@@ -59,9 +71,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func newWindow(_ sender: Any?) {
-        let controller = BrowserWindowController(index: index, ops: ops)
+        newWindow(start: nil)
+    }
+
+    @discardableResult
+    private func newWindow(start: String?, select: String? = nil, terminal: TerminalReturn? = nil) -> BrowserWindowController {
+        windows.removeAll { $0.window?.isVisible != true }
+        let controller = BrowserWindowController(index: index, ops: ops, start: start, select: select, terminal: terminal)
         windows.append(controller)
         controller.showWindow(nil)
+        return controller
+    }
+
+    /// Folders (and files, shown in their folder) dropped on the Dock icon or opened with
+    /// `open -a Tilde`, and `tilde://open` links from the `tilde` command.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if url.isFileURL {
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
+                if isDir.boolValue {
+                    newWindow(start: url.path)
+                } else {
+                    newWindow(start: url.deletingLastPathComponent().path, select: url.lastPathComponent)
+                }
+            } else if url.scheme == "tilde", url.host == "open" {
+                openFromTerminal(url)
+            }
+        }
+        NSApp.activate()
+    }
+
+    /// `tilde://open?path=…&select=…&reply=…&return=…` (see App/bin/tilde).
+    private func openFromTerminal(_ url: URL) {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let value = { (name: String) in items.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 } }
+        guard let path = value("path"), path.hasPrefix("/") else { return }
+        let reply = value("reply").flatMap { TerminalReturn.isReplyPipe($0) ? $0 : nil }
+        let terminal = reply.map { TerminalReturn(reply: $0, app: value("return")) }
+        newWindow(start: path, select: value("select"), terminal: terminal)
     }
 
     /// Creates the config file from a commented template if needed and opens it.

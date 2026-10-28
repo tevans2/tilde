@@ -44,7 +44,7 @@ pub fn sort_entries(entries: &mut [Entry]) {
 
 /// Sorts by `order.key` in its natural direction (A→Z, newest first, largest first), or
 /// the other way with `order.reverse`. Ties go by name, A→Z. For `Size`, folders are
-/// compared by item count among themselves.
+/// compared among themselves by their measured size (0 until it's known), then item count.
 pub fn sort_entries_by(entries: &mut [Entry], order: SortOrder) {
     // A number that sorts the natural direction ascending, flipped for reverse.
     let primary = |e: &Entry| -> i128 {
@@ -53,7 +53,7 @@ pub fn sort_entries_by(entries: &mut [Entry], order: SortOrder) {
             SortKey::Modified => -(e.modified as i128),
             SortKey::Added => -(e.added as i128),
             SortKey::Size => match e.kind {
-                EntryKind::Folder => -(e.child_count.unwrap_or(0) as i128),
+                EntryKind::Folder => -(((e.size as i128) << 32) | e.child_count.unwrap_or(0) as i128),
                 _ => -(e.size as i128),
             },
         };
@@ -61,8 +61,8 @@ pub fn sort_entries_by(entries: &mut [Entry], order: SortOrder) {
     };
     entries.sort_by_cached_key(|e| {
         let is_folder = e.kind == EntryKind::Folder;
-        // Item counts and byte sizes don't compare, so a size sort keeps folders apart
-        // (after the files, unless they come first anyway).
+        // A size sort keeps folders apart (after the files, unless they come first
+        // anyway): until they're measured, they only have item counts.
         let folder_rank = if order.folders_first { !is_folder } else { order.key == SortKey::Size && is_folder };
         let ext = match order.key {
             SortKey::Kind if e.kind != EntryKind::Folder => with_extension(&e.name, |x| x.to_string()),

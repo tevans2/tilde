@@ -511,5 +511,5 @@ pub fn row_for_path(path: String) -> Option<crate::views::RowView> {
         added: 0,
     };
     let hit = tilde_query::Hit { index: 0, score: 0, indices: Vec::new() };
-    Some(crate::views::RowView::here(p.parent()?, &entry, &hit, false))
+    Some(crate::views::RowView::here(p.parent()?, &entry, &hit, false, false))
 }

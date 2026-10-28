@@ -99,12 +99,15 @@ pub struct RowView {
     pub filed: bool,
     /// Contents rows: the first matching line (1-based), or 0.
     pub line: u32,
+    /// Folders: `size` is the total of everything inside (measured in the background).
+    pub measured: bool,
 }
 
 impl RowView {
     /// A row from the current folder.
     /// `show_added`: the date shown is when the item arrived, not when it changed.
-    pub(crate) fn here(folder: &Path, entry: &Entry, hit: &Hit, show_added: bool) -> RowView {
+    /// `measured`: a folder whose size is known.
+    pub(crate) fn here(folder: &Path, entry: &Entry, hit: &Hit, show_added: bool, measured: bool) -> RowView {
         RowView {
             name: entry.name.clone(),
             path: folder.join(&entry.name).to_string_lossy().into_owned(),
@@ -122,6 +125,7 @@ impl RowView {
             source: String::new(),
             filed: false,
             line: 0,
+            measured,
         }
     }
 
@@ -150,6 +154,7 @@ impl RowView {
             source: item.source.clone().unwrap_or_default(),
             filed: item.filed,
             line: 0,
+            measured: false,
         }
     }
 
@@ -193,6 +198,7 @@ impl RowView {
             source,
             filed: false,
             line,
+            measured: false,
         }
     }
 
@@ -234,6 +240,7 @@ impl RowView {
             source: String::new(),
             filed: false,
             line: 0,
+            measured: false,
         }
     }
 }

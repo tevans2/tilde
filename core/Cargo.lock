@@ -1016,6 +1016,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilde-archive"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "tilde-types",
+]
+
+[[package]]
 name = "tilde-cleanup"
 version = "0.2.0"
 dependencies = [
@@ -1062,11 +1071,13 @@ dependencies = [
 name = "tilde-ffi"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "rayon",
  "serde_json",
  "tempfile",
  "thiserror",
  "tilde-activity",
+ "tilde-archive",
  "tilde-cleanup",
  "tilde-config",
  "tilde-contents",

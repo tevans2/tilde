@@ -21,6 +21,7 @@ tilde-activity = { path = "crates/tilde-activity" }
 tilde-nvim = { path = "crates/tilde-nvim" }
 tilde-cleanup = { path = "crates/tilde-cleanup" }
 tilde-contents = { path = "crates/tilde-contents" }
+tilde-archive = { path = "crates/tilde-archive" }
 libc = "0.2"
 plist = "1"
 rmpv = "1.3"

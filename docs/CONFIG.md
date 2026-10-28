@@ -50,7 +50,9 @@ spotlight = true            # beyond the folder, Spotlight (when it's indexing)
 by = "name"                 # name, modified, added, size, kind
 reverse = false             # Z→A, oldest first, smallest first
 folders_first = true
-remember = true             # remember the order chosen for each folder
+same_everywhere = true      # a sort chosen with s applies to every folder (saved above)
+remember = true             # otherwise: remember the order chosen for each folder
+folder_sizes = true         # measure folders in the background: sizes show and sort
 
 [cleanup]                   # sizes: 500M, 2G; ages: 90d, 6mo, 1y
 big_file = "500M"           # big files at least this big...

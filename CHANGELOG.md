@@ -6,6 +6,18 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - **Homebrew**: `brew install --cask tevans2/tilde/tilde`, and `brew upgrade` updates it.
+- **Archives open like folders**: `l` goes into a zip, tar (gz, bz2, xz), 7z, rar, xar,
+  cpio or ISO. Everything inside previews and opens; copy files out with `c`, `y` / `p` or
+  a drag. Read-only.
+- **A sort applies everywhere**: sorting by size (or anything) carries on into the
+  folders you open next, and is kept for next time. Settings › General can go back to an
+  order per folder (`[sort] same_everywhere`).
+- **Folder sizes**: folders are measured in the background (at low priority, remembered
+  between launches) and show their total size; sorting by size uses it. Settings ›
+  General, or `[sort] folder_sizes`.
+- **`t` in the terminal**: the `tilde` command opens Tilde on a folder, and with
+  `eval "$(tilde init zsh)"` the `t` function brings the terminal to the folder you were
+  in when you close the window (`q`). Folders dropped on the Dock icon open too.
 - **Search inside files**: `text:launch` or `text:"launch window"` lists files whose text
   matches, with the matching line, and previews them at that line. The open folder is read
   on request (skipping ignored files, build folders and binaries, cancelled by the next

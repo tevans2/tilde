@@ -38,6 +38,12 @@
   lines to trash, type paths to move. Works in your own Neovim too.
 - **See what's new.** `@` lists recent downloads, screenshots, AirDrops and edits, with
   where each came from.
+- **Archives are folders.** `l` goes into a zip, tar, 7z or rar like any folder: preview
+  what's inside, copy files out with `c` or `y`.
+- **Folder sizes.** Folders are measured in the background, so they show their size and
+  sort by it.
+- **From the terminal.** `t` opens Tilde where you are; close the window and the terminal
+  is in the folder you ended up in.
 - **Free up space.** `C` finds big files you haven't opened, old downloads, duplicates,
   build output in idle projects and app caches, and checks each one again before anything
   goes to the Trash.
@@ -76,6 +82,11 @@ first launch of a copy downloaded in a browser. To allow it, open **System Setti
 Privacy & Security** and click **Open Anyway**. The install command above avoids this.
 
 To build from source instead, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+**The `tilde` command** opens Tilde from a terminal (Homebrew puts it on your `PATH`;
+otherwise Settings › General shows how). Add `eval "$(tilde init zsh)"` to `~/.zshrc` (or
+`bash`; for fish, `tilde init fish | source`) for `t`: it opens a window on the current
+folder, and when you close it (`q` or `⌘W`), the terminal is in the folder you were on.
 
 **Uninstall:** quit Tilde, then delete `Tilde.app` (or `brew uninstall --zap tilde`). To also remove its settings, index and
 permissions, run [`scripts/uninstall.sh`](scripts/uninstall.sh) from a clone.

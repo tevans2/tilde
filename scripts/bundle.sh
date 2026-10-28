@@ -69,6 +69,10 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Tilde.icns"
 cp "$ROOT/App/Icon/Tilde-light.png" "$ROOT/App/Icon/Tilde-dark.png" "$APP/Contents/Resources/"
+# The `tilde` command for terminals (Homebrew links it onto the PATH).
+mkdir -p "$APP/Contents/Resources/bin"
+cp "$ROOT/App/bin/tilde" "$APP/Contents/Resources/bin/tilde"
+chmod +x "$APP/Contents/Resources/bin/tilde"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -89,6 +93,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
+      <key>CFBundleURLSchemes</key><array><string>tilde</string></array>
+    </dict>
+  </array>
   <key>NSDesktopFolderUsageDescription</key><string>Tilde shows and searches the files on your Desktop.</string>
   <key>NSDocumentsFolderUsageDescription</key><string>Tilde shows and searches the files in Documents.</string>
   <key>NSDownloadsFolderUsageDescription</key><string>Tilde shows and searches your downloads, and lists new ones in Activity.</string>

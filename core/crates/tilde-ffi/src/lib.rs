@@ -5,6 +5,7 @@
 //! completion is reported through `EngineListener`. Results for stale generations are
 //! dropped.
 
+mod archive;
 mod cleanup;
 mod config;
 mod contents;
@@ -14,9 +15,11 @@ mod index;
 mod nvim;
 mod ops;
 mod preview;
+mod sizes;
 mod sorts;
 mod views;
 
+pub use archive::{archive_containing, extract_from_archives, is_archive};
 pub use cleanup::{
     CleanupCategory, CleanupItem, CleanupKind, CleanupListener, CleanupService, CleanupState, row_for_path,
 };

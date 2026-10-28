@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -10,10 +12,11 @@ use tilde_config::SortConfig;
 use tilde_fs::{ListOptions, SINCE_NOW, Watcher, list_dir, sort_entries_by, watch};
 use tilde_index::GlobalHit;
 use tilde_query::{HereMatcher, Hit, Query};
-use tilde_types::{Entry, SortKey, SortOrder};
+use tilde_types::{Entry, EntryKind, SortKey, SortOrder};
 
 use crate::contents::{self, ContentHit};
 use crate::index::{IndexService, IndexState, home_dir};
+use crate::sizes;
 use crate::sorts::SortMemory;
 use crate::views::RowView;
 
@@ -146,6 +149,9 @@ pub struct ResultsInfo {
     /// Everywhere ones.
     pub contents: Option<ContentsInfo>,
     pub sort: FolderSort,
+    /// The archive file when the open folder is inside one (read-only, its rows' paths
+    /// aren't real files: `extract_from_archives` makes them so).
+    pub archive: Option<String>,
 }
 
 /// Implemented by the Swift app. Called on a background thread.
@@ -186,6 +192,12 @@ pub(crate) enum Command {
     FolderChanged(PathBuf),
     /// The index applied a batch of changes.
     IndexChanged,
+    /// Folder sizes asked for were measured.
+    SizesChanged,
+    /// The window closed: stop.
+    Quit,
+    /// Something changed in these folders below the open one (sizes are out of date).
+    SubfoldersChanged(Vec<PathBuf>),
     /// Files found by `text:` search `job`; `done` is its note once it's finished.
     ContentsFound {
         job: u64,
@@ -212,6 +224,8 @@ struct Published {
     contents: Vec<ContentHit>,
     /// Rows show when items were added instead of modified (sorting by added).
     show_added: bool,
+    /// Folders (by name) whose size is known.
+    measured: Arc<HashSet<String>>,
 }
 
 impl Published {
@@ -278,7 +292,10 @@ impl Engine {
         (start..end)
             .map(|i| match (p.here.get(i), &p.activity) {
                 (Some(hit), Some(a)) => RowView::activity(&p.home, &a.items[a.shown[hit.index as usize]], hit),
-                (Some(hit), None) => RowView::here(&p.folder, &p.entries[hit.index as usize], hit, p.show_added),
+                (Some(hit), None) => {
+                    let entry = &p.entries[hit.index as usize];
+                    RowView::here(&p.folder, entry, hit, p.show_added, p.measured.contains(&entry.name))
+                }
                 (None, _) if i < after_here => RowView::everywhere(&p.home, &p.everywhere[i - p.here.len()]),
                 (None, _) => RowView::contents(&p.home, &p.contents[i - after_here]),
             })
@@ -296,6 +313,12 @@ impl Engine {
 
     pub fn home_dir(&self) -> String {
         home_dir().to_string_lossy().into_owned()
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Command::Quit);
     }
 }
 
@@ -321,12 +344,15 @@ impl Engine {
             everywhere: Vec::new(),
             contents: Vec::new(),
             show_added: false,
+            measured: Arc::new(HashSet::new()),
         }));
         let latest_open = Arc::new(AtomicU64::new(0));
         if let Some(index) = &index {
             index.subscribe(tx.clone());
         }
+        static ENGINES: AtomicU64 = AtomicU64::new(0);
         let worker = Worker {
+            id: ENGINES.fetch_add(1, Ordering::Relaxed),
             rx,
             tx: tx.clone(),
             watcher: None,
@@ -350,6 +376,9 @@ impl Engine {
             fixed_sort: sort,
             contents: ContentsState::default(),
             contents_current: Arc::new(AtomicU64::new(0)),
+            archive: None,
+            folder_sizes: false,
+            measured: Arc::new(HashSet::new()),
         };
         thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
         Arc::new(Engine { tx, published, latest_open })
@@ -364,6 +393,8 @@ struct ActivityState {
 }
 
 struct Worker {
+    /// Tells this engine's folder size requests apart from other windows'.
+    id: u64,
     rx: Receiver<Command>,
     /// For watchers to report back.
     tx: Sender<Command>,
@@ -391,6 +422,12 @@ struct Worker {
     contents: ContentsState,
     /// The `text:` search job that may still report; others stop.
     contents_current: Arc<AtomicU64>,
+    /// The archive file, when the open folder is inside one.
+    archive: Option<PathBuf>,
+    /// `[sort] folder_sizes`, when last read.
+    folder_sizes: bool,
+    /// Folders in `entries` (by name) whose size is known.
+    measured: Arc<HashSet<String>>,
 }
 
 /// The `text:` search showing.
@@ -415,12 +452,18 @@ impl Worker {
                 match self.rx.recv_timeout(SCAN_REFRESH) {
                     Ok(cmd) => Some(cmd),
                     Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        return;
+                    }
                 }
             } else {
                 match self.rx.recv() {
                     Ok(cmd) => Some(cmd),
-                    Err(_) => return,
+                    Err(_) => {
+                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        return;
+                    }
                 }
             };
             let Some(first) = first else {
@@ -439,6 +482,8 @@ impl Worker {
             let mut user_change = false;
             let mut index_changed = false;
             let mut contents_changed = false;
+            let mut sizes_changed = false;
+            let mut subfolders_changed = false;
             let queued: Vec<Command> = std::iter::once(first).chain(self.rx.try_iter()).collect();
             for cmd in queued {
                 user_change |= matches!(
@@ -448,6 +493,7 @@ impl Worker {
                         | Command::Query { .. }
                         | Command::ShowHidden { .. }
                         | Command::Sort { .. }
+                        | Command::Quit
                 );
                 match cmd {
                     Command::Open { path, generation } => {
@@ -472,7 +518,9 @@ impl Worker {
                     Command::Sort { order: (key, reverse), generation } => {
                         let config = self.sort_config();
                         self.sort = SortOrder { key, reverse, folders_first: config.folders_first };
-                        if config.remember && !self.folder.as_os_str().is_empty() {
+                        if config.same_everywhere {
+                            self.save_default_sort(key, reverse);
+                        } else if config.remember && !self.folder.as_os_str().is_empty() {
                             self.sorts.set(&self.folder, self.sort, config.order());
                         }
                         let mut entries = (*self.entries).clone();
@@ -486,6 +534,18 @@ impl Worker {
                         relist |= watched && path == self.folder;
                     }
                     Command::IndexChanged => index_changed = true,
+                    Command::Quit => {
+                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        self.contents_current.fetch_add(1, Ordering::SeqCst);
+                        return;
+                    }
+                    Command::SizesChanged => sizes_changed = true,
+                    Command::SubfoldersChanged(folders) => {
+                        if self.folder_sizes {
+                            sizes::changed(&folders);
+                            subfolders_changed = true;
+                        }
+                    }
                     Command::ContentsFound { job, hits, done } => {
                         if job == self.contents.job && self.contents.key.is_some() {
                             for hit in hits {
@@ -527,8 +587,20 @@ impl Worker {
                 continue;
             }
 
+            if subfolders_changed {
+                self.request_sizes();
+            }
+            if sizes_changed {
+                self.apply_sizes();
+            }
+
             // Index updates only matter to a search in progress.
-            if !user_change && !relist && !contents_changed && !(index_changed && !self.query.is_empty()) {
+            if !user_change
+                && !relist
+                && !contents_changed
+                && !sizes_changed
+                && !(index_changed && !self.query.is_empty())
+            {
                 continue;
             }
 
@@ -543,24 +615,30 @@ impl Worker {
                 // A refresh keeps the order; another folder has its own (or the default).
                 let order = if path == self.folder { self.sort } else { self.order_for(&path) };
                 let latest = self.latest_open.clone();
-                match list_dir(&path, &opts, || latest.load(Ordering::SeqCst) > open_generation) {
-                    Ok(mut entries) => {
+                match list_folder(&path, &opts, || latest.load(Ordering::SeqCst) > open_generation) {
+                    Ok((mut entries, archive)) => {
                         sort_entries_by(&mut entries, order);
                         self.sort = order;
                         // Only folders the user navigated to: not the one opened at launch.
                         if explicit_open
                             && !self.folder.as_os_str().is_empty()
                             && path != self.folder
+                            && archive.is_none()
                             && let Some(index) = &self.index
                         {
                             index.record_visit(&path);
                         }
                         self.activity = None;
-                        if self.watched != [path.clone()] {
-                            self.watch(vec![path.clone()]);
+                        // An archive isn't watched: it's read again when it's opened again.
+                        let watched = if archive.is_some() { Vec::new() } else { vec![path.clone()] };
+                        if self.watched != watched {
+                            self.watch(watched);
                         }
+                        self.archive = archive;
                         self.folder = path;
                         self.entries = Arc::new(entries);
+                        self.request_sizes();
+                        self.apply_sizes();
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) if !explicit_open && e.kind() == std::io::ErrorKind::NotFound => {
@@ -571,8 +649,11 @@ impl Worker {
                             self.sort = self.order_for(&up);
                             sort_entries_by(&mut entries, self.sort);
                             self.watch(vec![up.clone()]);
+                            self.archive = None;
                             self.folder = up;
                             self.entries = Arc::new(entries);
+                            self.request_sizes();
+                            self.apply_sizes();
                         }
                     }
                     Err(e) => {
@@ -591,10 +672,19 @@ impl Worker {
         let targets = folders.clone();
         self.watched = folders;
         self.watcher = watch(&self.watched, &[], SINCE_NOW, FOLDER_WATCH_LATENCY, move |batch| {
-            // The stream is recursive; only changes directly inside the folders matter.
+            // The stream is recursive: changes directly inside a folder relist it, deeper
+            // ones only change folder sizes.
             for target in &targets {
                 if batch.iter().any(|e| e.path == *target || (e.needs_rescan() && target.starts_with(&e.path))) {
                     let _ = tx.send(Command::FolderChanged(target.clone()));
+                }
+                let deeper: Vec<PathBuf> = batch
+                    .iter()
+                    .filter(|e| e.path != *target && e.path.starts_with(target))
+                    .map(|e| e.path.clone())
+                    .collect();
+                if !deeper.is_empty() {
+                    let _ = tx.send(Command::SubfoldersChanged(deeper));
                 }
             }
         })
@@ -606,6 +696,7 @@ impl Worker {
         let inbox: Vec<PathBuf> = settings.inbox.into_iter().filter(|p| p.is_dir()).collect();
         self.watch(inbox);
         self.activity = Some(ActivityState { filter, items: Arc::new(items), gathered: Instant::now() });
+        self.request_sizes();
     }
 
     fn refresh_activity(&mut self) {
@@ -634,14 +725,73 @@ impl Worker {
         let config =
             self.fixed_sort.clone().unwrap_or_else(|| tilde_config::load(&tilde_config::config_path()).config.sort);
         self.sort_default = config.order();
+        self.folder_sizes = config.folder_sizes;
         config
+    }
+
+    /// Asks for the sizes of the folders listed (or for none, in Activity, inside an
+    /// archive or with `[sort] folder_sizes` off).
+    fn request_sizes(&self) {
+        let paths = if self.folder_sizes && self.archive.is_none() && self.activity.is_none() {
+            self.entries
+                .iter()
+                .filter(|e| matches!(e.kind, EntryKind::Folder | EntryKind::Package) && !e.mount_point)
+                .map(|e| self.folder.join(&e.name))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        sizes::want(self.id, paths, self.tx.clone());
+    }
+
+    /// Puts the folder sizes known into `entries` (sorting again if by size).
+    fn apply_sizes(&mut self) {
+        if self.archive.is_some() {
+            // Listed with their sizes.
+            let folders = self.entries.iter().filter(|e| e.kind == EntryKind::Folder).map(|e| e.name.clone());
+            self.measured = Arc::new(folders.collect());
+            return;
+        }
+        if !self.folder_sizes {
+            self.measured = Arc::new(HashSet::new());
+            return;
+        }
+        let mut entries = (*self.entries).clone();
+        let mut measured = HashSet::new();
+        let mut changed = false;
+        for e in entries.iter_mut().filter(|e| matches!(e.kind, EntryKind::Folder | EntryKind::Package)) {
+            if let Some(size) = sizes::get(&self.folder.join(&e.name)) {
+                changed |= e.size != size;
+                e.size = size;
+                measured.insert(e.name.clone());
+            }
+        }
+        if changed {
+            if self.sort.key == SortKey::Size {
+                sort_entries_by(&mut entries, self.sort);
+            }
+            self.entries = Arc::new(entries);
+        }
+        self.measured = Arc::new(measured);
+    }
+
+    /// Makes `key` (and `reverse`) the order for every folder: saved in the config.
+    fn save_default_sort(&mut self, key: SortKey, reverse: bool) {
+        if let Some(fixed) = &mut self.fixed_sort {
+            (fixed.by, fixed.reverse) = (key.as_str().into(), reverse);
+        } else {
+            let path = tilde_config::config_path();
+            let _ = tilde_config::set_value(&path, &["sort", "by"], tilde_config::Value::Text(key.as_str().into()));
+            let _ = tilde_config::set_value(&path, &["sort", "reverse"], tilde_config::Value::Bool(reverse));
+        }
+        self.sort_config();
     }
 
     /// The order remembered for `folder`, else the default.
     fn order_for(&mut self, folder: &std::path::Path) -> SortOrder {
         let config = self.sort_config();
         let default = config.order();
-        if !config.remember {
+        if config.same_everywhere || !config.remember {
             return default;
         }
         self.sorts.get(folder, default).unwrap_or(default)
@@ -707,6 +857,7 @@ impl Worker {
             everywhere,
             contents,
             show_added: self.sort.key == SortKey::Added,
+            measured: self.measured.clone(),
         };
         let default = self.sort_default;
         self.listener.results_ready(ResultsInfo {
@@ -721,6 +872,7 @@ impl Worker {
                 reverse: self.sort.reverse,
                 custom: self.sort.key != default.key || self.sort.reverse != default.reverse,
             },
+            archive: self.archive.as_ref().map(|a| a.to_string_lossy().into_owned()),
         });
     }
 }
@@ -753,6 +905,8 @@ impl Worker {
             let config = tilde_config::load(&tilde_config::config_path()).config;
             if !config.search.contents {
                 self.contents.note = "Searching inside files is off: Settings › Search".into();
+            } else if self.archive.is_some() {
+                self.contents.note = "Searching inside files doesn't look in archives".into();
             } else if needle.chars().count() < contents::MIN_CHARS {
                 self.contents.note = format!("Type at least {} characters to search inside files", contents::MIN_CHARS);
             } else {
@@ -780,6 +934,25 @@ impl Worker {
             searching: c.searching,
             note: c.note.clone(),
         })
+    }
+}
+
+/// Lists a folder, or a folder inside an archive (returning the archive too).
+fn list_folder(
+    path: &Path,
+    opts: &ListOptions,
+    cancel: impl Fn() -> bool,
+) -> io::Result<(Vec<Entry>, Option<PathBuf>)> {
+    match list_dir(path, opts, &cancel) {
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOTDIR) | Some(libc::ENOENT)) => {
+            let Some((archive, inner)) = tilde_archive::split(path) else { return Err(e) };
+            let mut entries = tilde_archive::list(&archive, &inner, &cancel)?;
+            if !opts.include_hidden {
+                entries.retain(|e| !e.hidden);
+            }
+            Ok((entries, Some(archive)))
+        }
+        result => result.map(|entries| (entries, None)),
     }
 }
 
@@ -905,7 +1078,8 @@ mod tests {
             f.set_modified(t0 + Duration::from_secs(60 - age)).unwrap();
         }
         let rec = Arc::new(Recorder::default());
-        let engine = engine_without_index(rec.clone());
+        let per_folder = SortConfig { same_everywhere: false, ..SortConfig::default() };
+        let engine = Engine::start(rec.clone(), home_dir(), None, None, SortMemory::in_memory(), Some(per_folder));
         let names = |g| engine.rows(g, 0, 10).iter().map(|r| r.name.clone()).collect::<Vec<_>>().join(" ");
         let sort_of = |g| rec.infos.lock().unwrap().iter().rev().find(|i| i.generation == g).unwrap().sort;
 
@@ -947,6 +1121,36 @@ mod tests {
         engine.set_sort(SortBy::Name, false, 10);
         rec.wait_for(10);
         assert!(!sort_of(10).custom);
+    }
+
+    #[test]
+    fn a_sort_applies_to_every_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        for (folder, files) in [(&a, [("small.txt", 1), ("big.txt", 500)]), (&b, [("tiny.md", 2), ("huge.md", 900)])] {
+            for (name, size) in files {
+                std::fs::write(folder.join(name), vec![b'x'; size]).unwrap();
+            }
+        }
+        let rec = Arc::new(Recorder::default());
+        let engine = engine_without_index(rec.clone());
+        let names = |g| engine.rows(g, 0, 10).iter().map(|r| r.name.clone()).collect::<Vec<_>>().join(" ");
+        let sort_of = |g| rec.infos.lock().unwrap().iter().rev().find(|i| i.generation == g).unwrap().sort;
+
+        engine.open_folder(a.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+        assert_eq!(names(1), "big.txt small.txt");
+        engine.set_sort(SortBy::Size, true, 2);
+        rec.wait_for(2);
+        assert_eq!(names(2), "small.txt big.txt");
+
+        // Another folder: sorted the same way, which is now the default.
+        engine.open_folder(b.to_string_lossy().into(), 3);
+        rec.wait_for(3);
+        assert_eq!(names(3), "tiny.md huge.md");
+        assert_eq!(sort_of(3), FolderSort { by: SortBy::Size, reverse: true, custom: false });
     }
 
     #[test]
@@ -1044,6 +1248,72 @@ mod tests {
         let (_, _, here, _) = rec.wait_for(5);
         assert_eq!(here, 1);
         assert!(rec.infos.lock().unwrap().last().unwrap().contents.is_none());
+    }
+
+    #[test]
+    fn folders_show_their_size_and_sort_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("big/inner")).unwrap();
+        std::fs::create_dir_all(root.join("small")).unwrap();
+        std::fs::write(root.join("big/inner/video.mov"), vec![0u8; 50_000]).unwrap();
+        std::fs::write(root.join("small/note.txt"), vec![0u8; 10]).unwrap();
+        let rec = Arc::new(Recorder::default());
+        let engine = engine_without_index(rec.clone());
+        engine.open_folder(root.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+        engine.set_sort(SortBy::Size, true, 2);
+        let t = Instant::now();
+        let rows = loop {
+            let rows = engine.rows(2, 0, 10);
+            if rows.len() == 2 && rows.iter().all(|r| r.measured) {
+                break rows;
+            }
+            assert!(t.elapsed() < Duration::from_secs(5), "sizes didn't arrive: {rows:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            rows.iter().map(|r| (r.name.as_str(), r.size)).collect::<Vec<_>>(),
+            [("small", 10), ("big", 50_000)]
+        );
+    }
+
+    #[test]
+    fn archives_open_as_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src/sprites")).unwrap();
+        std::fs::write(root.join("src/sprites/ship.png"), vec![1u8; 300]).unwrap();
+        std::fs::write(root.join("src/README.md"), "# hi").unwrap();
+        let zip = root.join("assets.zip");
+        let made = std::process::Command::new("/usr/bin/zip")
+            .args(["-qr", zip.to_str().unwrap(), "."])
+            .current_dir(root.join("src"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        let rec = Arc::new(Recorder::default());
+        let engine = engine_without_index(rec.clone());
+        engine.open_folder(zip.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+        let info = rec.infos.lock().unwrap().last().unwrap().clone();
+        assert_eq!(info.archive.as_deref(), Some(zip.to_str().unwrap()));
+        let rows = engine.rows(1, 0, 10);
+        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["sprites", "README.md"]);
+        assert_eq!((rows[0].size, rows[0].measured), (300, true));
+        assert_eq!(rows[0].path, zip.join("sprites").to_string_lossy());
+
+        engine.open_folder(rows[0].path.clone(), 2);
+        rec.wait_for(2);
+        assert_eq!(engine.rows(2, 0, 10)[0].name, "ship.png");
+        let real = crate::extract_from_archives(vec![engine.rows(2, 0, 1)[0].path.clone()]).unwrap();
+        assert_eq!(std::fs::read(&real[0]).unwrap().len(), 300);
+
+        // Out again: an ordinary folder.
+        engine.open_folder(root.to_string_lossy().into(), 3);
+        rec.wait_for(3);
+        assert!(rec.infos.lock().unwrap().last().unwrap().archive.is_none());
     }
 
     #[test]

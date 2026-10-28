@@ -168,6 +168,10 @@ pub struct Settings {
     pub search_spotlight: bool,
     /// Spotlight is indexing the home folder's disk.
     pub spotlight_available: bool,
+    /// `[sort] folder_sizes`: folders are measured in the background.
+    pub folder_sizes: bool,
+    /// `[sort] same_everywhere`: a sort chosen applies to every folder.
+    pub sort_same_everywhere: bool,
 }
 
 #[uniffi::export]
@@ -213,6 +217,8 @@ pub fn load_settings() -> Settings {
         search_contents: c.search.contents,
         search_spotlight: c.search.spotlight,
         spotlight_available: tilde_contents::spotlight_available(&crate::index::home_dir()),
+        folder_sizes: c.sort.folder_sizes,
+        sort_same_everywhere: c.sort.same_everywhere,
     }
 }
 

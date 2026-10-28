@@ -1,0 +1,13 @@
+[package]
+name = "tilde-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tilde-types.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
