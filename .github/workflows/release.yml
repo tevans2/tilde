@@ -92,3 +92,24 @@ jobs:
           [[ "$VERSION" == *-* ]] && prerelease="--prerelease"
           gh release create "$GITHUB_REF_NAME" dist/* --title "Tilde $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" $prerelease
+
+      # Points the Homebrew cask at this release. HOMEBREW_TAP_TOKEN is a token that can
+      # push to tevans2/homebrew-tilde (the workflow's own token only reaches this repo).
+      - name: Update the Homebrew tap
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$TOKEN" ]]; then
+            echo "::warning::No HOMEBREW_TAP_TOKEN secret: the Homebrew cask wasn't updated."
+            exit 0
+          fi
+          sha="$(grep ' Tilde-macOS.zip$' dist/SHA256SUMS.txt | cut -d' ' -f1)"
+          tap="$RUNNER_TEMP/tap"
+          git clone --depth 1 "https://x-access-token:$TOKEN@github.com/tevans2/homebrew-tilde.git" "$tap"
+          scripts/cask.sh "$VERSION" "$sha" > "$tap/Casks/tilde.rb"
+          cd "$tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Tilde $VERSION"
+          git push

@@ -5,6 +5,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Homebrew**: `brew install --cask tevans2/tilde/tilde`, and `brew upgrade` updates it.
 - **Search inside files**: `text:launch` or `text:"launch window"` lists files whose text
   matches, with the matching line, and previews them at that line. The open folder is read
   on request (skipping ignored files, build folders and binaries, cancelled by the next

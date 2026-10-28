@@ -63,6 +63,13 @@ curl -fsSL https://raw.githubusercontent.com/tevans2/tilde/main/scripts/get.sh |
 This installs the latest release into `~/Applications`. Run it again to update.
 Permissions such as Full Disk Access carry over between updates.
 
+Or with [Homebrew](https://brew.sh), which installs into `/Applications` and updates with
+`brew upgrade`:
+
+```sh
+brew install --cask tevans2/tilde/tilde
+```
+
 Or download **Tilde.dmg** from the [latest release](https://github.com/tevans2/tilde/releases/latest)
 and drag Tilde to Applications. Tilde isn't notarized by Apple yet, so macOS blocks the
 first launch of a copy downloaded in a browser. To allow it, open **System Settings ›
@@ -70,7 +77,7 @@ Privacy & Security** and click **Open Anyway**. The install command above avoids
 
 To build from source instead, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Uninstall:** quit Tilde, then delete `Tilde.app`. To also remove its settings, index and
+**Uninstall:** quit Tilde, then delete `Tilde.app` (or `brew uninstall --zap tilde`). To also remove its settings, index and
 permissions, run [`scripts/uninstall.sh`](scripts/uninstall.sh) from a clone.
 
 ## Getting started

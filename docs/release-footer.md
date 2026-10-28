@@ -7,6 +7,8 @@
 curl -fsSL https://raw.githubusercontent.com/tevans2/tilde/main/scripts/get.sh | bash
 ```
 
+Or with Homebrew: `brew install --cask tevans2/tilde/tilde`.
+
 Or download `Tilde.dmg` and drag Tilde to Applications. Tilde isn't notarized by Apple, so
 the first time you open a downloaded copy macOS stops it: open **System Settings › Privacy &
 Security** and click **Open Anyway** (the install command above avoids this). Requires
