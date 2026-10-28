@@ -12,6 +12,7 @@ use tilde_index::GlobalHit;
 use tilde_query::{HereMatcher, Hit, Query};
 use tilde_types::{Entry, SortKey, SortOrder};
 
+use crate::contents::{self, ContentHit};
 use crate::index::{IndexService, IndexState, home_dir};
 use crate::sorts::SortMemory;
 use crate::views::RowView;
@@ -120,6 +121,17 @@ pub struct ActivityInfo {
     pub groups: Vec<RowGroup>,
 }
 
+/// A `text:` search: its results replace Here and Everywhere.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ContentsInfo {
+    pub count: u32,
+    /// Still looking.
+    pub searching: bool,
+    /// What was searched (`1 234 files here · Spotlight elsewhere`), or why nothing is
+    /// (too short, turned off). Empty while searching.
+    pub note: String,
+}
+
 /// What `results_ready` reports.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ResultsInfo {
@@ -130,6 +142,9 @@ pub struct ResultsInfo {
     pub activity: Option<ActivityInfo>,
     pub here_count: u32,
     pub everywhere_count: u32,
+    /// Set while the query has `text:`; its rows follow the (then empty) Here and
+    /// Everywhere ones.
+    pub contents: Option<ContentsInfo>,
     pub sort: FolderSort,
 }
 
@@ -171,6 +186,12 @@ pub(crate) enum Command {
     FolderChanged(PathBuf),
     /// The index applied a batch of changes.
     IndexChanged,
+    /// Files found by `text:` search `job`; `done` is its note once it's finished.
+    ContentsFound {
+        job: u64,
+        hits: Vec<ContentHit>,
+        done: Option<String>,
+    },
 }
 
 /// The Activity items shown, as indices into `items` in Here order.
@@ -188,6 +209,7 @@ struct Published {
     activity: Option<PublishedActivity>,
     here: Vec<Hit>,
     everywhere: Vec<GlobalHit>,
+    contents: Vec<ContentHit>,
     /// Rows show when items were added instead of modified (sorting by added).
     show_added: bool,
 }
@@ -250,13 +272,15 @@ impl Engine {
         if p.generation != generation {
             return Vec::new();
         }
-        let total = p.here.len() + p.everywhere.len();
+        let total = p.here.len() + p.everywhere.len() + p.contents.len();
         let (start, end) = (start as usize, (start as usize + count as usize).min(total));
+        let after_here = p.here.len() + p.everywhere.len();
         (start..end)
             .map(|i| match (p.here.get(i), &p.activity) {
                 (Some(hit), Some(a)) => RowView::activity(&p.home, &a.items[a.shown[hit.index as usize]], hit),
                 (Some(hit), None) => RowView::here(&p.folder, &p.entries[hit.index as usize], hit, p.show_added),
-                (None, _) => RowView::everywhere(&p.home, &p.everywhere[i - p.here.len()]),
+                (None, _) if i < after_here => RowView::everywhere(&p.home, &p.everywhere[i - p.here.len()]),
+                (None, _) => RowView::contents(&p.home, &p.contents[i - after_here]),
             })
             .collect()
     }
@@ -295,6 +319,7 @@ impl Engine {
             activity: None,
             here: Vec::new(),
             everywhere: Vec::new(),
+            contents: Vec::new(),
             show_added: false,
         }));
         let latest_open = Arc::new(AtomicU64::new(0));
@@ -323,6 +348,8 @@ impl Engine {
             sort_default: SortOrder::default(),
             sorts,
             fixed_sort: sort,
+            contents: ContentsState::default(),
+            contents_current: Arc::new(AtomicU64::new(0)),
         };
         thread::Builder::new().name("tilde-engine".into()).spawn(move || worker.run()).expect("spawn engine worker");
         Arc::new(Engine { tx, published, latest_open })
@@ -361,6 +388,21 @@ struct Worker {
     sort_default: SortOrder,
     sorts: SortMemory,
     fixed_sort: Option<SortConfig>,
+    contents: ContentsState,
+    /// The `text:` search job that may still report; others stop.
+    contents_current: Arc<AtomicU64>,
+}
+
+/// The `text:` search showing.
+#[derive(Default)]
+struct ContentsState {
+    /// What it's for (text, folder, names, filters, hidden): a change starts a new job.
+    key: Option<String>,
+    job: u64,
+    inside: Vec<ContentHit>,
+    outside: Vec<ContentHit>,
+    searching: bool,
+    note: String,
 }
 
 impl Worker {
@@ -396,6 +438,7 @@ impl Worker {
             let mut regather = false;
             let mut user_change = false;
             let mut index_changed = false;
+            let mut contents_changed = false;
             let queued: Vec<Command> = std::iter::once(first).chain(self.rx.try_iter()).collect();
             for cmd in queued {
                 user_change |= matches!(
@@ -443,6 +486,24 @@ impl Worker {
                         relist |= watched && path == self.folder;
                     }
                     Command::IndexChanged => index_changed = true,
+                    Command::ContentsFound { job, hits, done } => {
+                        if job == self.contents.job && self.contents.key.is_some() {
+                            for hit in hits {
+                                if hit.outside {
+                                    self.contents.outside.push(hit)
+                                } else {
+                                    self.contents.inside.push(hit)
+                                }
+                            }
+                            // The scan finds them in any order; the folder's read best by path.
+                            self.contents.inside.sort_by(|a, b| a.path.cmp(&b.path));
+                            if let Some(note) = done {
+                                self.contents.searching = false;
+                                self.contents.note = note;
+                            }
+                            contents_changed = true;
+                        }
+                    }
                 }
             }
 
@@ -467,7 +528,7 @@ impl Worker {
             }
 
             // Index updates only matter to a search in progress.
-            if !user_change && !relist && !(index_changed && !self.query.is_empty()) {
+            if !user_change && !relist && !contents_changed && !(index_changed && !self.query.is_empty()) {
                 continue;
             }
 
@@ -623,11 +684,18 @@ impl Worker {
             }
             None => self.matcher.rank(&self.entries, &self.query, now),
         };
+        let contents_info = self.update_contents();
         let exclude = if self.activity.is_some() { None } else { Some(self.folder.as_path()) };
-        let everywhere = match &self.index {
-            Some(index) if !self.query.is_empty() => index.search(&self.query, exclude, now, EVERYWHERE_LIMIT),
-            _ => Vec::new(),
+        let (here, everywhere) = match &self.index {
+            _ if contents_info.is_some() => (Vec::new(), Vec::new()),
+            Some(index) if !self.query.is_empty() => (here, index.search(&self.query, exclude, now, EVERYWHERE_LIMIT)),
+            _ => (here, Vec::new()),
         };
+        let mut contents = Vec::new();
+        if contents_info.is_some() {
+            contents.extend(self.contents.inside.iter().cloned());
+            contents.extend(self.contents.outside.iter().cloned());
+        }
         let (here_count, everywhere_count) = (here.len() as u32, everywhere.len() as u32);
         *self.published.lock().unwrap() = Published {
             generation: self.generation,
@@ -637,6 +705,7 @@ impl Worker {
             activity: published_activity,
             here,
             everywhere,
+            contents,
             show_added: self.sort.key == SortKey::Added,
         };
         let default = self.sort_default;
@@ -646,12 +715,71 @@ impl Worker {
             activity: activity_info,
             here_count,
             everywhere_count,
+            contents: contents_info,
             sort: FolderSort {
                 by: self.sort.key.into(),
                 reverse: self.sort.reverse,
                 custom: self.sort.key != default.key || self.sort.reverse != default.reverse,
             },
         });
+    }
+}
+
+impl Worker {
+    /// Starts, keeps or stops the `text:` search for the current query, and says what
+    /// it shows. `None` when the query has no `text:` (or Activity is showing).
+    fn update_contents(&mut self) -> Option<ContentsInfo> {
+        let needle = match (&self.query.contents, &self.activity) {
+            (Some(needle), None) => needle.clone(),
+            _ => {
+                if self.contents.key.take().is_some() {
+                    self.contents_current.fetch_add(1, Ordering::SeqCst);
+                    self.contents = ContentsState::default();
+                }
+                return None;
+            }
+        };
+        let key = format!(
+            "{needle}\0{}\0{}\0{:?}\0{}\0{}",
+            self.folder.display(),
+            self.query.text,
+            self.query.filters,
+            self.show_hidden,
+            self.query.contents_all
+        );
+        if self.contents.key.as_deref() != Some(key.as_str()) {
+            let job = self.contents_current.fetch_add(1, Ordering::SeqCst) + 1;
+            self.contents = ContentsState { key: Some(key), job, ..Default::default() };
+            let config = tilde_config::load(&tilde_config::config_path()).config;
+            if !config.search.contents {
+                self.contents.note = "Searching inside files is off: Settings › Search".into();
+            } else if needle.chars().count() < contents::MIN_CHARS {
+                self.contents.note = format!("Type at least {} characters to search inside files", contents::MIN_CHARS);
+            } else {
+                self.contents.searching = true;
+                let job = contents::Job {
+                    id: job,
+                    needle,
+                    folder: self.folder.clone(),
+                    home: self.home.clone(),
+                    query: self.query.clone(),
+                    hidden: self.show_hidden,
+                    all: self.query.contents_all,
+                    spotlight: config.search.spotlight,
+                    skip: config.cleanup.build_folders.clone(),
+                };
+                let (index, current, tx) = (self.index.clone(), self.contents_current.clone(), self.tx.clone());
+                let _ = thread::Builder::new()
+                    .name("tilde-contents".into())
+                    .spawn(move || contents::run(job, index, current, tx));
+            }
+        }
+        let c = &self.contents;
+        Some(ContentsInfo {
+            count: (c.inside.len() + c.outside.len()) as u32,
+            searching: c.searching,
+            note: c.note.clone(),
+        })
     }
 }
 
@@ -861,6 +989,61 @@ mod tests {
         let (_, folder, here_after, _) = rec.wait_until(2, |e| e.1 == root.to_string_lossy());
         assert_eq!((here, here_after), (1, 1));
         assert_eq!(folder, root.to_string_lossy());
+    }
+
+    #[test]
+    fn text_searches_inside_files_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/ship.rs"), "fn spawn() {}\n// Hold space to charge the warp drive\n").unwrap();
+        std::fs::write(root.join("notes.md"), "warp, then warp again\n").unwrap();
+        std::fs::write(root.join("other.txt"), "nothing here\n").unwrap();
+
+        let rec = Arc::new(Recorder::default());
+        let engine =
+            Engine::start(rec.clone(), root.clone(), None, None, SortMemory::in_memory(), Some(SortConfig::default()));
+        engine.open_folder(root.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+
+        let done = |generation: u64| {
+            let t = Instant::now();
+            loop {
+                let info = rec.infos.lock().unwrap().iter().rev().find(|i| i.generation == generation).cloned();
+                if let Some(info) = info
+                    && let Some(c) = &info.contents
+                    && !c.searching
+                {
+                    return c.clone();
+                }
+                assert!(t.elapsed() < Duration::from_secs(5), "contents search didn't finish");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        engine.set_query("text:warp".into(), 2);
+        let c = done(2);
+        assert_eq!(c.count, 2, "{c:?}");
+        let rows = engine.rows(2, 0, 10);
+        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["notes.md", "ship.rs"]);
+        assert!(rows.iter().all(|r| r.section == crate::Section::Contents));
+        assert_eq!(rows[1].line, 2);
+        assert_eq!(rows[1].location, "2  …e to charge the warp drive");
+        // The folder is the (test) home.
+        assert_eq!(rows[0].source, "~ · 2 matches");
+
+        // Names narrow it; too short a text searches nothing.
+        engine.set_query("ship text:warp".into(), 3);
+        assert_eq!(done(3).count, 1);
+        engine.set_query("text:wa".into(), 4);
+        let c = done(4);
+        assert_eq!(c.count, 0);
+        assert!(c.note.contains("at least 3"), "{c:?}");
+        // Without text: it's an ordinary search again.
+        engine.set_query("notes".into(), 5);
+        let (_, _, here, _) = rec.wait_for(5);
+        assert_eq!(here, 1);
+        assert!(rec.infos.lock().unwrap().last().unwrap().contents.is_none());
     }
 
     #[test]

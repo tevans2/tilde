@@ -165,7 +165,29 @@ sort orders folders by how many items they hold. Typing a search ranks by match,
 filters like `ext:pdf` keep the folder's order. Sorting by date added shows when items
 arrived instead of when they changed.
 
-Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below).
+Filters: `ext:pdf`, `kind:image`, `mod:<7d`, `size:>100M`, `in:dev` (path contains), `in:.` (this folder and below), `text:` (inside files, below), `text!:` (inside ignored files too).
+
+**Inside files.** `text:launch`, or `text:"launch window"` for a phrase, searches what files
+say rather than their names. The results replace the list, under **In files**, each with
+its first matching line (the match highlighted), its line number and how many times it
+matches; the preview opens there with the line highlighted, and `space` shows the whole
+file at that spot. Other terms and filters narrow it: `ship text:warp ext:rs`. A capital
+in the text makes it case-sensitive.
+
+Nothing is read until you type `text:` and three characters, and there's no index of
+file contents, so ordinary searching costs nothing extra. Then, after a moment's pause in
+typing, Tilde reads the open folder and everything under it, skipping `.gitignore`d
+files, build folders (`node_modules`, `target`…, the Clean Up list), `.git`, hidden files
+(unless shown), binaries and files over 2 MB; it stops after 20,000 files, and every new
+keystroke cancels it. Beyond the folder it asks Spotlight, which also knows PDFs and
+documents, when Spotlight is indexing; if it isn't (or Settings › Search says not to), Tilde
+reads up to 4,000 recently changed text files from its own index instead. The status bar
+says what was searched. Settings › Search turns it off, or Spotlight's part.
+
+**Everything.** `text!:launch` reads the folder without skipping anything: `.gitignore`d
+files, build folders and hidden files too (only `.git`, binaries and files over 2 MB are
+still left out). Handy for generated code, logs or a dependency's source; slower in a big
+project, since `node_modules` and friends count towards the 20,000 files.
 
 ## Maths
 

@@ -556,7 +556,8 @@ final class RowCellView: NSTableCellView {
         let nameW = min(nameWidth, max(available, 0))
         draw(name, x: x, width: nameW + 1)
         let locationX = x + nameW + 10
-        draw(location, x: locationX, width: available - nameW - 10, truncateHead: true)
+        // Paths keep their end, which tells folders apart; a matching line its start.
+        draw(location, x: locationX, width: available - nameW - 10, truncateHead: row.section != .contents)
     }
 }
 

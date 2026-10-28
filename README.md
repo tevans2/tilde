@@ -25,6 +25,9 @@
 - **Type to go anywhere.** The bar searches the open folder and your whole home folder at
   once. The folders you actually use come first, including the ones you `cd` into in the
   terminal (via [zoxide](https://github.com/ajeetdsouza/zoxide), if you have it).
+- **Search inside files** with `text:launch`: the open folder is read on request, Spotlight
+  (or Tilde's own index) covers the rest, and the preview opens at the matching line.
+  `text!:` includes ignored files and build folders.
 - **Single keys, Vim-style.** `j` `k` to move, `h` `l` to go out and in, `m` to move,
   `c` to copy, `d` to trash, `r` to rename, `y` / `p` to copy and paste, `g` to go places.
   Collect files from anywhere on a shelf with `x`, then act on all of them at once. The

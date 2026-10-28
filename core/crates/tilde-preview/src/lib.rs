@@ -15,8 +15,12 @@ use std::process::{Command, Stdio};
 pub struct BatOptions {
     /// `--theme`; empty uses bat's own config (or its default).
     pub theme: String,
-    /// Only the first this many lines are rendered.
+    /// Only this many lines are rendered…
     pub max_lines: u32,
+    /// …from this line (1-based; 0 means 1).
+    pub first_line: u32,
+    /// A line to highlight (a search match), or 0.
+    pub highlight_line: u32,
 }
 
 /// Finds `bat` on `PATH` or in common install locations (apps started from the Dock don't
@@ -52,13 +56,19 @@ pub fn bat_preview(path: &Path, options: &BatOptions) -> Option<StyledText> {
     }
     let mut cmd = Command::new(bat);
     cmd.args(["--color=always", "--decorations=always", "--style=numbers", "--paging=never", "--wrap=never"])
-        .arg(format!("--line-range=:{}", options.max_lines.max(1)))
+        .arg({
+            let first = options.first_line.max(1);
+            format!("--line-range={first}:{}", first + options.max_lines.max(1) - 1)
+        })
         // Exact theme colours rather than the nearest 256-colour match.
         .env("COLORTERM", "truecolor")
         .stdin(Stdio::null())
         .stderr(Stdio::null());
     if !options.theme.trim().is_empty() {
         cmd.arg(format!("--theme={}", options.theme.trim()));
+    }
+    if options.highlight_line > 0 {
+        cmd.arg(format!("--highlight-line={}", options.highlight_line));
     }
     let output = cmd.arg("--").arg(path).output().ok()?;
     if !output.status.success() {
@@ -89,7 +99,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("main.rs");
         std::fs::write(&file, "fn main() {\n    println!(\"hi\");\n}\n").unwrap();
-        let out = bat_preview(&file, &BatOptions { theme: "Monokai Extended".into(), max_lines: 2 }).unwrap();
+        let out = bat_preview(
+            &file,
+            &BatOptions { theme: "Monokai Extended".into(), max_lines: 2, first_line: 1, highlight_line: 0 },
+        )
+        .unwrap();
         assert!(out.text.contains("fn main()"), "{:?}", out.text);
         assert!(!out.text.contains('}'), "limited to 2 lines: {:?}", out.text);
         assert!(!out.spans.is_empty(), "highlighted");

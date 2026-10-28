@@ -112,6 +112,11 @@ final class PreviewPane: NSView {
     /// The most lines bat renders for PREVIEW (files over `batSizeLimit` aren't bat's anyway).
     private static let wholeFileLines: UInt32 = 200_000
     private static let batSizeLimit: UInt64 = 5_000_000
+    /// A `text:` result's matching line (0 for none): bat starts just above it and
+    /// highlights it, and the whole file opens there.
+    private var matchLine: UInt32 = 0
+    /// Lines above the first one shown (the pane starts near the match).
+    private var lineOffset: UInt32 = 0
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -266,6 +271,26 @@ final class PreviewPane: NSView {
         let current = generation
         showTags(row?.path)
         guard let row else { return showQuickLook(nil) }
+        matchLine = row.section == .contents && Theme.shared.previewBat ? row.line : 0
+        lineOffset = 0
+        // A line found inside the file: its source from just above the line, even for
+        // Markdown, since that's where the match is.
+        if matchLine > 0, row.kind == .file, row.size <= Self.batSizeLimit {
+            let theme = Theme.shared
+            let batTheme = isDark ? theme.batThemeDark : theme.batThemeLight
+            let (path, line, maxLines) = (row.path, matchLine, UInt32(theme.batMaxLines))
+            let first = line > 4 ? line - 4 : 1
+            Task.detached {
+                let preview = batPreviewAt(path: path, theme: batTheme, firstLine: first, maxLines: maxLines, highlightLine: line)
+                await MainActor.run {
+                    guard current == self.generation, !self.fullRequested else { return }
+                    guard let preview else { return self.showQuickLook(path) }
+                    self.lineOffset = first - 1
+                    self.showText(preview)
+                }
+            }
+            return
+        }
         // Folders and packages (apps) only ever get their icon and details from Quick
         // Look, which is quick: no thumbnail stage or spinner.
         if row.kind == .folder || row.kind == .package {
@@ -446,7 +471,7 @@ final class PreviewPane: NSView {
     /// opens the Quick Look window).
     func loadFull(for path: String?) -> Bool {
         guard let path, path == shownPath, full != .shown, !textFull, markdownFull == nil else { return false }
-        if let row, Self.fullIsText(row), !textScroll.isHidden {
+        if let row, Self.fullIsText(row) || matchLine > 0, !textScroll.isHidden {
             textFull = true
             loadWholeText(path)
             return true
@@ -602,9 +627,9 @@ final class PreviewPane: NSView {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let theme = Theme.shared
         let batTheme = isDark ? theme.batThemeDark : theme.batThemeLight
-        let (current, lines) = (generation, Self.wholeFileLines)
+        let (current, lines, match) = (generation, Self.wholeFileLines, matchLine)
         Task.detached {
-            let preview = batPreview(path: path, theme: batTheme, maxLines: lines)
+            let preview = batPreviewAt(path: path, theme: batTheme, firstLine: 1, maxLines: lines, highlightLine: match)
             await MainActor.run {
                 guard current == self.generation, self.textFull, let preview else { return }
                 self.swapText(preview)
@@ -615,7 +640,9 @@ final class PreviewPane: NSView {
     private func swapText(_ preview: TextPreview) {
         let clip = textScroll.contentView
         let old = Self.lineHeight(Theme.shared.small)
-        let topLine = max(clip.bounds.origin.y - textView.textContainerInset.height, 0) / old
+        // The pane may have started further down the file (at a search match).
+        let topLine = max(clip.bounds.origin.y - textView.textContainerInset.height, 0) / old + CGFloat(lineOffset)
+        lineOffset = 0
         let font = Theme.shared.list
         textView.textStorage?.setAttributedString(Self.attributed(preview, font: font))
         textView.layoutSubtreeIfNeeded()

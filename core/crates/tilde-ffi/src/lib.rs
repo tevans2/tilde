@@ -7,6 +7,7 @@
 
 mod cleanup;
 mod config;
+mod contents;
 mod edit;
 mod engine;
 mod index;

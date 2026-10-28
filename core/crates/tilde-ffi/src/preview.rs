@@ -25,7 +25,21 @@ pub struct TextPreview {
 /// bat fails; the app then falls back to Quick Look. Blocking: call off the main thread.
 #[uniffi::export]
 pub fn bat_preview(path: String, theme: String, max_lines: u32) -> Option<TextPreview> {
-    let styled = tilde_preview::bat_preview(Path::new(&path), &tilde_preview::BatOptions { theme, max_lines })?;
+    bat_preview_at(path, theme, 1, max_lines, 0)
+}
+
+/// Like `bat_preview`, from `first_line` (1-based), with `highlight_line` (a search
+/// match; 0 for none) highlighted.
+#[uniffi::export]
+pub fn bat_preview_at(
+    path: String,
+    theme: String,
+    first_line: u32,
+    max_lines: u32,
+    highlight_line: u32,
+) -> Option<TextPreview> {
+    let options = tilde_preview::BatOptions { theme, max_lines, first_line, highlight_line };
+    let styled = tilde_preview::bat_preview(Path::new(&path), &options)?;
     Some(TextPreview {
         text: styled.text,
         spans: styled

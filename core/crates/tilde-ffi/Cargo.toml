@@ -29,6 +29,7 @@ tilde-preview.workspace = true
 tilde-activity.workspace = true
 tilde-nvim.workspace = true
 tilde-cleanup.workspace = true
+tilde-contents.workspace = true
 rayon = "1"
 uniffi.workspace = true
 thiserror.workspace = true

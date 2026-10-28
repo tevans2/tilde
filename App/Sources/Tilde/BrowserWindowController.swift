@@ -98,6 +98,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     private var activityFilter = ActivityFilter(origin: .all, inbox: false)
     /// From the latest results: inbox count and date headings.
     private var activity: ActivityInfo?
+    /// From the latest results: a `text:` search's progress, when the query has one.
+    private var contents: ContentsInfo?
     /// Row to select when the next results arrive (the folder we came up from, or a
     /// revealed file).
     private var pendingSelection: String?
@@ -1067,6 +1069,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
             if inActivity, let activity {
                 parts.append(activity.inboxCount == 0 ? "inbox zero" : "\(activity.inboxCount.formatted()) in inbox")
             }
+        } else if let contents {
+            if contents.count > 0 || contents.searching { parts.append(n(Int(contents.count), "file")) }
+            parts.append(contents.searching ? "searching inside files…" : contents.note)
         } else {
             parts.append("\(results.hereCount.formatted()) here")
             parts.append("\(results.everywhereCount.formatted()) everywhere")
@@ -1281,10 +1286,11 @@ extension BrowserWindowController: EngineEventsDelegate {
         shownGeneration = generation
         currentFolder = info.folder
         activity = info.activity
+        contents = info.contents
         sort = info.sort
         results.reset(
             generation: generation, hereCount: Int(info.hereCount), everywhereCount: Int(info.everywhereCount),
-            groups: info.activity?.groups ?? [])
+            contentsCount: Int(info.contents?.count ?? 0), groups: info.activity?.groups ?? [])
         tableView.reloadData()
 
         if let name = pendingSelection, let i = engine.indexOf(generation: generation, name: name) {
@@ -1519,12 +1525,13 @@ final class ResultsCache {
     private var rows: [Int: RowView] = [:]
     private(set) var hereCount = 0
     private(set) var everywhereCount = 0
+    private(set) var contentsCount = 0
     private var headers: [Header] = []
     private let chunk = 64
 
     init(engine: Engine) { self.engine = engine }
 
-    var tableRows: Int { hereCount + everywhereCount + headers.count }
+    var tableRows: Int { hereCount + everywhereCount + contentsCount + headers.count }
 
     func isHeader(_ tableRow: Int) -> Bool { headers.contains { $0.row == tableRow } }
 
@@ -1533,16 +1540,18 @@ final class ResultsCache {
         headers.first { $0.row == tableRow }.map { ($0.title, $0.count) }
     }
 
-    func reset(generation: UInt64, hereCount: Int, everywhereCount: Int, groups: [RowGroup]) {
+    func reset(generation: UInt64, hereCount: Int, everywhereCount: Int, contentsCount: Int = 0, groups: [RowGroup]) {
         self.generation = generation
         self.hereCount = hereCount
         self.everywhereCount = everywhereCount
+        self.contentsCount = contentsCount
         // Headers in result order: each sits before its first result.
         var starts: [(Int, String, Int)] = groups.enumerated().map { i, g in
             let next = i + 1 < groups.count ? Int(groups[i + 1].start) : hereCount
             return (Int(g.start), g.title, next - Int(g.start))
         }
         if everywhereCount > 0 { starts.append((hereCount, "Everywhere", everywhereCount)) }
+        if contentsCount > 0 { starts.append((hereCount + everywhereCount, "In files", contentsCount)) }
         headers = starts.enumerated().map { k, h in Header(row: h.0 + k, title: h.1, count: h.2) }
         rows.removeAll(keepingCapacity: true)
     }

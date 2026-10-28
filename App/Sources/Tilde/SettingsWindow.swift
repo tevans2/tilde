@@ -450,6 +450,16 @@ private struct SearchSettings: View {
                     Button("Index…") { model.showIndex() }
                 }
             }
+            Section("Inside files") {
+                Toggle("Search inside files with text:", isOn: model.bool("search.contents") { $0.searchContents })
+                Toggle("Use Spotlight beyond the open folder", isOn: model.bool("search.spotlight") { $0.searchSpotlight })
+                    .disabled(!model.settings.searchContents)
+                Text(model.settings.spotlightAvailable
+                    ? "Type text:launch or text:\"launch window\" in the bar. The open folder and below are read on request (skipping .gitignored files and build folders; text!: includes them); Spotlight finds the rest, PDFs and documents included."
+                    : "Type text:launch or text:\"launch window\" in the bar. The open folder and below are read on request (skipping .gitignored files and build folders; text!: includes them). Spotlight indexing is off on this Mac, so beyond the folder Tilde reads recently changed text files instead.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Section("Ranking") {
                 Toggle("Rank by the folders and files you use most", isOn: model.bool("frecency.enabled") { $0.frecencyEnabled })
                 Toggle("Include zoxide's scores (folders you use in the terminal)", isOn: Binding(

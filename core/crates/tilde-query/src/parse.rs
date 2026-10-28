@@ -84,6 +84,11 @@ pub struct Query {
     pub filters: Vec<Filter>,
     /// Search terms, space separated, in nucleo pattern syntax.
     pub text: String,
+    /// `text:launch` or `text:"launch window"`: search inside files for this (possibly
+    /// empty, while it's being typed). Names must then match `text` and the filters.
+    pub contents: Option<String>,
+    /// `text!:`: search inside ignored files, build folders and hidden files too.
+    pub contents_all: bool,
 }
 
 impl Query {
@@ -92,7 +97,30 @@ impl Query {
     pub fn parse(input: &str) -> Query {
         let mut q = Query::default();
         let mut terms = Vec::new();
-        for token in input.split_whitespace() {
+        let mut rest = input;
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
+            }
+            // `text:"…"` runs to the closing quote (or the end), spaces and all.
+            let all = strip_prefix_ignore_case(rest, "text!:");
+            if let Some(after) = all.or_else(|| strip_prefix_ignore_case(rest, "text:")) {
+                let (value, next) = match after.strip_prefix('"') {
+                    Some(quoted) => match quoted.find('"') {
+                        Some(end) => (&quoted[..end], &quoted[end + 1..]),
+                        None => (quoted, ""),
+                    },
+                    None => after.split_at(after.find(char::is_whitespace).unwrap_or(after.len())),
+                };
+                q.contents = Some(value.to_string());
+                q.contents_all = all.is_some();
+                rest = next;
+                continue;
+            }
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            let token = &rest[..end];
+            rest = &rest[end..];
             match parse_filter(token) {
                 Some(f) => q.filters.push(f),
                 None => terms.push(token),
@@ -103,8 +131,13 @@ impl Query {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty() && self.text.is_empty()
+        self.filters.is_empty() && self.text.is_empty() && self.contents.is_none()
     }
+}
+
+fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    (s.len() >= prefix.len() && s.is_char_boundary(prefix.len()) && s[..prefix.len()].eq_ignore_ascii_case(prefix))
+        .then(|| &s[prefix.len()..])
 }
 
 fn parse_filter(token: &str) -> Option<Filter> {
@@ -169,6 +202,31 @@ fn parse_size(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_searches_inside_files() {
+        let q = Query::parse("orbit text:vis-viva ext:md");
+        assert_eq!(q.contents.as_deref(), Some("vis-viva"));
+        assert_eq!(q.text, "orbit");
+        assert_eq!(q.filters, [Filter::Ext(vec!["md".into()])]);
+
+        let q = Query::parse(r#"Text:"launch window" kind:pdf"#);
+        assert_eq!(q.contents.as_deref(), Some("launch window"));
+        assert_eq!(q.filters, [Filter::Kind(Kind::Pdf)]);
+        assert!(q.text.is_empty());
+
+        // Still being typed.
+        assert_eq!(Query::parse(r#"text:"half a phr"#).contents.as_deref(), Some("half a phr"));
+        assert_eq!(Query::parse("text:").contents.as_deref(), Some(""));
+        assert!(!Query::parse("text:").is_empty());
+        assert_eq!(Query::parse("context:x").contents, None);
+        assert!(!Query::parse("text:warp").contents_all);
+
+        let q = Query::parse("TEXT!:warp ship");
+        assert_eq!(q.contents.as_deref(), Some("warp"));
+        assert!(q.contents_all);
+        assert_eq!(q.text, "ship");
+    }
 
     #[test]
     fn splits_filters_from_terms() {

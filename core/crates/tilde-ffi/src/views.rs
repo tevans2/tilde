@@ -36,6 +36,8 @@ pub enum Section {
     Here,
     /// From the global index.
     Everywhere,
+    /// A file whose contents match a `text:` search.
+    Contents,
 }
 
 /// Where an Activity item came from.
@@ -95,6 +97,8 @@ pub struct RowView {
     /// Activity rows only: downloaded, a screenshot or AirDropped, and moved out of the
     /// inbox since.
     pub filed: bool,
+    /// Contents rows: the first matching line (1-based), or 0.
+    pub line: u32,
 }
 
 impl RowView {
@@ -117,6 +121,7 @@ impl RowView {
             origin: None,
             source: String::new(),
             filed: false,
+            line: 0,
         }
     }
 
@@ -144,6 +149,50 @@ impl RowView {
             origin: Some(item.origin.into()),
             source: item.source.clone().unwrap_or_default(),
             filed: item.filed,
+            line: 0,
+        }
+    }
+
+    /// A file found by a `text:` search. `location` is the matching line (`12  the
+    /// line`, the match highlighted) and `source` the folder; without a line (a PDF from
+    /// Spotlight), `location` is the folder.
+    pub(crate) fn contents(home: &Path, hit: &crate::contents::ContentHit) -> RowView {
+        let name = hit.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let parent = hit.path.parent().unwrap_or(Path::new("/"));
+        let folder = match parent.strip_prefix(home) {
+            Ok(rel) if rel.as_os_str().is_empty() => "~".to_string(),
+            Ok(rel) => format!("~/{}", rel.to_string_lossy()),
+            Err(_) => parent.to_string_lossy().into_owned(),
+        };
+        let (location, location_highlights, source, line) = match &hit.found {
+            Some(m) => {
+                let prefix = format!("{}  ", m.line);
+                let shift = prefix.chars().count() as u32;
+                let location = format!("{prefix}{}", m.snippet);
+                let indices: Vec<u32> = m.highlights.iter().map(|i| i + shift).collect();
+                let more = if m.count > 1 { format!(" · {} matches", m.count) } else { String::new() };
+                let highlights = utf16_ranges(&location, &indices);
+                (location, highlights, format!("{folder}{more}"), m.line)
+            }
+            None => (folder, Vec::new(), "Spotlight".to_string(), 0),
+        };
+        RowView {
+            name: name.clone(),
+            path: hit.path.to_string_lossy().into_owned(),
+            section: Section::Contents,
+            location,
+            location_highlights,
+            kind: row_kind(hit.kind),
+            category: category(hit.kind, &name),
+            ext: extension_of(&name),
+            size: hit.size,
+            modified: hit.modified,
+            child_count: None,
+            highlights: Vec::new(),
+            origin: None,
+            source,
+            filed: false,
+            line,
         }
     }
 
@@ -184,6 +233,7 @@ impl RowView {
             origin: None,
             source: String::new(),
             filed: false,
+            line: 0,
         }
     }
 }

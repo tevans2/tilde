@@ -163,6 +163,11 @@ pub struct Settings {
     pub cleanup_duplicates_min: String,
     pub cleanup_build_folders: Vec<String>,
     pub cleanup_ignore: Vec<String>,
+    /// `[search]`: `text:` searches inside files, and Spotlight helps beyond the folder.
+    pub search_contents: bool,
+    pub search_spotlight: bool,
+    /// Spotlight is indexing the home folder's disk.
+    pub spotlight_available: bool,
 }
 
 #[uniffi::export]
@@ -205,6 +210,9 @@ pub fn load_settings() -> Settings {
         cleanup_duplicates_min: c.cleanup.duplicates_min,
         cleanup_build_folders: c.cleanup.build_folders,
         cleanup_ignore: c.cleanup.ignore,
+        search_contents: c.search.contents,
+        search_spotlight: c.search.spotlight,
+        spotlight_available: tilde_contents::spotlight_available(&crate::index::home_dir()),
     }
 }
 

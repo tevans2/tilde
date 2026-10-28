@@ -42,6 +42,10 @@ enabled = true              # rank by the folders and files you use
 zoxide = true               # also count zoxide's scores (terminal use), if installed
 tell_zoxide = false         # also tell zoxide about folders opened in Tilde
 
+[search]                    # text:launch searches inside files
+contents = true             # the open folder and below, then everywhere else
+spotlight = true            # beyond the folder, Spotlight (when it's indexing)
+
 [sort]                      # unless a folder has its own order (s)
 by = "name"                 # name, modified, added, size, kind
 reverse = false             # Z→A, oldest first, smallest first

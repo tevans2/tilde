@@ -36,6 +36,24 @@ pub struct Config {
     pub sort: SortConfig,
     pub dialog: DialogConfig,
     pub cleanup: CleanupConfig,
+    pub search: SearchConfig,
+}
+
+/// Searching inside files (`text:` in a query).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchConfig {
+    /// `text:` searches inside files: the open folder and below, then everywhere else.
+    pub contents: bool,
+    /// Beyond the open folder, ask Spotlight (when it's indexing). Otherwise Tilde reads
+    /// recently changed text files from its own index.
+    pub spotlight: bool,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        SearchConfig { contents: true, spotlight: true }
+    }
 }
 
 /// The Clean Up page (`C`): what it suggests.
@@ -632,6 +650,16 @@ hide = []
 include_hidden = false
 # Indexing stops at this many items; the Index window shows what to exclude.
 max_items = 1000000
+
+# Searching inside files: type text:launch (or text:"launch window") in the bar. Nothing
+# is read until you do, and there's no index of file contents.
+[search]
+# Search inside files: the open folder and below (skipping .gitignored files and build
+# folders), then everywhere else.
+contents = true
+# Beyond the open folder, use Spotlight's index (PDFs and documents too) when it's on.
+# Otherwise Tilde reads recently changed text files it has indexed.
+spotlight = true
 
 [frecency]
 # Rank search results and the folder picker by how often and how recently you use

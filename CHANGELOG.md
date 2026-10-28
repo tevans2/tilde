@@ -5,6 +5,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Search inside files**: `text:launch` or `text:"launch window"` lists files whose text
+  matches, with the matching line, and previews them at that line. The open folder is read
+  on request (skipping ignored files, build folders and binaries, cancelled by the next
+  key); beyond it, Spotlight, or recently changed text files from Tilde's index when
+  Spotlight is off. No content index, so nothing changes for ordinary searches. Settings ›
+  Search can turn it off, or Spotlight's part (`[search]`). `text!:launch` searches
+  everything in the folder, `.gitignore`d files, build folders and hidden files included.
+
 Some default keys changed, to be more consistent and more like the Finder and Vim. Keys
 you set yourself are kept.
 
