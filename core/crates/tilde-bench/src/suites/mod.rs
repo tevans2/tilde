@@ -7,6 +7,7 @@ pub mod engine;
 pub mod folder;
 pub mod index;
 pub mod live;
+pub mod relevance;
 pub mod scan;
 pub mod sizes;
 
@@ -44,6 +45,7 @@ pub const ALL: &[(&str, &str)] = &[
     ),
     ("scan", "building the index from disk, and raw folder listing speed"),
     ("folder", "listing one folder, sorting it and matching typed text in it"),
+    ("relevance", "ranking quality: searches with what should come first, passed or not"),
     ("sizes", "measuring folder sizes"),
     ("contents", "searching inside files (text:)"),
     ("archive", "listing and unpacking zip and tar.gz"),

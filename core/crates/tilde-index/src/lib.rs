@@ -12,6 +12,8 @@
 mod frecency;
 mod live;
 mod persist;
+#[doc(hidden)]
+pub mod relevance;
 mod walk;
 mod zoxide;
 
@@ -1568,6 +1570,21 @@ mod tests {
         let found = search_keys(&mut index, "invoice");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(found, ["Documents/Finance/2026/invoice-oct.pdf"]);
+    }
+
+    #[test]
+    fn ranking_meets_the_relevance_cases() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = relevance::start(dir.path());
+        // Cases ranking doesn't meet yet: improving it means taking them off.
+        const KNOWN_FAILING: &[&str] = &["notes", "invoice", "utils"];
+        let outcomes = relevance::check(&mut index);
+        let report: Vec<String> = outcomes
+            .iter()
+            .filter(|o| o.passed == KNOWN_FAILING.contains(&o.case.query))
+            .map(|o| format!("{:?} ({}): passed {}, got {:?}", o.case.query, o.case.why, o.passed, o.top))
+            .collect();
+        assert!(report.is_empty(), "not as expected:\n{}", report.join("\n"));
     }
 
     #[test]

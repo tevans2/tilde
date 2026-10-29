@@ -169,6 +169,7 @@ fn run(args: &[String]) -> ExitCode {
             "scan" => suites::scan::run(&mut runner, &ctx),
             "folder" => suites::folder::run(&mut runner, &ctx),
             "sizes" => suites::sizes::run(&mut runner, &ctx),
+            "relevance" => suites::relevance::run(&mut runner, &ctx),
             "contents" => suites::contents::run(&mut runner, &ctx),
             "archive" => suites::archive::run(&mut runner, &ctx),
             "engine" => suites::engine::run(&mut runner, &ctx),
