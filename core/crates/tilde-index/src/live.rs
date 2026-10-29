@@ -255,16 +255,14 @@ impl Shared {
 
     /// For frecency `scores` by key: the IDs of the items with those keys, the IDs of the
     /// items directly inside those folders (each with its score), and the first ID not
-    /// covered. Keys outside home and items not in the folder tables aren't resolved.
+    /// covered. Items not in the folder tables (frecency extras) aren't resolved.
     pub fn ids_for(&self, scores: &HashMap<String, f64>) -> (HashMap<u32, f64>, HashMap<u32, f64>, u32) {
         let tables = self.children.lock().unwrap();
         let upto = self.next_id();
         let (mut own, mut inside) = (HashMap::new(), HashMap::new());
         for (key, &score) in scores {
-            if key.starts_with('/') {
-                continue;
-            }
-            let (parent, name) = key.rsplit_once('/').unwrap_or(("", key.as_str()));
+            let name = key.rsplit('/').next().unwrap_or(key);
+            let parent = parent_key(key).unwrap_or("");
             let name_hash = hash(&name);
             if let Some(child) = tables.get(parent).and_then(|t| t.children.iter().find(|c| c.name_hash == name_hash)) {
                 own.insert(child.id, score);
@@ -274,6 +272,21 @@ impl Shared {
             }
         }
         (own, inside, upto)
+    }
+
+    /// Calls `f` with the key of each of `ids` (borrowed where nucleo stores it).
+    pub fn with_keys(&self, ids: impl Iterator<Item = u32>, mut f: impl FnMut(u32, &str)) {
+        let items = self.items();
+        for id in ids {
+            if let Some(item) = items.injector.get(id) {
+                with_str(&item.matcher_columns[0], |key| f(id, key));
+            }
+        }
+    }
+
+    /// The IDs of live frecency extras (folders you use that the scan doesn't reach).
+    pub fn extra_ids(&self) -> Vec<u32> {
+        self.items().all_live().filter(|m| m.extra).map(|m| m.id).collect()
     }
 
     /// Items currently searchable.

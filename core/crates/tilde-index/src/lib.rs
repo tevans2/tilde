@@ -46,8 +46,6 @@ const NAME_SLACK_FIRST_CHAR: i64 = 4;
 const NAME_SLACK_CHAR: i64 = 2;
 /// Matches scored per task when searching in parallel.
 const CHUNK: u32 = 2048;
-/// Items added since the frecency table was made before it's made again.
-const USAGE_REBUILD_AFTER: u32 = 20_000;
 /// Scores decay slowly: derived ones are refreshed this often even without new uses.
 const FRECENCY_REFRESH: Duration = Duration::from_secs(60);
 /// zoxide's scores are re-read this often (a process launch).
@@ -298,8 +296,6 @@ pub struct GlobalIndex {
     zoxide_at: Instant,
     /// Frecency scores (Tilde's plus zoxide's) by key, as of `scores_at`.
     scores: HashMap<String, f64>,
-    /// The most frecency can add to any item's score (its own use and its folder's).
-    usage_ceiling: i64,
     /// Frecency points by item ID, so searching needn't look keys up.
     usage: UsageById,
     scores_version: u64,
@@ -371,7 +367,6 @@ impl GlobalIndex {
             zoxide_scores: HashMap::new(),
             zoxide_at: Instant::now(),
             scores: HashMap::new(),
-            usage_ceiling: 0,
             usage: UsageById::default(),
             scores_version: u64::MAX,
             scores_at: Instant::now(),
@@ -559,7 +554,6 @@ impl GlobalIndex {
                 name_slack: name_slack(&query.text),
                 scores: &self.scores,
                 usage: &self.usage,
-                usage_ceiling: self.usage_ceiling,
                 now,
                 limit,
                 stop,
@@ -569,6 +563,7 @@ impl GlobalIndex {
         } else {
             Vec::new()
         };
+        // (item ID, score), best first.
         let ranked: Vec<(u32, i64)> = if has_text {
             best
         } else {
@@ -587,9 +582,9 @@ impl GlobalIndex {
         let mut indices = Vec::new();
         ranked
             .into_iter()
-            .filter_map(|(n, score)| {
-                let item = snap.get_matched_item(n)?;
-                let meta = items.live(*item.data)?;
+            .filter_map(|(id, score)| {
+                let item = snap.get_item(id)?;
+                let meta = items.live(id)?;
                 let column = &item.matcher_columns[0];
                 indices.clear();
                 if has_text {
@@ -622,11 +617,8 @@ impl GlobalIndex {
         }
         let version = self.frecency.as_ref().map_or(0, |f| f.lock().unwrap().version());
         if !zoxide_changed && version == self.scores_version && self.scores_at.elapsed() < FRECENCY_REFRESH {
-            // Items added since the table was made are looked up by key; remake it when
-            // there are many.
-            if self.shared.next_id() > self.usage.upto + USAGE_REBUILD_AFTER {
-                self.usage = UsageById::build(&self.shared, &self.scores);
-            }
+            // Items added since are looked up by key.
+            self.usage.extend(&self.shared, &self.scores);
             return;
         }
         let mut scores = self.zoxide_scores.clone();
@@ -636,8 +628,6 @@ impl GlobalIndex {
                 *scores.entry(self.shared.key(Path::new(path))).or_default() += s;
             }
         }
-        let most = scores.values().copied().fold(0.0f64, f64::max);
-        self.usage_ceiling = usage_points(most, most).ceil() as i64 + 1;
         self.usage = UsageById::build(&self.shared, &scores);
         self.scores = scores;
         self.scores_version = version;
@@ -683,12 +673,13 @@ fn name_slack(text: &str) -> i64 {
         .sum()
 }
 
-/// Frecency points (`usage_points`, as whole points) by item ID for IDs below `upto`:
-/// items with uses of their own, and items directly inside folders with uses.
+/// Frecency points (`usage_points`, as whole points) by item ID, for every item: those
+/// with uses of their own and those directly inside folders with uses, the rest 0.
 #[derive(Default)]
 struct UsageById {
     points: Vec<i32>,
-    upto: u32,
+    /// The IDs with points: the only items frecency moves.
+    used: Vec<u32>,
 }
 
 impl UsageById {
@@ -701,8 +692,41 @@ impl UsageById {
                 *p = usage_points(s(&own), s(&inside)) as i32;
             }
         }
-        UsageById { points, upto }
+        // Frecency extras aren't in the folder tables: by key.
+        shared.with_keys(shared.extra_ids().into_iter(), |id, key| {
+            if let Some(p) = points.get_mut(id as usize) {
+                *p = by_key(scores, key);
+            }
+        });
+        let mut usage = UsageById { points, used: Vec::new() };
+        usage.used = (0..usage.points.len() as u32).filter(|&id| usage.points[id as usize] > 0).collect();
+        usage.extend(shared, scores);
+        usage
     }
+
+    /// Adds the items added since, by key.
+    fn extend(&mut self, shared: &Shared, scores: &HashMap<String, f64>) {
+        let from = self.points.len() as u32;
+        let to = shared.next_id();
+        if to <= from {
+            return;
+        }
+        self.points.resize(to as usize, 0);
+        shared.with_keys(from..to, |id, key| {
+            let p = by_key(scores, key);
+            self.points[id as usize] = p;
+            if p > 0 {
+                self.used.push(id);
+            }
+        });
+    }
+}
+
+/// `usage_points` for an item, looked up by its key and its folder's.
+fn by_key(scores: &HashMap<String, f64>, key: &str) -> i32 {
+    let s = |k: &str| scores.get(k).copied().unwrap_or(0.0);
+    let parent = key.rsplit_once('/').map_or("", |(p, _)| if p.is_empty() { "/" } else { p });
+    usage_points(s(key), s(parent)) as i32
 }
 
 /// One search's scoring of nucleo's matches, shared by the threads doing it.
@@ -716,7 +740,6 @@ struct Ranking<'a> {
     name_slack: i64,
     scores: &'a HashMap<String, f64>,
     usage: &'a UsageById,
-    usage_ceiling: i64,
     now: i64,
     limit: usize,
     stop: Stop,
@@ -724,102 +747,147 @@ struct Ranking<'a> {
     bar: AtomicI64,
 }
 
-/// The best results so far, the worst on top; ties go to the earlier match.
+/// The best results so far as (score, item ID), the worst on top; ties go to the lower
+/// ID (scanned first).
 type Best = BinaryHeap<Reverse<(i64, Reverse<u32>)>>;
 
 impl Ranking<'_> {
-    /// The best `limit` matches, best first, as (match number, score).
+    /// The best `limit` matches, best first, as (item ID, score).
+    ///
+    /// Exactly (`Stop::WhenNothingCanWin`): the items you use (the only ones frecency adds
+    /// to) are scored first, wherever they are among the matches, and set the bar. Then
+    /// nucleo's matches are walked best path score first, skipping those, and the walk
+    /// stops once a match's path score plus the most its name and freshness can add
+    /// can't make the list, so nothing after it can either.
     fn run(&self) -> Vec<(u32, i64)> {
         use rayon::prelude::*;
+        let legacy = matches!(self.stop, Stop::AfterScoring(_));
+        let mut found: Vec<Best> = Vec::new();
+        if !legacy {
+            // Used items, and any added since the table was made (their use is unknown).
+            let mut first: Vec<u32> = self.usage.used.clone();
+            first.extend(self.usage.points.len() as u32..self.snap.item_count());
+            found.par_extend(first.par_chunks(CHUNK as usize).map(|ids| {
+                with_matchers(|paths, names, buf| {
+                    let mut best = Best::with_capacity(self.limit + 1);
+                    for &id in ids {
+                        let Some(item) = self.snap.get_item(id) else { continue };
+                        let column = &item.matcher_columns[0];
+                        if let Some(path) = self.snap.pattern().score(std::slice::from_ref(column), paths) {
+                            self.consider(id, column, path as i64, &mut best, names, buf);
+                        }
+                    }
+                    best
+                })
+            }));
+        }
+
         let count = self.snap.matched_item_count();
         // Counting what's been scored needs one pass in order.
-        let chunk = if matches!(self.stop, Stop::AfterScoring(_)) { count.max(1) } else { CHUNK };
+        let chunk = if legacy { count.max(1) } else { CHUNK };
         let ranges: Vec<std::ops::Range<u32>> =
             (0..count).step_by(chunk as usize).map(|s| s..(s + chunk).min(count)).collect();
-        // The first chunk (the best path scores) on its own first: it sets the bar, so the
-        // rest mostly stop at their first match instead of all scoring at once.
-        let Some((first, rest)) = ranges.split_first() else { return Vec::new() };
-        let mut found = vec![with_matchers(|paths, names, buf| self.rank(first.clone(), paths, names, buf))];
-        found.par_extend(
-            rest.par_iter().map(|range| with_matchers(|paths, names, buf| self.rank(range.clone(), paths, names, buf))),
-        );
+        // The first chunk (the best path scores) on its own first: with the used items, it
+        // sets the bar, so the rest mostly stop at their first match.
+        if let Some((first, rest)) = ranges.split_first() {
+            found.push(with_matchers(|paths, names, buf| self.rank(first.clone(), paths, names, buf)));
+            found.par_extend(
+                rest.par_iter()
+                    .map(|range| with_matchers(|paths, names, buf| self.rank(range.clone(), paths, names, buf))),
+            );
+        }
         let mut all: Vec<(i64, Reverse<u32>)> = found.into_iter().flatten().map(|Reverse(r)| r).collect();
         all.sort_unstable_by(|a, b| b.cmp(a));
         all.truncate(self.limit);
-        all.into_iter().map(|(score, Reverse(n))| (n, score)).collect()
+        all.into_iter().map(|(score, Reverse(id))| (id, score)).collect()
     }
 
-    /// Scores matches `range` (in nucleo's order, best path score first).
+    /// Scores matches `range` (in nucleo's order, best path score first), except the used
+    /// items `run` scored already.
     fn rank(&self, range: std::ops::Range<u32>, paths: &mut Matcher, names: &mut Matcher, buf: &mut Vec<char>) -> Best {
         let mut best = Best::with_capacity(self.limit + 1);
         let mut scored = 0usize;
-        let exact = matches!(self.stop, Stop::WhenNothingCanWin);
         for n in range {
             let Some(item) = self.snap.get_matched_item(n) else { break };
             let column = &item.matcher_columns[0];
             let Some(path_score) = self.snap.pattern().score(std::slice::from_ref(column), paths) else { continue };
             let path_score = path_score as i64;
-            // What the `limit`th best is known to reach: what it takes to make the list.
-            let bar = self.bar.load(Ordering::Relaxed);
-            // Nothing from here on can make the list: its name can't add more than its path
-            // plus the slack, and the rest have ceilings.
+            let id = *item.data;
             match self.stop {
+                // Nothing from here on can make the list: its name can't add more than its
+                // path plus the slack, and it's fresh at most (the used items are done).
                 Stop::WhenNothingCanWin
-                    if 2 * path_score + self.name_slack + FRESH_BONUS + self.usage_ceiling < bar =>
+                    if 2 * path_score + self.name_slack + FRESH_BONUS < self.bar.load(Ordering::Relaxed) =>
                 {
                     break;
                 }
                 Stop::AfterScoring(most) if scored >= most => break,
                 _ => {}
             }
-            let Some(meta) = self.items.live(*item.data) else { continue };
-            let score = with_str(column, |key| {
-                let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
-                if self.exclude_parent == Some(parent) {
-                    return None;
-                }
-                let candidate =
-                    Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
-                if !self.query.filters.iter().all(|f| f.accepts(&candidate, &self.ctx)) {
-                    return None;
-                }
-                let depth = key.matches('/').count() as i64;
-                let length_penalty = key.len() as i64 / 10;
-                let fresh = if self.now - meta.modified < 7 * 86_400 { FRESH_BONUS } else { 0 };
-                let usage = match self.usage.points.get(meta.id as usize) {
-                    Some(&p) if !meta.extra && !key.starts_with('/') => p as i64,
-                    _ => {
-                        let s = |k: &str| self.scores.get(k).copied().unwrap_or(0.0);
-                        usage_points(s(key), s(parent)) as i64
-                    }
-                };
-                let known = path_score + fresh + usage - 2 * depth - length_penalty;
-                // Even the best name it could have wouldn't make the list: skip matching it.
-                let local = if best.len() == self.limit {
-                    best.peek().map_or(i64::MIN, |Reverse((w, _))| *w)
-                } else {
-                    i64::MIN
-                };
-                if exact && known + path_score + self.name_slack < bar.max(local) {
-                    return None;
-                }
-                let name_score = self.name_pattern.score(Utf32Str::new(name, buf), names).unwrap_or(0) as i64;
-                Some(known + name_score)
-            });
-            if let Some(score) = score {
-                scored += 1;
-                best.push(Reverse((score, Reverse(n))));
-                if best.len() > self.limit {
-                    best.pop();
-                }
-                if best.len() == self.limit
-                    && let Some(Reverse((worst, _))) = best.peek()
-                {
-                    self.bar.fetch_max(*worst, Ordering::Relaxed);
-                }
+            if !matches!(self.stop, Stop::AfterScoring(_)) && self.usage.points.get(id as usize).is_none_or(|&p| p > 0)
+            {
+                continue;
             }
+            scored += self.consider(id, column, path_score, &mut best, names, buf) as usize;
         }
         best
+    }
+
+    /// Scores item `id` (its key `column`, matching with `path_score`) and keeps it in
+    /// `best` if it's among the best. Returns whether it passed the filters.
+    fn consider(
+        &self,
+        id: u32,
+        column: &Utf32String,
+        path_score: i64,
+        best: &mut Best,
+        names: &mut Matcher,
+        buf: &mut Vec<char>,
+    ) -> bool {
+        let Some(meta) = self.items.live(id) else { return false };
+        let exact = matches!(self.stop, Stop::WhenNothingCanWin);
+        // What the `limit`th best is known to reach: what it takes to make the list.
+        let bar = self.bar.load(Ordering::Relaxed);
+        let score = with_str(column, |key| {
+            let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
+            if self.exclude_parent == Some(parent) {
+                return None;
+            }
+            let candidate =
+                Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
+            if !self.query.filters.iter().all(|f| f.accepts(&candidate, &self.ctx)) {
+                return None;
+            }
+            let depth = key.matches('/').count() as i64;
+            let length_penalty = key.len() as i64 / 10;
+            let fresh = if self.now - meta.modified < 7 * 86_400 { FRESH_BONUS } else { 0 };
+            let usage = match self.usage.points.get(id as usize) {
+                Some(&p) => p as i64,
+                None => by_key(self.scores, key) as i64,
+            };
+            let known = path_score + fresh + usage - 2 * depth - length_penalty;
+            // Even the best name it could have wouldn't make the list: skip matching it.
+            let local =
+                if best.len() == self.limit { best.peek().map_or(i64::MIN, |Reverse((w, _))| *w) } else { i64::MIN };
+            if exact && known + path_score + self.name_slack < bar.max(local) {
+                return Some(None);
+            }
+            let name_score = self.name_pattern.score(Utf32Str::new(name, buf), names).unwrap_or(0) as i64;
+            Some(Some(known + name_score))
+        });
+        let Some(score) = score else { return false };
+        if let Some(score) = score {
+            best.push(Reverse((score, Reverse(id))));
+            if best.len() > self.limit {
+                best.pop();
+            }
+            if best.len() == self.limit
+                && let Some(Reverse((worst, _))) = best.peek()
+            {
+                self.bar.fetch_max(*worst, Ordering::Relaxed);
+            }
+        }
+        true
     }
 }
 
@@ -873,7 +941,7 @@ fn filtered_newest(
                 let candidate =
                     Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
                 let keep = exclude_parent != Some(parent) && query.filters.iter().all(|f| f.accepts(&candidate, ctx));
-                keep.then_some((n, meta.modified))
+                keep.then_some((*item.data, meta.modified))
             })
         })
         .collect()
