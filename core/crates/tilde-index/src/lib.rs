@@ -26,7 +26,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -46,6 +46,8 @@ const FRESH_BONUS: i64 = 4;
 /// at most 2 bonus points more (the first doubled).
 const NAME_SLACK_FIRST_CHAR: i64 = 4;
 const NAME_SLACK_CHAR: i64 = 2;
+/// A name tier outweighs everything else in a score.
+const TIER_WEIGHT: i64 = 1 << 24;
 /// Matches scored per task when searching in parallel.
 const CHUNK: u32 = 2048;
 /// Scores decay slowly: derived ones are refreshed this often even without new uses.
@@ -554,6 +556,7 @@ impl GlobalIndex {
                 exclude_parent,
                 name_pattern: name_pattern.as_ref().expect("text"),
                 name_slack: name_slack(&query.text),
+                tier_words: tier_words(&query.text),
                 scores: &self.scores,
                 usage: &self.usage,
                 now,
@@ -675,6 +678,108 @@ fn name_slack(text: &str) -> i64 {
         .sum()
 }
 
+/// The query words file names are tiered against: those that aren't negated or paths,
+/// without nucleo's `^`, `'` and `$` marks, folded like nucleo folds (lowercase, accents
+/// dropped).
+fn tier_words(text: &str) -> Vec<Vec<char>> {
+    text.split_whitespace()
+        .filter(|w| !w.starts_with('!'))
+        .map(|w| w.trim_start_matches(['^', '\'']).trim_end_matches('$'))
+        .filter(|w| !w.is_empty() && !w.contains('/'))
+        .map(|w| w.chars().map(fold).collect())
+        .collect()
+}
+
+fn fold(c: char) -> char {
+    if c.is_ascii() { c.to_ascii_lowercase() } else { nucleo::chars::normalize(nucleo::chars::to_lower_case(c)) }
+}
+
+/// How well file `name` matches `word` (folded), best first: 6 the whole name, 5 the
+/// name without its extension, 4 its start, 3 the start of a word in it (after a
+/// separator, at a camelCase hump or between letters and digits; words of 2+
+/// characters, as one letter starts too many), 2 anywhere (3+), 0 none. Doubled, plus 1 if the match ends at the end of a word, so
+/// `project` ranks `project-story` above `projection`.
+fn name_tier(name: &(impl Chars + ?Sized), word: &[char]) -> i64 {
+    let (n, w) = (name, word);
+    if w.is_empty() || w.len() > n.len() {
+        return 0;
+    }
+    // Quick no: the word's first character isn't in the name.
+    if !(0..=n.len() - w.len()).any(|i| fold(n.at(i)) == w[0]) {
+        return 0;
+    }
+    let same = |at: usize| (0..w.len()).all(|k| fold(n.at(at + k)) == w[k]);
+    let kind = |c: char| {
+        if c.is_alphabetic() {
+            1
+        } else if c.is_numeric() {
+            2
+        } else {
+            0
+        }
+    };
+    // Whether a word boundary falls between `a` and the `b` after it.
+    let boundary = |a: char, b: char| kind(a) == 0 || kind(a) != kind(b) || (a.is_lowercase() && b.is_uppercase());
+    let starts = |i: usize| i == 0 || boundary(n.at(i - 1), n.at(i));
+    let ends = |j: usize| j == n.len() || kind(n.at(j)) == 0 || boundary(n.at(j - 1), n.at(j));
+    if n.len() == w.len() && same(0) {
+        return 13;
+    }
+    if let Some(dot) = (0..n.len()).rev().find(|&i| n.at(i) == '.')
+        && dot == w.len()
+        && dot > 0
+        && same(0)
+    {
+        return 11;
+    }
+    let mut best = 0;
+    for i in 0..=n.len() - w.len() {
+        if !same(i) {
+            continue;
+        }
+        let level = if i == 0 {
+            4
+        } else if starts(i) && w.len() >= 2 {
+            3
+        } else if w.len() >= 3 {
+            2
+        } else {
+            continue;
+        };
+        best = best.max(level * 2 + ends(i + w.len()) as i64);
+        if best >= 9 {
+            break;
+        }
+    }
+    best
+}
+
+/// A file name's characters, as nucleo keeps them: ASCII bytes or chars.
+trait Chars {
+    fn len(&self) -> usize;
+    fn at(&self, i: usize) -> char;
+}
+
+impl Chars for [char] {
+    fn len(&self) -> usize {
+        <[char]>::len(self)
+    }
+    fn at(&self, i: usize) -> char {
+        self[i]
+    }
+}
+
+struct Ascii<'a>(&'a [u8]);
+
+impl Chars for Ascii<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn at(&self, i: usize) -> char {
+        self.0[i] as char
+    }
+}
+
 /// Frecency points (`usage_points`, as whole points) by item ID, for every item: those
 /// with uses of their own and those directly inside folders with uses, the rest 0.
 #[derive(Default)]
@@ -740,6 +845,8 @@ struct Ranking<'a> {
     exclude_parent: Option<&'a str>,
     name_pattern: &'a Pattern,
     name_slack: i64,
+    /// The query words file names are tiered by (`name_tier`), folded.
+    tier_words: Vec<Vec<char>>,
     scores: &'a HashMap<String, f64>,
     usage: &'a UsageById,
     now: i64,
@@ -756,27 +863,42 @@ type Best = BinaryHeap<Reverse<(i64, Reverse<u32>)>>;
 impl Ranking<'_> {
     /// The best `limit` matches, best first, as (item ID, score).
     ///
-    /// Exactly (`Stop::WhenNothingCanWin`): the items you use (the only ones frecency adds
-    /// to) are scored first, wherever they are among the matches, and set the bar. Then
-    /// nucleo's matches are walked best path score first, skipping those, and the walk
-    /// stops once a match's path score plus the most its name and freshness can add
-    /// can't make the list, so nothing after it can either.
+    /// Exactly (`Stop::WhenNothingCanWin`): first every item whose file name has a tier
+    /// for the query (`name_tier`), and the items you use (the only ones frecency adds
+    /// to), wherever they are among the matches; they set the bar. Then nucleo's matches
+    /// are walked best path score first, skipping those, and the walk stops once a match's
+    /// path score plus the most its name and freshness can add can't make the list, so
+    /// nothing after it can either.
     fn run(&self) -> Vec<(u32, i64)> {
         use rayon::prelude::*;
         let legacy = matches!(self.stop, Stop::AfterScoring(_));
         let mut found: Vec<Best> = Vec::new();
+        // Matches scored up front (named for the query, or used), skipped in the walk.
+        let count = self.snap.matched_item_count();
+        let done: Vec<AtomicU64> = if legacy {
+            Vec::new()
+        } else {
+            (0..self.snap.item_count().div_ceil(64)).map(|_| AtomicU64::new(0)).collect()
+        };
         if !legacy {
-            // Used items, and any added since the table was made (their use is unknown).
-            let mut first: Vec<u32> = self.usage.used.clone();
-            first.extend(self.usage.points.len() as u32..self.snap.item_count());
-            found.par_extend(first.par_chunks(CHUNK as usize).map(|ids| {
+            let ranges: Vec<std::ops::Range<u32>> =
+                (0..count).step_by(CHUNK as usize * 4).map(|s| s..(s + CHUNK * 4).min(count)).collect();
+            found.par_extend(ranges.into_par_iter().map(|range| {
                 with_matchers(|paths, names, buf| {
                     let mut best = Best::with_capacity(self.limit + 1);
-                    for &id in ids {
-                        let Some(item) = self.snap.get_item(id) else { continue };
+                    for n in range {
+                        let Some(item) = self.snap.get_matched_item(n) else { break };
+                        let id = *item.data;
+                        // Used, or added since the table was made (use unknown).
+                        let used = self.usage.points.get(id as usize).is_none_or(|&p| p > 0);
                         let column = &item.matcher_columns[0];
+                        let tier = self.name_tier(column.slice(..));
+                        if !used && tier == 0 {
+                            continue;
+                        }
+                        done[id as usize / 64].fetch_or(1 << (id % 64), Ordering::Relaxed);
                         if let Some(path) = self.snap.pattern().score(std::slice::from_ref(column), paths) {
-                            self.consider(id, column, path as i64, &mut best, names, buf);
+                            self.consider(id, column, path as i64, Some(tier), &mut best, names, buf);
                         }
                     }
                     best
@@ -784,19 +906,18 @@ impl Ranking<'_> {
             }));
         }
 
-        let count = self.snap.matched_item_count();
         // Counting what's been scored needs one pass in order.
         let chunk = if legacy { count.max(1) } else { CHUNK };
         let ranges: Vec<std::ops::Range<u32>> =
             (0..count).step_by(chunk as usize).map(|s| s..(s + chunk).min(count)).collect();
-        // The first chunk (the best path scores) on its own first: with the used items, it
-        // sets the bar, so the rest mostly stop at their first match.
+        // The first chunk (the best path scores) on its own first: with the items scored
+        // up front, it sets the bar, so the rest mostly stop at their first match.
+        let rank = |range: &std::ops::Range<u32>| {
+            with_matchers(|paths, names, buf| self.rank(range.clone(), &done, paths, names, buf))
+        };
         if let Some((first, rest)) = ranges.split_first() {
-            found.push(with_matchers(|paths, names, buf| self.rank(first.clone(), paths, names, buf)));
-            found.par_extend(
-                rest.par_iter()
-                    .map(|range| with_matchers(|paths, names, buf| self.rank(range.clone(), paths, names, buf))),
-            );
+            found.push(rank(first));
+            found.par_extend(rest.par_iter().map(rank));
         }
         let mut all: Vec<(i64, Reverse<u32>)> = found.into_iter().flatten().map(|Reverse(r)| r).collect();
         all.sort_unstable_by(|a, b| b.cmp(a));
@@ -804,9 +925,16 @@ impl Ranking<'_> {
         all.into_iter().map(|(score, Reverse(id))| (id, score)).collect()
     }
 
-    /// Scores matches `range` (in nucleo's order, best path score first), except the used
-    /// items `run` scored already.
-    fn rank(&self, range: std::ops::Range<u32>, paths: &mut Matcher, names: &mut Matcher, buf: &mut Vec<char>) -> Best {
+    /// Scores matches `range` (in nucleo's order, best path score first), except the
+    /// items `run` scored already (`done`).
+    fn rank(
+        &self,
+        range: std::ops::Range<u32>,
+        done: &[AtomicU64],
+        paths: &mut Matcher,
+        names: &mut Matcher,
+        buf: &mut Vec<char>,
+    ) -> Best {
         let mut best = Best::with_capacity(self.limit + 1);
         let mut scored = 0usize;
         for n in range {
@@ -826,22 +954,46 @@ impl Ranking<'_> {
                 Stop::AfterScoring(most) if scored >= most => break,
                 _ => {}
             }
-            if !matches!(self.stop, Stop::AfterScoring(_)) && self.usage.points.get(id as usize).is_none_or(|&p| p > 0)
-            {
+            let legacy = matches!(self.stop, Stop::AfterScoring(_));
+            if !legacy && done[id as usize / 64].load(Ordering::Relaxed) & (1 << (id % 64)) != 0 {
                 continue;
             }
-            scored += self.consider(id, column, path_score, &mut best, names, buf) as usize;
+            // Anything left has no name tier (the old cut-off works it out).
+            let tier = (!legacy).then_some(0);
+            scored += self.consider(id, column, path_score, tier, &mut best, names, buf) as usize;
         }
         best
     }
 
-    /// Scores item `id` (its key `column`, matching with `path_score`) and keeps it in
-    /// `best` if it's among the best. Returns whether it passed the filters.
+    /// The tier of the file name at the end of `key` for the query: each word's
+    /// (`name_tier`) added up, so a name with more of the words ranks higher. Read where
+    /// nucleo keeps the key, without copying.
+    fn name_tier(&self, key: Utf32Str<'_>) -> i64 {
+        if self.tier_words.is_empty() {
+            return 0;
+        }
+        match key {
+            Utf32Str::Ascii(bytes) => {
+                let name = Ascii(&bytes[bytes.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1)..]);
+                self.tier_words.iter().map(|w| name_tier(&name, w)).sum()
+            }
+            Utf32Str::Unicode(chars) => {
+                let name = &chars[chars.iter().rposition(|&c| c == '/').map_or(0, |i| i + 1)..];
+                self.tier_words.iter().map(|w| name_tier(name, w)).sum()
+            }
+        }
+    }
+
+    /// Scores item `id` (its key `column`, matching with `path_score`, its name's tier if
+    /// known) and keeps it in `best` if it's among the best. Returns whether it passed the
+    /// filters.
+    #[allow(clippy::too_many_arguments)]
     fn consider(
         &self,
         id: u32,
         column: &Utf32String,
         path_score: i64,
+        tier: Option<i64>,
         best: &mut Best,
         names: &mut Matcher,
         buf: &mut Vec<char>,
@@ -867,7 +1019,8 @@ impl Ranking<'_> {
                 Some(&p) => p as i64,
                 None => by_key(self.scores, key) as i64,
             };
-            let known = path_score + fresh + usage - 2 * depth - length_penalty;
+            let tier = tier.unwrap_or_else(|| self.name_tier(column.slice(..)));
+            let known = tier * TIER_WEIGHT + path_score + fresh + usage - 2 * depth - length_penalty;
             // Even the best name it could have wouldn't make the list: skip matching it.
             let local =
                 if best.len() == self.limit { best.peek().map_or(i64::MIN, |Reverse((w, _))| *w) } else { i64::MIN };
@@ -1573,11 +1726,32 @@ mod tests {
     }
 
     #[test]
+    fn name_tiers() {
+        let tier = |name: &str, word: &str| {
+            let n: Vec<char> = name.chars().collect();
+            name_tier(&n[..], &tier_words(word)[0])
+        };
+        assert_eq!(tier("Cargo.toml", "cargo.toml"), 13, "the whole name");
+        assert_eq!(tier("README.md", "readme"), 11, "without the extension");
+        assert_eq!(tier("report.pdf", "rep"), 8, "the start");
+        assert_eq!(tier("project-story.md", "project"), 9, "the start, a whole word");
+        assert_eq!(tier("prep-list.txt", "rep"), 5, "inside a word, ending it");
+        assert_eq!(tier("searchIndex.ts", "index"), 7, "a camelCase hump, a whole word");
+        assert_eq!(tier("plan-q3.pdf", "q3"), 7, "a word after a separator");
+        assert_eq!(tier("plan-q3.pdf", "q"), 0, "one letter only counts at the start");
+        assert_eq!(tier("q3plan.pdf", "plan"), 7, "digits then letters");
+        assert_eq!(tier("Résumé.pages", "resume"), 11, "accents folded");
+        assert_eq!(tier("windexer.ts", "index"), 4, "inside");
+        assert_eq!(tier("abc.txt", "zz"), 0);
+        assert!(tier_words("!draft ^report 'q3 src/lib").len() == 2, "negations and paths left out");
+    }
+
+    #[test]
     fn ranking_meets_the_relevance_cases() {
         let dir = tempfile::tempdir().unwrap();
         let mut index = relevance::start(dir.path());
         // Cases ranking doesn't meet yet: improving it means taking them off.
-        const KNOWN_FAILING: &[&str] = &["notes", "invoice", "utils"];
+        const KNOWN_FAILING: &[&str] = &["invoice", "utils"];
         let outcomes = relevance::check(&mut index);
         let report: Vec<String> = outcomes
             .iter()
