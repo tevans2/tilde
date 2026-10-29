@@ -23,6 +23,9 @@ const SUITE: &str = "live";
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// The index counts as settled after this long without applying a batch.
 const QUIET: Duration = Duration::from_millis(1500);
+/// Longer than the watch latency: the next change counts as the first after a quiet
+/// moment.
+const QUIET_GAP: Duration = Duration::from_millis(400);
 /// Searches compared before and after edits.
 const PROBES: &[&str] = &["report", "config", "ext:pdf"];
 
@@ -82,30 +85,38 @@ pub fn run(r: &mut Runner, ctx: &Ctx) {
         .collect();
     let samples = r.profile.min_samples.clamp(5, 20) as usize;
 
-    // A new file showing up.
-    let mut latencies = Vec::new();
-    for i in 0..samples {
-        let dir = folders[(i * 7919) % folders.len()];
-        let name = format!("zqlive{i}x.txt");
-        let path = root.join(dir).join(&name);
-        let t = Instant::now();
-        fs::write(&path, b"x").expect("write file");
-        match wait_for(&mut index, &changes, &format!("zqlive{i}x"), &format!("{dir}/{name}"), true) {
-            Ok(()) => latencies.push(t.elapsed()),
-            Err(e) => return r.fail(SUITE, &ds, "new file shows up", e),
+    // A new file showing up: after a quiet moment (FSEvents delivers the first change at
+    // once), and right after another change (it waits out the watch latency).
+    for (quiet, case) in [(true, "new file shows up"), (false, "new file shows up, right after another")] {
+        let mut latencies = Vec::new();
+        for i in 0..samples {
+            let dir = folders[(i * 7919) % folders.len()];
+            let name = format!("zq{}live{i}x.txt", if quiet { "q" } else { "b" });
+            let path = root.join(dir).join(&name);
+            if quiet {
+                std::thread::sleep(QUIET_GAP);
+            }
+            let t = Instant::now();
+            fs::write(&path, b"x").expect("write file");
+            let text = name.trim_end_matches(".txt");
+            match wait_for(&mut index, &changes, text, &format!("{dir}/{name}"), true) {
+                Ok(()) => latencies.push(t.elapsed()),
+                Err(e) => return r.fail(SUITE, &ds, case, e),
+            }
         }
+        r.record_samples(SUITE, &ds, case, walls(&latencies), info([]));
     }
-    r.record_samples(SUITE, &ds, "new file shows up", walls(&latencies), info([("note_watch_latency_ms", 200.0)]));
 
-    // A deleted file going.
+    // A deleted file going (after a quiet moment).
     let mut latencies = Vec::new();
     for i in 0..samples {
         let dir = folders[(i * 7919) % folders.len()];
-        let name = format!("zqlive{i}x.txt");
+        let name = format!("zqqlive{i}x.txt");
         let path = root.join(dir).join(&name);
+        std::thread::sleep(QUIET_GAP);
         let t = Instant::now();
         fs::remove_file(&path).expect("remove file");
-        match wait_for(&mut index, &changes, &format!("zqlive{i}x"), &format!("{dir}/{name}"), false) {
+        match wait_for(&mut index, &changes, &format!("zqqlive{i}x"), &format!("{dir}/{name}"), false) {
             Ok(()) => latencies.push(t.elapsed()),
             Err(e) => return r.fail(SUITE, &ds, "deleted file goes", e),
         }

@@ -52,8 +52,11 @@ const USAGE_REBUILD_AFTER: u32 = 20_000;
 const FRECENCY_REFRESH: Duration = Duration::from_secs(60);
 /// zoxide's scores are re-read this often (a process launch).
 const ZOXIDE_REFRESH: Duration = Duration::from_secs(60);
-/// FSEvents coalescing window.
-const WATCH_LATENCY: Duration = Duration::from_millis(200);
+/// FSEvents coalescing window. The first change after a quiet moment is delivered at once
+/// (`NoDefer`); changes right after it wait this long, gathered into one batch. Shorter
+/// costs no more CPU applying changes (tilde-bench `live`), but each batch can re-run an
+/// open search, so not much shorter.
+const WATCH_LATENCY: Duration = Duration::from_millis(100);
 /// How often a changed index is saved while running.
 const AUTOSAVE: Duration = Duration::from_secs(300);
 
