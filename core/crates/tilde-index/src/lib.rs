@@ -341,6 +341,7 @@ impl GlobalIndex {
             .filter(|s| s.last_event_id <= current_event_id());
         let resume_from = saved.map(|s| {
             shared.load(s.items, s.folders);
+            shared.complete.store(true, Ordering::SeqCst);
             s.last_event_id
         });
         shared.last_event_id.store(resume_from.unwrap_or_else(current_event_id), Ordering::SeqCst);
@@ -390,6 +391,9 @@ impl GlobalIndex {
                     walk_parallel(config.scan.roots.clone(), true, &stop, &|dir, entries| {
                         shared.sync_dir(dir, &entries, false)
                     });
+                    // Stopped because the index was dropped: not worth keeping.
+                    let finished = !stop.load(Ordering::SeqCst) || shared.capped.load(Ordering::SeqCst);
+                    shared.complete.store(finished, Ordering::SeqCst);
                 }
                 // Folders you use that the scan can't reach (hidden, excluded, outside home).
                 for dir in known_dirs.iter().filter(|d| !config.scan.covers(d)) {
@@ -1198,7 +1202,13 @@ mod tests {
         fs::write(root.join("Documents/fresh-report.txt"), b"x").unwrap();
         fs::create_dir_all(root.join("Documents/Archive/2025")).unwrap();
         fs::write(root.join("Documents/Archive/2025/old-report.txt"), b"x").unwrap();
-        index.shared.apply(&[changed(root.join("Documents"))]);
+        // Each folder that changed, as FSEvents reports them (the watcher may have listed
+        // a new folder before what's in it arrived).
+        index.shared.apply(&[
+            changed(root.join("Documents")),
+            changed(root.join("Documents/Archive")),
+            changed(root.join("Documents/Archive/2025")),
+        ]);
         assert_eq!(
             search_keys(&mut index, "report"),
             ["Documents/Archive/2025/old-report.txt", "Documents/fresh-report.txt"]
@@ -1416,6 +1426,80 @@ mod tests {
         drop(index);
         let index = start_and_wait(config);
         check(&index.handle());
+    }
+
+    #[test]
+    fn an_event_id_is_recorded_once_its_batch_is_applied() {
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        let before = index.shared.last_event_id.load(Ordering::SeqCst);
+        fs::write(root.join("Documents/late.txt"), b"x").unwrap();
+        let id = before + 1_000_000;
+        index.shared.apply(&[FsEvent { path: root.join("Documents"), flags: 0, id }]);
+        assert_eq!(index.shared.last_event_id.load(Ordering::SeqCst), id);
+        assert_eq!(search_keys(&mut index, "late"), ["Documents/late.txt"]);
+    }
+
+    #[test]
+    fn a_scan_stopped_part_way_is_never_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for i in 0..300 {
+            let deep = root.join(format!("d{i}/a/b"));
+            fs::create_dir_all(&deep).unwrap();
+            for f in 0..10 {
+                fs::write(deep.join(format!("f{f}")), b"x").unwrap();
+            }
+        }
+        let cache = tempfile::tempdir().unwrap();
+        let mut config = config(&root);
+        config.cache_path = Some(cache.path().join("index.bin"));
+        // Dropped straight away: the scan stops wherever it is.
+        drop(GlobalIndex::start(config.clone(), || {}));
+        std::thread::sleep(Duration::from_millis(300));
+        // Either nothing was saved, or everything was.
+        if let Some(saved) = persist::load(&cache.path().join("index.bin"), config.fingerprint()) {
+            assert_eq!(saved.items.len(), 300 * 13);
+        }
+    }
+
+    #[test]
+    fn renaming_a_folder_of_ten_thousand_files() {
+        let (_dir, root) = tree();
+        let big = root.join("Documents/Scans");
+        fs::create_dir(&big).unwrap();
+        for i in 0..10_000 {
+            fs::write(big.join(format!("scan-{i:05}.pdf")), vec![0u8; i % 7]).unwrap();
+        }
+        let mut index = build(&root);
+        let before = index.status().items;
+        let total = index.handle().folder_total(&root).unwrap();
+
+        fs::rename(&big, root.join("Documents/Scans 2019")).unwrap();
+        // What FSEvents reports: the folder's parent, and the folder at both names.
+        index.shared.apply(&[
+            changed(root.join("Documents")),
+            changed(big.clone()),
+            changed(root.join("Documents/Scans 2019")),
+        ]);
+        assert_eq!(index.status().items, before);
+        assert_eq!(index.handle().folder_total(&root), Some(total));
+        let hits = index.search(&Query::parse("scans 2019 scan-04321"), None, None, 0, 5);
+        assert_eq!(hits[0].key, "Documents/Scans 2019/scan-04321.pdf");
+        assert!(index.handle().select(|k, _| k.starts_with("Documents/Scans/")).is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_read_keeps_what_was_indexed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        let locked = root.join("Documents/Finance/2026");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        index.shared.apply(&[changed(locked.clone()), changed(root.join("Documents/Finance"))]);
+        let found = search_keys(&mut index, "invoice");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(found, ["Documents/Finance/2026/invoice-oct.pdf"]);
     }
 
     #[test]

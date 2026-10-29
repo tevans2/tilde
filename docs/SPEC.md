@@ -302,7 +302,7 @@ tilde/
   - A name byte arena, plus a normalized-name arena for matching.
   - Target: 40–60 bytes per entry, about 100 MB for 2 million entries.
 - **Build**: parallel walk with the `ignore` crate's walker (exclusions as gitignore-style rules) feeding `getattrlistbulk` per directory. Runs in the background with progress events.
-- **Persistence**: index file and a header containing the last processed FSEvents event ID and volume UUID.
+- **Persistence**: index file and a header containing the last processed FSEvents event ID and volume UUID. The ID is recorded only once its batch is fully applied, and a save copies the index between batches (then writes without holding changes up), so a crash part-way replays the batch. A scan stopped part-way (the index dropped) is never saved. FSEvents' latency is 100 ms with `NoDefer`: a change after a quiet moment arrives at once (~13 ms to searchable), one right after another within 100 ms.
 - **Catch-up**: on launch, start an FSEvents stream with `sinceWhen = last_event_id`. On `kFSEventStreamEventFlagMustScanSubDirs` or history-dropped flags, rescan the affected subtree. On volume UUID change, rebuild.
 - **Default scope**: the home folder. Contents of `~/Library`, `.git`, `node_modules`, `.cache`, `DerivedData`, `target`, `build` and `.Trash` are excluded, but the folders themselves are indexed. Configurable roots and exclusions.
 - **Frecency**: a score per path for opens and visits, with exponential decay (JSON file). Feeds a ranking boost.

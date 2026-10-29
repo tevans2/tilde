@@ -136,8 +136,12 @@ pub(crate) struct Shared {
     pub capped: AtomicBool,
     /// Stops a scan in progress (on drop, or when capped).
     pub stop: Arc<AtomicBool>,
-    /// The FSEvents ID the index is current to, for resuming after a restart.
+    /// The FSEvents ID the index is current to (every batch up to it fully applied), for
+    /// resuming after a restart.
     pub last_event_id: AtomicU64,
+    /// Loaded, or scanned to the end (or to `max_items`): only then is it worth saving. A
+    /// scan stopped part-way would be saved as if it covered everything.
+    pub complete: AtomicBool,
     /// Changed since the last save.
     pub dirty: AtomicBool,
     /// Where to save and the settings fingerprint to save with.
@@ -216,6 +220,7 @@ impl Shared {
             capped: AtomicBool::new(false),
             stop: Arc::new(AtomicBool::new(false)),
             last_event_id: AtomicU64::new(0),
+            complete: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             cache,
             saving_disabled: AtomicBool::new(false),
@@ -514,12 +519,11 @@ impl Shared {
         (folder.total, folder.unknown)
     }
 
-    /// Applies a batch of FSEvents: re-lists each changed folder the index covers.
+    /// Applies a batch of FSEvents: re-lists each changed folder the index covers. The
+    /// batch's newest event ID is recorded once it's all applied, so a save never claims
+    /// changes it doesn't hold (a crash part-way replays the whole batch next time).
     pub fn apply(&self, events: &[FsEvent]) {
         let _writing = self.writing.lock().unwrap();
-        if let Some(max) = events.iter().map(|e| e.id).max() {
-            self.last_event_id.fetch_max(max, Ordering::SeqCst);
-        }
         self.dirty.store(true, Ordering::SeqCst);
         let mut done = HashSet::new();
         for e in events {
@@ -534,6 +538,9 @@ impl Shared {
             if done.insert((e.path.clone(), rescan)) {
                 self.refresh_dir(&e.path, rescan);
             }
+        }
+        if let Some(max) = events.iter().map(|e| e.id).max() {
+            self.last_event_id.fetch_max(max, Ordering::SeqCst);
         }
     }
 
@@ -735,16 +742,22 @@ impl Shared {
             .collect()
     }
 
-    /// Writes the index to its cache file. `None` if saving is off.
+    /// Writes the index to its cache file. `None` if saving is off or the index isn't
+    /// complete yet.
     pub fn save(&self) -> Option<std::io::Result<u64>> {
         let (path, fingerprint) = self.cache.as_ref()?;
-        if self.saving_disabled.load(Ordering::SeqCst) {
+        if self.saving_disabled.load(Ordering::SeqCst) || !self.complete.load(Ordering::SeqCst) {
             return None;
         }
         let _guard = self.save_lock.lock().unwrap();
-        self.dirty.store(false, Ordering::SeqCst);
-        let last_event_id = self.last_event_id.load(Ordering::SeqCst);
-        Some(crate::persist::save(path, *fingerprint, last_event_id, &self.snapshot(), &self.saved_folders()))
+        // Copied between batches of changes, so it's exactly what `last_event_id` says;
+        // written to disk after, without holding changes up.
+        let (last_event_id, items, folders) = {
+            let _writing = self.writing.lock().unwrap();
+            self.dirty.store(false, Ordering::SeqCst);
+            (self.last_event_id.load(Ordering::SeqCst), self.snapshot(), self.saved_folders())
+        };
+        Some(crate::persist::save(path, *fingerprint, last_event_id, &items, &folders))
     }
 
     /// Every live item scanned from the roots (not frecency extras), for saving.
