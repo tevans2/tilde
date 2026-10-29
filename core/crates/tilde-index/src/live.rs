@@ -4,6 +4,12 @@
 //! skips them) and renamed ones are added again; once dead items are a fifth of the
 //! list, it's rebuilt without them (`compact`). A compact per-folder table of what's
 //! indexed lets a fresh listing of any changed folder be diffed and applied.
+//!
+//! Each folder table also keeps the total size of everything inside, for folder sizes:
+//! its files (hidden ones too), the folders the index doesn't enter (excluded, hidden,
+//! packages: "skipped", measured by walking them and reported back with
+//! `set_skipped_size`), and its subfolders' totals. A change adds its difference to each
+//! folder above.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -33,6 +39,93 @@ struct Child {
     id: u32,
     /// Kept for folders only, to find their own table when they disappear.
     dir_name: Option<Box<str>>,
+}
+
+/// What the index holds for one folder it lists.
+#[derive(Default)]
+struct Folder {
+    children: Vec<Child>,
+    /// Bytes of the files directly inside, indexed or not.
+    files: u64,
+    /// Of those, the bytes of files that aren't items (hidden ones), kept to be saved.
+    unindexed_files: u64,
+    /// Folders directly inside that the index doesn't enter.
+    skipped: Vec<Skipped>,
+    /// Everything inside: files, skipped folders' sizes so far, subfolders' totals.
+    total: u64,
+    /// Skipped folders at any depth inside without a size yet.
+    unknown: u32,
+}
+
+impl Folder {
+    /// What the folder itself adds to its total (not its subfolders): bytes, unknowns.
+    fn own(&self) -> (u64, u32) {
+        let skipped: u64 = self.skipped.iter().filter_map(|s| s.size).sum();
+        (self.files + skipped, self.skipped.iter().filter(|s| s.size.is_none()).count() as u32)
+    }
+}
+
+/// A folder the index lists but doesn't enter (excluded, hidden, a package), whose size
+/// is measured by walking it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Skipped {
+    pub name: Box<str>,
+    pub size: Option<u64>,
+    /// Something inside changed since it was measured.
+    pub stale: bool,
+}
+
+/// A folder's total from the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderTotal {
+    /// Everything inside, as far as measured.
+    pub bytes: u64,
+    /// Folders inside the index doesn't enter whose sizes aren't known yet (`bytes` is
+    /// short by those).
+    pub unmeasured: u32,
+}
+
+/// Saved with the index: what a folder holds that isn't an item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SavedFolder {
+    pub key: String,
+    pub unindexed_files: u64,
+    pub skipped: Vec<Skipped>,
+}
+
+/// The key of the folder containing `key`, or `None` at the top (home, or `/`).
+fn parent_key(key: &str) -> Option<&str> {
+    if key.is_empty() || key == "/" {
+        return None;
+    }
+    Some(match key.rsplit_once('/') {
+        Some(("", _)) => "/",
+        Some((parent, _)) => parent,
+        None => "",
+    })
+}
+
+fn child_key(key: &str, name: &str) -> String {
+    match key {
+        "" => name.to_string(),
+        "/" => format!("/{name}"),
+        _ => format!("{key}/{name}"),
+    }
+}
+
+/// Adds to the totals of every folder above `key`.
+fn add_to_ancestors(tables: &mut HashMap<String, Folder>, key: &str, bytes: i64, unknown: i64) {
+    if bytes == 0 && unknown == 0 {
+        return;
+    }
+    let mut k = key;
+    while let Some(parent) = parent_key(k) {
+        if let Some(f) = tables.get_mut(parent) {
+            f.total = f.total.saturating_add_signed(bytes);
+            f.unknown = (f.unknown as i64 + unknown).max(0) as u32;
+        }
+        k = parent;
+    }
 }
 
 pub(crate) struct Shared {
@@ -68,8 +161,8 @@ pub(crate) struct Shared {
     next_id: AtomicU32,
     killed: AtomicU32,
     dead: RwLock<Vec<u64>>,
-    /// Folder key → its indexed entries.
-    children: Mutex<HashMap<String, Vec<Child>>>,
+    /// Folder key → its indexed entries and totals.
+    children: Mutex<HashMap<String, Folder>>,
 }
 
 /// One folder and how many items the index holds under it.
@@ -168,10 +261,10 @@ impl Shared {
             }
             let (parent, name) = key.rsplit_once('/').unwrap_or(("", key.as_str()));
             let name_hash = hash(&name);
-            if let Some(child) = tables.get(parent).and_then(|t| t.iter().find(|c| c.name_hash == name_hash)) {
+            if let Some(child) = tables.get(parent).and_then(|t| t.children.iter().find(|c| c.name_hash == name_hash)) {
                 own.insert(child.id, score);
             }
-            for child in tables.get(key.as_str()).into_iter().flatten() {
+            for child in tables.get(key.as_str()).into_iter().flat_map(|t| &t.children) {
                 inside.insert(child.id, score);
             }
         }
@@ -304,25 +397,46 @@ impl Shared {
         self.killed.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Diffs a fresh listing of `dir` against the index and applies it. Returns the
-    /// subfolders to list next: new ones, or all of them when `rescan`.
+    /// Diffs a fresh listing of `dir` (hidden entries included) against the index and
+    /// applies it, updating the folder's total and those above. Returns the subfolders to
+    /// list next: new ones, or all of them when `rescan`.
     pub fn sync_dir(&self, dir: &Path, entries: &[Entry], rescan: bool) -> Vec<PathBuf> {
         let key = self.key(dir);
         let mut tables = self.children.lock().unwrap();
-        let mut old: HashMap<u64, Child> =
-            tables.remove(&key).unwrap_or_default().into_iter().map(|c| (c.name_hash, c)).collect();
-        let mut table = Vec::with_capacity(entries.len());
+        let old = tables.remove(&key).unwrap_or_default();
+        let (old_own, old_own_unknown) = old.own();
+        let mut old_skipped: HashMap<Box<str>, Skipped> =
+            old.skipped.into_iter().map(|s| (s.name.clone(), s)).collect();
+        let mut old_children: HashMap<u64, Child> = old.children.into_iter().map(|c| (c.name_hash, c)).collect();
+        let mut folder = Folder { children: Vec::with_capacity(entries.len()), ..Default::default() };
+        // Totals of subfolders that are gone (or no longer entered), taken off below.
+        let (mut gone, mut gone_unknown) = (0u64, 0u32);
         let mut next = Vec::new();
 
         for e in entries {
-            if self.scan.hides(&dir.join(&e.name), &e.name) {
+            let path = dir.join(&e.name);
+            let indexed = !self.scan.hides(&path, &e.name) && (self.scan.include_hidden || !e.hidden);
+            let is_folder = e.kind == EntryKind::Folder && !e.mount_point;
+            let descend = indexed && is_folder && self.scan.descends_into(&path, &e.name);
+            match e.kind {
+                EntryKind::File => {
+                    folder.files += e.size;
+                    if !indexed {
+                        folder.unindexed_files += e.size;
+                    }
+                }
+                EntryKind::Folder | EntryKind::Package if !e.mount_point && !descend => {
+                    let name: Box<str> = e.name.as_str().into();
+                    let kept = old_skipped.remove(&name);
+                    folder.skipped.push(kept.unwrap_or(Skipped { name, size: None, stale: false }));
+                }
+                _ => {}
+            }
+            if !indexed {
                 continue;
             }
             let name_hash = hash(&e.name);
-            let is_folder = e.kind == EntryKind::Folder && !e.mount_point;
-            let path = dir.join(&e.name);
-            let descend = is_folder && self.scan.descends_into(&path, &e.name);
-            let id = match old.remove(&name_hash) {
+            let id = match old_children.remove(&name_hash) {
                 // Still there: an edit only changes its metadata.
                 Some(c) if c.dir_name.is_some() == is_folder && self.update(c.id, e) => {
                     if rescan && descend {
@@ -334,8 +448,12 @@ impl Shared {
                     let is_new = existing.is_none();
                     if let Some(c) = existing {
                         self.kill(c.id);
+                        if let Some(name) = c.dir_name {
+                            let (bytes, unknown) = self.remove_subtree(&mut tables, &child_key(&key, &name));
+                            (gone, gone_unknown) = (gone + bytes, gone_unknown + unknown);
+                        }
                     }
-                    let item_key = if key.is_empty() { e.name.clone() } else { format!("{key}/{}", e.name) };
+                    let item_key = child_key(&key, &e.name);
                     let meta = ItemMeta {
                         id: 0,
                         kind: e.kind,
@@ -351,30 +469,49 @@ impl Shared {
                     id
                 }
             };
-            table.push(Child { name_hash, id, dir_name: is_folder.then(|| e.name.as_str().into()) });
+            folder.children.push(Child { name_hash, id, dir_name: is_folder.then(|| e.name.as_str().into()) });
+            // A folder that's no longer entered (just excluded) has no table any more.
+            if is_folder && !descend {
+                let (bytes, unknown) = self.remove_subtree(&mut tables, &child_key(&key, &e.name));
+                (gone, gone_unknown) = (gone + bytes, gone_unknown + unknown);
+            }
         }
 
         // Whatever wasn't in the listing is gone.
-        for (_, c) in old {
+        for (_, c) in old_children {
             self.kill(c.id);
             if let Some(name) = c.dir_name {
-                let child_key = if key.is_empty() { name.to_string() } else { format!("{key}/{name}") };
-                self.remove_subtree(&mut tables, &child_key);
+                let (bytes, unknown) = self.remove_subtree(&mut tables, &child_key(&key, &name));
+                (gone, gone_unknown) = (gone + bytes, gone_unknown + unknown);
             }
         }
-        tables.insert(key, table);
+
+        // Subfolders still here keep what they added; the folder's own part is new.
+        let (own, own_unknown) = folder.own();
+        folder.total = (old.total + own).saturating_sub(old_own + gone);
+        folder.unknown = (old.unknown + own_unknown).saturating_sub(old_own_unknown + gone_unknown);
+        add_to_ancestors(
+            &mut tables,
+            &key,
+            folder.total as i64 - old.total as i64,
+            folder.unknown as i64 - old.unknown as i64,
+        );
+        tables.insert(key, folder);
         next
     }
 
-    /// Marks everything under folder `key` dead (not the folder's own item).
-    fn remove_subtree(&self, tables: &mut HashMap<String, Vec<Child>>, key: &str) {
-        let Some(table) = tables.remove(key) else { return };
-        for c in table {
+    /// Marks everything under folder `key` dead (not the folder's own item) and drops its
+    /// tables. Returns its total (bytes, unknowns), for the caller to take off the folders
+    /// above.
+    fn remove_subtree(&self, tables: &mut HashMap<String, Folder>, key: &str) -> (u64, u32) {
+        let Some(folder) = tables.remove(key) else { return (0, 0) };
+        for c in folder.children {
             self.kill(c.id);
             if let Some(name) = c.dir_name {
-                self.remove_subtree(tables, &format!("{key}/{name}"));
+                self.remove_subtree(tables, &child_key(key, &name));
             }
         }
+        (folder.total, folder.unknown)
     }
 
     /// Applies a batch of FSEvents: re-lists each changed folder the index covers.
@@ -386,7 +523,11 @@ impl Shared {
         self.dirty.store(true, Ordering::SeqCst);
         let mut done = HashSet::new();
         for e in events {
-            if e.is_history_done() || !self.scan.scans_inside(&e.path) {
+            if e.is_history_done() {
+                continue;
+            }
+            if !self.scan.scans_inside(&e.path) {
+                self.skipped_changed(&e.path);
                 continue;
             }
             let rescan = e.needs_rescan();
@@ -397,20 +538,83 @@ impl Shared {
     }
 
     fn refresh_dir(&self, dir: &Path, rescan: bool) {
-        let opts = ListOptions { include_hidden: self.scan.include_hidden, ..Default::default() };
+        // Hidden entries too, for folder totals (`sync_dir` leaves them out of the index).
+        let opts = ListOptions { include_hidden: true, ..Default::default() };
         match list_dir(dir, &opts, || false) {
             Ok(entries) => {
                 let next = self.sync_dir(dir, &entries, rescan);
-                walk_sequential(next, self.scan.include_hidden, &|d, es| self.sync_dir(d, &es, rescan));
+                walk_sequential(next, true, &|d, es| self.sync_dir(d, &es, rescan));
             }
             // The folder itself is gone; its parent's event removes its own item.
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
                 let key = self.key(dir);
                 let mut tables = self.children.lock().unwrap();
-                self.remove_subtree(&mut tables, &key);
+                let (bytes, unknown) = self.remove_subtree(&mut tables, &key);
+                add_to_ancestors(&mut tables, &key, -(bytes as i64), -(unknown as i64));
             }
             Err(_) => {}
         }
+    }
+
+    /// Something changed at `path`, where the index doesn't look: if it's inside a skipped
+    /// folder, that folder's size is out of date.
+    fn skipped_changed(&self, path: &Path) {
+        let mut tables = self.children.lock().unwrap();
+        let mut at = path;
+        while let (Some(parent), Some(name)) = (at.parent(), at.file_name()) {
+            let name = name.to_string_lossy();
+            if let Some(skipped) =
+                tables.get_mut(&self.key(parent)).and_then(|f| f.skipped.iter_mut().find(|s| *s.name == *name))
+            {
+                skipped.stale = true;
+                return;
+            }
+            if !parent.starts_with(&self.home) && !self.scan.roots.iter().any(|r| parent.starts_with(r)) {
+                return;
+            }
+            at = parent;
+        }
+    }
+
+    /// The total of folder `key`, if the index lists it.
+    pub fn folder_total(&self, key: &str) -> Option<FolderTotal> {
+        let tables = self.children.lock().unwrap();
+        tables.get(key).map(|f| FolderTotal { bytes: f.total, unmeasured: f.unknown })
+    }
+
+    /// The skipped folders at any depth inside the folders `keys` (keys of their own, with
+    /// size and whether it's out of date).
+    pub fn skipped_inside(&self, keys: &[String]) -> Vec<(String, Option<u64>, bool)> {
+        let inside = |table: &str| {
+            keys.iter().any(|k| match k.as_str() {
+                "" => !table.starts_with('/'),
+                "/" => table.starts_with('/'),
+                k => table == k || table.strip_prefix(k).is_some_and(|rest| rest.starts_with('/')),
+            })
+        };
+        let tables = self.children.lock().unwrap();
+        tables
+            .iter()
+            .filter(|(key, f)| !f.skipped.is_empty() && inside(key))
+            .flat_map(|(key, f)| f.skipped.iter().map(move |s| (child_key(key, &s.name), s.size, s.stale)))
+            .collect()
+    }
+
+    /// Records the measured size of skipped folder `key`. False if it isn't one (any
+    /// more).
+    pub fn set_skipped_size(&self, key: &str, size: u64) -> bool {
+        let Some(parent) = parent_key(key) else { return false };
+        let name = key.rsplit('/').next().unwrap_or(key);
+        let mut tables = self.children.lock().unwrap();
+        let Some(folder) = tables.get_mut(parent) else { return false };
+        let Some(skipped) = folder.skipped.iter_mut().find(|s| *s.name == *name) else { return false };
+        let (bytes, unknown) = (size as i64 - skipped.size.unwrap_or(0) as i64, -(skipped.size.is_none() as i64));
+        (skipped.size, skipped.stale) = (Some(size), false);
+        folder.total = folder.total.saturating_add_signed(bytes);
+        folder.unknown = (folder.unknown as i64 + unknown).max(0) as u32;
+        add_to_ancestors(&mut tables, parent, bytes, unknown);
+        self.dirty.store(true, Ordering::SeqCst);
+        true
     }
 
     /// Compacts if dead items have reached a fifth of nucleo's list. Returns whether it did.
@@ -446,9 +650,9 @@ impl Shared {
         };
 
         let mut tables = self.children.lock().unwrap();
-        for table in tables.values_mut() {
+        for folder in tables.values_mut() {
             // Tables only hold live items.
-            table.retain_mut(|c| {
+            folder.children.retain_mut(|c| {
                 c.id = renumbered[c.id as usize];
                 c.id != u32::MAX
             });
@@ -470,16 +674,65 @@ impl Shared {
         self.compacted.lock().unwrap().take()
     }
 
-    /// Adds saved items, rebuilding the per-folder tables.
-    pub fn load(&self, items: Vec<(String, ItemMeta)>) {
+    /// Adds saved items, rebuilding the per-folder tables and their totals.
+    pub fn load(&self, items: Vec<(String, ItemMeta)>, folders: Vec<SavedFolder>) {
         let mut tables = self.children.lock().unwrap();
         for (key, meta) in items {
             let Some(id) = self.push(&key, meta) else { break };
             let (parent, name) = key.rsplit_once('/').unwrap_or(("", &key));
             let parent = if parent.is_empty() && key.starts_with('/') { "/" } else { parent };
             let dir_name = (meta.kind == EntryKind::Folder).then(|| name.into());
-            tables.entry(parent.to_string()).or_default().push(Child { name_hash: hash(&name), id, dir_name });
+            // Looked up before inserting, so the key's only copied for a new table.
+            let folder = match tables.get_mut(parent) {
+                Some(folder) => folder,
+                None => tables.entry(parent.to_string()).or_default(),
+            };
+            folder.children.push(Child { name_hash: hash(&name), id, dir_name });
+            if meta.kind == EntryKind::File {
+                folder.files += meta.size;
+            }
+            // A folder the scan enters has a table even when it's empty.
+            if meta.kind == EntryKind::Folder && !meta.extra && self.scan.descends_into_key(&self.home, &key, name) {
+                tables.entry(key).or_default();
+            }
         }
+        for saved in folders {
+            let folder = tables.entry(saved.key).or_default();
+            folder.files += saved.unindexed_files;
+            folder.unindexed_files = saved.unindexed_files;
+            folder.skipped = saved.skipped;
+        }
+        // Totals, deepest folders first so each is complete before it's added above.
+        let mut keys: Vec<(usize, String)> = tables
+            .iter_mut()
+            .map(|(key, f)| {
+                (f.total, f.unknown) = f.own();
+                (key.bytes().filter(|&b| b == b'/').count() + !key.is_empty() as usize, key.clone())
+            })
+            .collect();
+        keys.sort_unstable_by_key(|&(depth, _)| std::cmp::Reverse(depth));
+        for (_, key) in &keys {
+            let Some(parent) = parent_key(key) else { continue };
+            let (total, unknown) = (tables[key].total, tables[key].unknown);
+            if let Some(parent) = tables.get_mut(parent) {
+                parent.total += total;
+                parent.unknown += unknown;
+            }
+        }
+    }
+
+    /// What each folder holds that isn't an item, for saving.
+    pub fn saved_folders(&self) -> Vec<SavedFolder> {
+        let tables = self.children.lock().unwrap();
+        tables
+            .iter()
+            .filter(|(_, f)| f.unindexed_files > 0 || !f.skipped.is_empty())
+            .map(|(key, f)| SavedFolder {
+                key: key.clone(),
+                unindexed_files: f.unindexed_files,
+                skipped: f.skipped.clone(),
+            })
+            .collect()
     }
 
     /// Writes the index to its cache file. `None` if saving is off.
@@ -491,7 +744,7 @@ impl Shared {
         let _guard = self.save_lock.lock().unwrap();
         self.dirty.store(false, Ordering::SeqCst);
         let last_event_id = self.last_event_id.load(Ordering::SeqCst);
-        Some(crate::persist::save(path, *fingerprint, last_event_id, &self.snapshot()))
+        Some(crate::persist::save(path, *fingerprint, last_event_id, &self.snapshot(), &self.saved_folders()))
     }
 
     /// Every live item scanned from the roots (not frecency extras), for saving.
@@ -529,8 +782,8 @@ impl Shared {
         // Counted with keys borrowed from the tables (no copies), under their lock.
         let tables = self.children.lock().unwrap();
         let mut totals: HashMap<&str, u64> = HashMap::with_capacity(tables.len());
-        for (key, table) in tables.iter() {
-            let n = table.len() as u64;
+        for (key, folder) in tables.iter() {
+            let n = folder.children.len() as u64;
             *totals.entry(key.as_str()).or_default() += n;
             let mut k = key.as_str();
             while let Some((parent, _)) = k.rsplit_once('/') {

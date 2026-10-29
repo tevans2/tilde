@@ -465,7 +465,7 @@ impl Worker {
                     Ok(cmd) => Some(cmd),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => {
-                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        sizes::want(self.id, Vec::new(), self.tx.clone(), None);
                         return;
                     }
                 }
@@ -473,7 +473,7 @@ impl Worker {
                 match self.rx.recv() {
                     Ok(cmd) => Some(cmd),
                     Err(_) => {
-                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        sizes::want(self.id, Vec::new(), self.tx.clone(), None);
                         return;
                     }
                 }
@@ -547,7 +547,7 @@ impl Worker {
                     }
                     Command::IndexChanged => index_changed = true,
                     Command::Quit => {
-                        sizes::want(self.id, Vec::new(), self.tx.clone());
+                        sizes::want(self.id, Vec::new(), self.tx.clone(), None);
                         self.contents_current.fetch_add(1, Ordering::SeqCst);
                         return;
                     }
@@ -599,18 +599,18 @@ impl Worker {
                 continue;
             }
 
-            if subfolders_changed {
+            // The index keeps folder totals: its changes can move sizes too.
+            let index_sizes = index_changed && self.folder_sizes && self.archive.is_none();
+            if subfolders_changed || index_changed {
                 self.request_sizes();
             }
-            if sizes_changed {
-                self.apply_sizes();
-            }
+            let sizes_moved = (sizes_changed || index_sizes) && self.apply_sizes();
 
-            // Index updates only matter to a search in progress.
+            // Index updates only matter to a search in progress, or to sizes.
             if !user_change
                 && !relist
                 && !contents_changed
-                && !sizes_changed
+                && !sizes_moved
                 && !(index_changed && !self.query.is_empty())
             {
                 continue;
@@ -753,38 +753,44 @@ impl Worker {
         } else {
             Vec::new()
         };
-        sizes::want(self.id, paths, self.tx.clone());
+        sizes::want(self.id, paths, self.tx.clone(), self.index_handle());
     }
 
-    /// Puts the folder sizes known into `entries` (sorting again if by size).
-    fn apply_sizes(&mut self) {
-        if self.archive.is_some() {
-            // Listed with their sizes.
-            let folders = self.entries.iter().filter(|e| e.kind == EntryKind::Folder).map(|e| e.name.clone());
-            self.measured = Arc::new(folders.collect());
-            return;
-        }
-        if !self.folder_sizes {
-            self.measured = Arc::new(HashSet::new());
-            return;
-        }
-        let mut entries = (*self.entries).clone();
-        let mut measured = HashSet::new();
+    fn index_handle(&self) -> Option<tilde_index::IndexHandle> {
+        self.index.as_ref().and_then(|i| i.handle())
+    }
+
+    /// Puts the folder sizes known into `entries` (sorting again if by size). Returns
+    /// whether anything shown changed.
+    fn apply_sizes(&mut self) -> bool {
         let mut changed = false;
-        for e in entries.iter_mut().filter(|e| matches!(e.kind, EntryKind::Folder | EntryKind::Package)) {
-            if let Some(size) = sizes::get(&self.folder.join(&e.name)) {
-                changed |= e.size != size;
-                e.size = size;
-                measured.insert(e.name.clone());
+        let measured: HashSet<String> = if self.archive.is_some() {
+            // Listed with their sizes.
+            self.entries.iter().filter(|e| e.kind == EntryKind::Folder).map(|e| e.name.clone()).collect()
+        } else if !self.folder_sizes {
+            HashSet::new()
+        } else {
+            let index = self.index_handle();
+            let mut entries = (*self.entries).clone();
+            let mut measured = HashSet::new();
+            for e in entries.iter_mut().filter(|e| matches!(e.kind, EntryKind::Folder | EntryKind::Package)) {
+                if let Some(size) = sizes::get(&self.folder.join(&e.name), index.as_ref()) {
+                    changed |= e.size != size;
+                    e.size = size;
+                    measured.insert(e.name.clone());
+                }
             }
-        }
-        if changed {
-            if self.sort.key == SortKey::Size {
-                sort_entries_by(&mut entries, self.sort);
+            if changed {
+                if self.sort.key == SortKey::Size {
+                    sort_entries_by(&mut entries, self.sort);
+                }
+                self.entries = Arc::new(entries);
             }
-            self.entries = Arc::new(entries);
-        }
+            measured
+        };
+        changed |= measured != *self.measured;
         self.measured = Arc::new(measured);
+        changed
     }
 
     /// Makes `key` (and `reverse`) the order for every folder: saved in the config.
@@ -1288,6 +1294,70 @@ mod tests {
             rows.iter().map(|r| (r.name.as_str(), r.size)).collect::<Vec<_>>(),
             [("small", 10), ("big", 50_000)]
         );
+    }
+
+    #[test]
+    fn indexed_folders_take_their_size_from_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("docs/2026")).unwrap();
+        std::fs::write(root.join("docs/2026/report.pdf"), vec![0u8; 40_000]).unwrap();
+        std::fs::create_dir_all(root.join("app/node_modules/pad")).unwrap();
+        std::fs::write(root.join("app/node_modules/pad/index.js"), vec![0u8; 7_000]).unwrap();
+        std::fs::create_dir_all(root.join("app/.git")).unwrap();
+        std::fs::write(root.join("app/.git/HEAD"), vec![0u8; 30]).unwrap();
+        std::fs::write(root.join("app/main.rs"), vec![0u8; 500]).unwrap();
+
+        let rec = Arc::new(Recorder::default());
+        let config = tilde_index::IndexConfig {
+            home: root.clone(),
+            scan: tilde_index::ScanConfig {
+                roots: vec![root.clone()],
+                exclude_names: ["node_modules".to_string()].into(),
+                ..Default::default()
+            },
+            frecency: None,
+            zoxide: false,
+            max_items: 1_000_000,
+            cache_path: None,
+        };
+        let index = IndexService::with_config(config, false);
+        let t = Instant::now();
+        while index.status().state == IndexState::Scanning || index.status().items < 6 {
+            assert!(t.elapsed() < Duration::from_secs(5), "scan didn't finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let engine = Engine::start(
+            rec.clone(),
+            root.clone(),
+            Some(index.clone()),
+            None,
+            SortMemory::in_memory(),
+            Some(SortConfig::default()),
+        );
+        engine.open_folder(root.to_string_lossy().into(), 1);
+        rec.wait_for(1);
+        let sizes = |want: &[(&str, u64)]| {
+            let t = Instant::now();
+            loop {
+                let rows = engine.rows(1, 0, 10);
+                let got: Vec<(String, u64)> =
+                    rows.iter().filter(|r| r.measured).map(|r| (r.name.clone(), r.size)).collect();
+                if got.iter().map(|(n, s)| (n.as_str(), *s)).collect::<Vec<_>>() == want {
+                    return;
+                }
+                assert!(t.elapsed() < Duration::from_secs(5), "sizes {got:?}, wanted {want:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        // `app` counts its hidden and excluded folders, measured by walking just those.
+        sizes(&[("app", 7_530), ("docs", 40_000)]);
+        let handle = index.handle().unwrap();
+        assert_eq!(handle.folder_total(&root.join("app")).unwrap().unmeasured, 0);
+
+        // An indexed change shows without walking anything.
+        std::fs::write(root.join("docs/2026/notes.md"), vec![0u8; 2_000]).unwrap();
+        sizes(&[("app", 7_530), ("docs", 42_000)]);
     }
 
     #[test]

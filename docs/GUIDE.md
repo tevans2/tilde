@@ -251,13 +251,16 @@ archive aren't possible. Searching inside files (`text:`) doesn't look in archiv
 ## Folder sizes
 
 Folders show their total size instead of an item count, and sorting by size (`s s`) sorts
-them by it, as soon as they've been measured. Measuring happens in the background, at low
-priority: the folders you're looking at are measured, a couple of levels inside them are
-remembered too (so going in shows sizes at once), and everything is saved for the next
-launch. A size is measured again when something inside changes, but not too often for big
-folders: one that took a second to measure waits at least 20 seconds, one that took a
-minute, 20 minutes. Volumes mounted inside a folder aren't counted. Turn it off in
-Settings › General (`[sort] folder_sizes`).
+them by it, as soon as they've been measured. For folders the index covers, the index
+keeps the total itself as files change, so those sizes are always current. Only the folders
+it doesn't look inside (`.git`, `node_modules`, `target`, hidden folders, apps and other
+packages) are measured, in the background at low priority, and each again only when
+something inside it changes. Other folders (`~/Library`, other disks) are measured whole: a
+couple of levels inside them are remembered too (so going in shows sizes at once). A size
+is measured again when something inside changes, but not too often for big folders: one
+that took a second to measure waits at least 20 seconds, one that took a minute, 20
+minutes. Everything is saved for the next launch. Volumes mounted inside a folder aren't
+counted. Turn it off in Settings › General (`[sort] folder_sizes`).
 
 ## From the terminal
 

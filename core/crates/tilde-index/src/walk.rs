@@ -32,6 +32,18 @@ impl ScanConfig {
         !self.exclude_names.contains(name) && !self.exclude_paths.iter().any(|p| p == path)
     }
 
+    /// `descends_into` for an index key (relative to `home`, or absolute), making the path
+    /// only if there are excluded paths to compare it with.
+    pub(crate) fn descends_into_key(&self, home: &Path, key: &str, name: &str) -> bool {
+        if self.exclude_names.contains(name) {
+            return false;
+        }
+        self.exclude_paths.is_empty() || {
+            let path = if key.starts_with('/') { PathBuf::from(key) } else { home.join(key) };
+            !self.exclude_paths.contains(&path)
+        }
+    }
+
     /// Whether the scan lists the contents of folder `dir`, so changes inside it matter.
     pub fn scans_inside(&self, dir: &Path) -> bool {
         if self.roots.iter().any(|r| r == dir) {

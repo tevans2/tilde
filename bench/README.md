@@ -69,7 +69,7 @@ hits a cap (see the profiles in `runner.rs`).
 | `live` | a synthetic home on disk (`--live`), real FSEvents | time until a new, deleted or renamed item shows in search; editing 10%, 50%, 100% of files, then renaming every file (which compacts along the way): time to apply, dead entries, memory, and searches before and after |
 | `scan` | synthetic homes on disk (`--trees`), your home with `--real-heavy` | building the index from disk; listing every folder without indexing |
 | `folder` | folders of 100 to 50,000 items | listing, sorting by each key, matching typed text |
-| `sizes` | the synthetic homes; `~/Developer` etc. with `--real-heavy` | totalling folder sizes |
+| `sizes` | the synthetic homes; `~/Developer` etc. with `--real-heavy` | totalling folder sizes by walking; the index's totals (walking only the folders it doesn't enter, then reading totals), checked against a walk |
 | `contents` | text files in folders, one 2 MB file | `text:` scans for rare, common, absent and capitalised words |
 | `archive` | a zip and a tar.gz | listing afresh and cached, unpacking one file and everything |
 | `engine` | a synthetic home on disk with its index | opening folders, typing and whole queries (until results arrive), fetching rows, sorting |

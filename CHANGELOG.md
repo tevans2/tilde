@@ -12,9 +12,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - **A sort applies everywhere**: sorting by size (or anything) carries on into the
   folders you open next, and is kept for next time. Settings › General can go back to an
   order per folder (`[sort] same_everywhere`).
-- **Folder sizes**: folders are measured in the background (at low priority, remembered
-  between launches) and show their total size; sorting by size uses it. Settings ›
-  General, or `[sort] folder_sizes`.
+- **Folder sizes**: folders show their total size, and sorting by size uses it. The
+  index keeps totals for the folders it covers, current as files change; only what it
+  doesn't look inside (`.git`, `node_modules`, packages, `~/Library`) is measured in the
+  background, at low priority, and remembered between launches. Settings › General, or
+  `[sort] folder_sizes`. (The saved index changes format, so it's rebuilt once.)
 - **`t` in the terminal**: the `tilde` command opens Tilde on a folder, and with
   `eval "$(tilde init zsh)"` the `t` function brings the terminal to the folder you were
   in when you close the window (`q`). Folders dropped on the Dock icon open too.

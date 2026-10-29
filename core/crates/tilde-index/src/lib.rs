@@ -16,7 +16,7 @@ mod walk;
 mod zoxide;
 
 pub use frecency::{Frecency, HALF_LIFE, Use};
-pub use live::FolderSize;
+pub use live::{FolderSize, FolderTotal};
 pub use walk::{ScanConfig, glob_match, scan, walk_parallel, walk_sequential};
 pub use zoxide::{Zoxide, parse_scores};
 
@@ -94,7 +94,7 @@ impl IndexConfig {
 #[doc(hidden)]
 pub fn write_saved(config: &IndexConfig, items: &[(String, ItemMeta)]) -> std::io::Result<u64> {
     let path = config.cache_path.as_deref().ok_or_else(|| std::io::Error::other("no cache_path"))?;
-    persist::save(path, config.fingerprint(), current_event_id(), items)
+    persist::save(path, config.fingerprint(), current_event_id(), items, &[])
 }
 
 /// What the index keeps per item besides its path.
@@ -128,6 +128,16 @@ pub struct IndexCounts {
     pub injected: u64,
     pub dead: u64,
     pub folder_tables: u64,
+}
+
+/// A folder inside an indexed one that the index doesn't enter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedFolder {
+    pub path: PathBuf,
+    /// As last measured.
+    pub size: Option<u64>,
+    /// Something inside changed since.
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +189,32 @@ impl IndexHandle {
 
     pub fn largest_folders(&self, limit: usize) -> Vec<FolderSize> {
         self.shared.largest_folders(limit)
+    }
+
+    /// The total size of everything inside `folder` (file lengths, hidden files
+    /// included), if the index lists it: kept current as files change. Folders inside
+    /// that the index doesn't enter (excluded, hidden, packages) count once measured
+    /// (see [`IndexHandle::skipped_inside`]).
+    pub fn folder_total(&self, folder: &Path) -> Option<FolderTotal> {
+        self.shared.folder_total(&self.shared.key(folder))
+    }
+
+    /// The folders inside `folders`, at any depth, that the index doesn't enter, with
+    /// their measured sizes: what [`IndexHandle::folder_total`] needs measured by walking
+    /// them (those without a size, or out of date).
+    pub fn skipped_inside(&self, folders: &[PathBuf]) -> Vec<SkippedFolder> {
+        let keys: Vec<String> = folders.iter().map(|f| self.shared.key(f)).collect();
+        self.shared
+            .skipped_inside(&keys)
+            .into_iter()
+            .map(|(key, size, stale)| SkippedFolder { path: self.absolute(&key), size, stale })
+            .collect()
+    }
+
+    /// Records the measured size of a folder the index doesn't enter, adding it to the
+    /// totals above it. False if `folder` isn't one.
+    pub fn set_skipped_size(&self, folder: &Path, size: u64) -> bool {
+        self.shared.set_skipped_size(&self.shared.key(folder), size)
     }
 
     pub fn cache_path(&self) -> Option<&Path> {
@@ -301,7 +337,7 @@ impl GlobalIndex {
             .and_then(|p| persist::load(p, fingerprint))
             .filter(|s| s.last_event_id <= current_event_id());
         let resume_from = saved.map(|s| {
-            shared.load(s.items);
+            shared.load(s.items, s.folders);
             s.last_event_id
         });
         shared.last_event_id.store(resume_from.unwrap_or_else(current_event_id), Ordering::SeqCst);
@@ -347,7 +383,8 @@ impl GlobalIndex {
             .spawn(move || {
                 if resume_from.is_none() {
                     let stop = shared.stop.clone();
-                    walk_parallel(config.scan.roots.clone(), config.scan.include_hidden, &stop, &|dir, entries| {
+                    // Hidden entries too, for folder totals (`sync_dir` leaves them out of the index).
+                    walk_parallel(config.scan.roots.clone(), true, &stop, &|dir, entries| {
                         shared.sync_dir(dir, &entries, false)
                     });
                 }
@@ -1309,6 +1346,73 @@ mod tests {
         assert_eq!(index.handle().counts().injected, 1_501);
         let hit = first(&mut index);
         assert_eq!((hit.key.as_str(), hit.meta.id), ("Archive/2019/scans/plan-final.pdf", 1_500));
+    }
+
+    #[test]
+    fn folder_totals_match_a_disk_walk_and_follow_changes() {
+        let (_dir, root) = tree();
+        // Things the index doesn't hold: hidden files and folders, an excluded folder
+        // (node_modules, from `tree`), a package.
+        fs::create_dir_all(root.join("Developer/projects/tilde/.git/objects")).unwrap();
+        fs::write(root.join("Developer/projects/tilde/.git/objects/blob"), vec![0u8; 5_000]).unwrap();
+        fs::write(root.join("Documents/.DS_Store"), vec![0u8; 6_148]).unwrap();
+        fs::create_dir_all(root.join("Documents/Old.app/Contents")).unwrap();
+        fs::write(root.join("Documents/Old.app/Contents/binary"), vec![0u8; 700]).unwrap();
+        fs::write(root.join("Documents/notes.md"), vec![0u8; 300]).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let mut config = config(&root);
+        config.cache_path = Some(cache.path().join("index.bin"));
+        let index = start_and_wait(config.clone());
+        let handle = index.handle();
+
+        let walk = |p: &Path| tilde_fs::folder_size(p, 0, &|| false, &|_, _| {}).unwrap();
+        let measure = |only_stale: bool| {
+            for s in handle.skipped_inside(std::slice::from_ref(&root)) {
+                if !only_stale || s.stale || s.size.is_none() {
+                    assert!(handle.set_skipped_size(&s.path, walk(&s.path)));
+                }
+            }
+        };
+        let folders = ["", "Documents", "Developer", "Developer/projects/tilde", "Documents/Finance/2026"];
+        let check = |handle: &IndexHandle| {
+            for f in folders.iter().map(|f| root.join(f)).filter(|f| f.exists()) {
+                assert_eq!(handle.folder_total(&f), Some(FolderTotal { bytes: walk(&f), unmeasured: 0 }), "{f:?}");
+            }
+        };
+
+        // Not measured yet: the totals say what they're missing.
+        let skipped: Vec<PathBuf> =
+            handle.skipped_inside(std::slice::from_ref(&root)).into_iter().map(|s| s.path).collect();
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        assert_eq!(handle.folder_total(&root).unwrap().unmeasured, 3);
+        assert_eq!(handle.folder_total(&root.join("Documents")).unwrap().unmeasured, 1);
+        assert_eq!(handle.folder_total(&root.join("node_modules")), None, "not listed by the index");
+        measure(false);
+        check(&handle);
+
+        // Changes: an edit, a new hidden file, a removed folder, a change inside a skipped
+        // folder.
+        fs::write(root.join("Documents/notes.md"), vec![0u8; 10_000]).unwrap();
+        fs::write(root.join("Documents/.hidden-new"), b"abc").unwrap();
+        fs::remove_dir_all(root.join("Documents/Finance")).unwrap();
+        index.shared.apply(&[changed(root.join("Documents")), changed(root.join("Documents/Finance/2026"))]);
+        fs::write(root.join("node_modules/left-pad/more.js"), vec![0u8; 999]).unwrap();
+        index.shared.apply(&[changed(root.join("node_modules/left-pad"))]);
+        let stale: Vec<PathBuf> = handle
+            .skipped_inside(std::slice::from_ref(&root))
+            .into_iter()
+            .filter(|s| s.stale)
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(stale, [root.join("node_modules")]);
+        measure(true);
+        check(&handle);
+
+        // Saved and loaded: the same totals, without measuring again.
+        handle.save().unwrap().unwrap();
+        drop(index);
+        let index = start_and_wait(config);
+        check(&index.handle());
     }
 
     #[test]

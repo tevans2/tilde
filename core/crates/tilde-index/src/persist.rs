@@ -1,7 +1,10 @@
 //! Saving the index between launches.
 //!
 //! A flat binary file: header (magic, format version, config fingerprint, the FSEvents
-//! ID it's current to, item count), then one record per item. Written to a temporary
+//! ID it's current to, item count), then one record per item, then what folders hold
+//! that isn't an item (for folder totals): a count, then per folder its key, the bytes
+//! of its hidden files and the folders inside it the index doesn't enter, with their
+//! measured sizes. Written to a temporary
 //! file and renamed into place, so a crash mid-save leaves the old file intact.
 
 use std::fs::File;
@@ -11,16 +14,26 @@ use std::path::Path;
 use tilde_types::EntryKind;
 
 use crate::ItemMeta;
+use crate::live::{SavedFolder, Skipped};
 
 const MAGIC: &[u8; 8] = b"TILDEIX\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+/// A skipped folder whose size isn't known.
+const UNKNOWN: u64 = u64::MAX;
 
 pub(crate) struct Saved {
     pub last_event_id: u64,
     pub items: Vec<(String, ItemMeta)>,
+    pub folders: Vec<SavedFolder>,
 }
 
-pub(crate) fn save(path: &Path, fingerprint: u64, last_event_id: u64, items: &[(String, ItemMeta)]) -> io::Result<u64> {
+pub(crate) fn save(
+    path: &Path,
+    fingerprint: u64,
+    last_event_id: u64,
+    items: &[(String, ItemMeta)],
+    folders: &[SavedFolder],
+) -> io::Result<u64> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -32,14 +45,22 @@ pub(crate) fn save(path: &Path, fingerprint: u64, last_event_id: u64, items: &[(
     w.write_all(&last_event_id.to_le_bytes())?;
     w.write_all(&(items.len() as u64).to_le_bytes())?;
     for (key, meta) in items {
-        let key = key.as_bytes();
-        let len = u16::try_from(key.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "path too long"))?;
-        w.write_all(&len.to_le_bytes())?;
-        w.write_all(key)?;
+        write_str(&mut w, key)?;
         w.write_all(&[kind_code(meta.kind)])?;
         w.write_all(&meta.size.to_le_bytes())?;
         w.write_all(&meta.modified.to_le_bytes())?;
         w.write_all(&meta.child_count.unwrap_or(u32::MAX).to_le_bytes())?;
+    }
+    w.write_all(&(folders.len() as u64).to_le_bytes())?;
+    for folder in folders {
+        write_str(&mut w, &folder.key)?;
+        w.write_all(&folder.unindexed_files.to_le_bytes())?;
+        w.write_all(&(folder.skipped.len() as u32).to_le_bytes())?;
+        for s in &folder.skipped {
+            write_str(&mut w, &s.name)?;
+            w.write_all(&s.size.unwrap_or(UNKNOWN).to_le_bytes())?;
+            w.write_all(&[s.stale as u8])?;
+        }
     }
     w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     std::fs::rename(&tmp, path)?;
@@ -59,10 +80,7 @@ pub(crate) fn load(path: &Path, fingerprint: u64) -> Option<Saved> {
     let count = read_u64(&mut r)? as usize;
     let mut items = Vec::with_capacity(count.min(10_000_000));
     for _ in 0..count {
-        let mut len = [0u8; 2];
-        r.read_exact(&mut len).ok()?;
-        let mut key = vec![0u8; u16::from_le_bytes(len) as usize];
-        r.read_exact(&mut key).ok()?;
+        let key = read_str(&mut r)?;
         let mut kind = [0u8; 1];
         r.read_exact(&mut kind).ok()?;
         let size = read_u64(&mut r)?;
@@ -76,9 +94,39 @@ pub(crate) fn load(path: &Path, fingerprint: u64) -> Option<Saved> {
             child_count: (child_count != u32::MAX).then_some(child_count),
             extra: false,
         };
-        items.push((String::from_utf8(key).ok()?, meta));
+        items.push((key, meta));
     }
-    Some(Saved { last_event_id, items })
+    let count = read_u64(&mut r)? as usize;
+    let mut folders = Vec::with_capacity(count.min(1_000_000));
+    for _ in 0..count {
+        let key = read_str(&mut r)?;
+        let unindexed_files = read_u64(&mut r)?;
+        let skipped_count = read_u32(&mut r)? as usize;
+        let mut skipped = Vec::with_capacity(skipped_count.min(100_000));
+        for _ in 0..skipped_count {
+            let name = read_str(&mut r)?.into_boxed_str();
+            let size = read_u64(&mut r)?;
+            let mut stale = [0u8; 1];
+            r.read_exact(&mut stale).ok()?;
+            skipped.push(Skipped { name, size: (size != UNKNOWN).then_some(size), stale: stale[0] != 0 });
+        }
+        folders.push(SavedFolder { key, unindexed_files, skipped });
+    }
+    Some(Saved { last_event_id, items, folders })
+}
+
+fn write_str(w: &mut impl Write, s: &str) -> io::Result<()> {
+    let len = u16::try_from(s.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "path too long"))?;
+    w.write_all(&len.to_le_bytes())?;
+    w.write_all(s.as_bytes())
+}
+
+fn read_str(r: &mut impl Read) -> Option<String> {
+    let mut len = [0u8; 2];
+    r.read_exact(&mut len).ok()?;
+    let mut bytes = vec![0u8; u16::from_le_bytes(len) as usize];
+    r.read_exact(&mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 fn kind_code(kind: EntryKind) -> u8 {
@@ -131,12 +179,21 @@ mod tests {
             ("Documents/café notes.md".to_string(), meta(EntryKind::File, 1234, None)),
             ("/opt/homebrew".to_string(), meta(EntryKind::Folder, 0, None)),
         ];
-        let size = save(&p, 42, 9_000, &items).unwrap();
+        let folders = vec![SavedFolder {
+            key: "Documents".into(),
+            unindexed_files: 6_148,
+            skipped: vec![
+                Skipped { name: ".git".into(), size: Some(52_000), stale: true },
+                Skipped { name: "node_modules".into(), size: None, stale: false },
+            ],
+        }];
+        let size = save(&p, 42, 9_000, &items, &folders).unwrap();
         assert!(size > 0);
 
         let loaded = load(&p, 42).unwrap();
         assert_eq!(loaded.last_event_id, 9_000);
         assert_eq!(loaded.items, items);
+        assert_eq!(loaded.folders, folders);
 
         assert!(load(&p, 43).is_none(), "different config");
         std::fs::write(&p, b"TILDEIX\0garbage").unwrap();
