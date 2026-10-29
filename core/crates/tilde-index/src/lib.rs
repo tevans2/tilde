@@ -237,7 +237,8 @@ impl IndexHandle {
 }
 
 pub struct GlobalIndex {
-    nucleo: Nucleo<ItemMeta>,
+    /// Item IDs, matched by path (metadata is in `shared`, by ID).
+    nucleo: Nucleo<u32>,
     shared: Arc<Shared>,
     scanning: Arc<AtomicBool>,
     /// Dropping it ends the stream, which ends the update thread.
@@ -469,7 +470,7 @@ impl GlobalIndex {
         while self.nucleo.tick(10).running && Instant::now() < deadline {}
 
         let snap = self.nucleo.snapshot();
-        let dead = self.shared.dead();
+        let items = self.shared.items();
         let ctx = FilterContext { now, cwd };
         let has_text = !query.text.is_empty();
         let name_pattern = has_text.then(|| Pattern::parse(&query.text, CaseMatching::Ignore, Normalization::Smart));
@@ -477,7 +478,7 @@ impl GlobalIndex {
         let best = if has_text {
             let ranking = Ranking {
                 snap,
-                dead: &dead,
+                items: &items,
                 query,
                 ctx,
                 exclude_parent,
@@ -500,7 +501,7 @@ impl GlobalIndex {
         } else {
             // Filters only: newest first. Only the best `limit` are kept, picked out before
             // sorting (this can rank most of the index).
-            let mut ranked = filtered_newest(snap, &dead, query, &ctx, exclude_parent);
+            let mut ranked = filtered_newest(snap, &items, query, &ctx, exclude_parent);
             if ranked.len() > limit {
                 ranked.select_nth_unstable_by_key(limit - 1, |&(_, s)| Reverse(s));
                 ranked.truncate(limit);
@@ -515,6 +516,7 @@ impl GlobalIndex {
             .into_iter()
             .filter_map(|(n, score)| {
                 let item = snap.get_matched_item(n)?;
+                let meta = items.live(*item.data)?;
                 let column = &item.matcher_columns[0];
                 indices.clear();
                 if has_text {
@@ -522,7 +524,7 @@ impl GlobalIndex {
                     indices.sort_unstable();
                     indices.dedup();
                 }
-                Some(GlobalHit { key: column.to_string(), meta: *item.data, indices: indices.clone(), score })
+                Some(GlobalHit { key: column.to_string(), meta, indices: indices.clone(), score })
             })
             .collect()
     }
@@ -621,8 +623,8 @@ impl UsageById {
 
 /// One search's scoring of nucleo's matches, shared by the threads doing it.
 struct Ranking<'a> {
-    snap: &'a nucleo::Snapshot<ItemMeta>,
-    dead: &'a live::DeadSet<'a>,
+    snap: &'a nucleo::Snapshot<u32>,
+    items: &'a live::Items<'a>,
     query: &'a Query,
     ctx: FilterContext<'a>,
     exclude_parent: Option<&'a str>,
@@ -681,15 +683,12 @@ impl Ranking<'_> {
                 Stop::WhenNothingCanWin
                     if 2 * path_score + self.name_slack + FRESH_BONUS + self.usage_ceiling < bar =>
                 {
-                    break
+                    break;
                 }
                 Stop::AfterScoring(most) if scored >= most => break,
                 _ => {}
             }
-            let meta = *item.data;
-            if self.dead.contains(meta.id) {
-                continue;
-            }
+            let Some(meta) = self.items.live(*item.data) else { continue };
             let score = with_str(column, |key| {
                 let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
                 if self.exclude_parent == Some(parent) {
@@ -712,12 +711,15 @@ impl Ranking<'_> {
                 };
                 let known = path_score + fresh + usage - 2 * depth - length_penalty;
                 // Even the best name it could have wouldn't make the list: skip matching it.
-                let local = if best.len() == self.limit { best.peek().map_or(i64::MIN, |Reverse((w, _))| *w) } else { i64::MIN };
+                let local = if best.len() == self.limit {
+                    best.peek().map_or(i64::MIN, |Reverse((w, _))| *w)
+                } else {
+                    i64::MIN
+                };
                 if exact && known + path_score + self.name_slack < bar.max(local) {
                     return None;
                 }
-                let name_score =
-                    self.name_pattern.score(Utf32Str::new(name, buf), names).unwrap_or(0) as i64;
+                let name_score = self.name_pattern.score(Utf32Str::new(name, buf), names).unwrap_or(0) as i64;
                 Some(known + name_score)
             });
             if let Some(score) = score {
@@ -767,12 +769,11 @@ pub(crate) fn key_for(home: &Path, path: &Path) -> String {
     }
 }
 
-/// Borrows a nucleo string as `&str` without allocating when it's ASCII.
 /// Filters only (no text): every live item that passes, scored by modification time so the
 /// newest come first. This visits the whole index, so it runs in parallel.
 fn filtered_newest(
-    snap: &nucleo::Snapshot<ItemMeta>,
-    dead: &live::DeadSet<'_>,
+    snap: &nucleo::Snapshot<u32>,
+    items: &live::Items<'_>,
     query: &Query,
     ctx: &FilterContext<'_>,
     exclude_parent: Option<&str>,
@@ -782,10 +783,7 @@ fn filtered_newest(
         .into_par_iter()
         .filter_map(|n| {
             let item = snap.get_matched_item(n)?;
-            let meta = *item.data;
-            if dead.contains(meta.id) {
-                return None;
-            }
+            let meta = items.live(*item.data)?;
             with_str(&item.matcher_columns[0], |key| {
                 let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
                 let candidate =
@@ -797,6 +795,7 @@ fn filtered_newest(
         .collect()
 }
 
+/// Borrows a nucleo string as `&str` without allocating when it's ASCII.
 pub(crate) fn with_str<R>(s: &Utf32String, f: impl FnOnce(&str) -> R) -> R {
     match s.slice(..) {
         // SAFETY: nucleo stores a string as ASCII bytes only when every byte is ASCII.
@@ -1016,8 +1015,24 @@ mod tests {
         let mut items = Vec::new();
         for i in 0..20_000u32 {
             let w = |k: u32| words[(k as usize * 7 + i as usize) % words.len()];
-            let key = format!("{}/{}-{}/{}{}/{}_{i}.{}", w(1), w(2), i % 13, w(3), i % 7, w(4), ["pdf", "rs", "md"][i as usize % 3]);
-            let meta = ItemMeta { id: i, kind: EntryKind::File, size: 1, modified: (i as i64) * 100, child_count: None, extra: false };
+            let key = format!(
+                "{}/{}-{}/{}{}/{}_{i}.{}",
+                w(1),
+                w(2),
+                i % 13,
+                w(3),
+                i % 7,
+                w(4),
+                ["pdf", "rs", "md"][i as usize % 3]
+            );
+            let meta = ItemMeta {
+                id: i,
+                kind: EntryKind::File,
+                size: 1,
+                modified: (i as i64) * 100,
+                child_count: None,
+                extra: false,
+            };
             items.push((key, meta));
         }
         // Heavy use of a few items deep in the list, and of some folders.
@@ -1110,12 +1125,27 @@ mod tests {
         );
         assert_eq!(index.status().items, before + 4);
 
-        // A changed file is replaced, not duplicated.
+        // A changed file is updated in place: same item, nothing added or marked dead.
+        let id = index.search(&Query::parse("fresh-report"), None, None, 0, 10)[0].meta.id;
+        let counts = index.handle().counts();
         fs::write(root.join("Documents/fresh-report.txt"), b"longer contents").unwrap();
         index.shared.apply(&[changed(root.join("Documents"))]);
         let hits = index.search(&Query::parse("fresh-report"), None, None, 0, 10);
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].meta.size, 15);
+        assert_eq!((hits[0].meta.id, hits[0].meta.size), (id, 15));
+        assert_eq!(index.handle().counts(), counts);
+        // Filters and lookups see the new size at once.
+        assert_eq!(search_keys(&mut index, "size:>10"), ["Documents/fresh-report.txt"]);
+        assert_eq!(index.handle().select(|_, m| m.size == 15).len(), 1);
+
+        // A file replaced by a folder of the same name is replaced in the index too.
+        fs::remove_file(root.join("Documents/notes.md")).unwrap();
+        fs::create_dir(root.join("Documents/notes.md")).unwrap();
+        index.shared.apply(&[changed(root.join("Documents"))]);
+        let hits = index.search(&Query::parse("notes.md"), None, None, 0, 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].meta.kind, EntryKind::Folder);
+        assert_eq!(index.handle().counts().dead, counts.dead + 1);
 
         // Removing a folder removes everything under it.
         fs::remove_dir_all(root.join("Documents/Archive")).unwrap();

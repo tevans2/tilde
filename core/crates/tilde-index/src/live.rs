@@ -1,7 +1,8 @@
-//! The index's mutable side. Nucleo only appends, so every item gets an ID: removed
-//! and changed items are marked dead (search skips them) and changed items are pushed
-//! again. A compact per-folder table of what's indexed lets a fresh listing of any
-//! changed folder be diffed and applied.
+//! The index's mutable side. Every item gets an ID. Nucleo holds just the path and the
+//! ID; the item's metadata (kind, size, dates) lives in a table by ID, so an edited file
+//! is updated in place. Nucleo only appends, so removed items are marked dead (search
+//! skips them) and renamed ones are added again. A compact per-folder table of what's
+//! indexed lets a fresh listing of any changed folder be diffed and applied.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -20,9 +21,6 @@ use crate::{ItemMeta, key_for, with_str};
 /// What the index holds for one entry of a folder.
 struct Child {
     name_hash: u64,
-    /// Changes when the entry's size or modification time does (always 0 for folders,
-    /// whose times change with every edit inside them).
-    meta_hash: u64,
     id: u32,
     /// Kept for folders only, to find their own table when they disappear.
     dir_name: Option<Box<str>>,
@@ -45,7 +43,10 @@ pub(crate) struct Shared {
     /// Set after the saved index is deleted, so it isn't written back.
     pub saving_disabled: AtomicBool,
     save_lock: Mutex<()>,
-    injector: Injector<ItemMeta>,
+    /// Item IDs, searched by path. An item's ID is also its position here.
+    injector: Injector<u32>,
+    /// Metadata by item ID (`metas.len()` is the next ID).
+    metas: RwLock<Vec<ItemMeta>>,
     next_id: AtomicU32,
     killed: AtomicU32,
     dead: RwLock<Vec<u64>>,
@@ -61,12 +62,28 @@ pub struct FolderSize {
     pub items: u64,
 }
 
-/// Dead item IDs, read-locked for the duration of a search.
-pub(crate) struct DeadSet<'a>(RwLockReadGuard<'a, Vec<u64>>);
+/// Item metadata and dead IDs, read-locked together for the duration of a search or
+/// lookup (changes wait until it's done).
+pub(crate) struct Items<'a> {
+    metas: RwLockReadGuard<'a, Vec<ItemMeta>>,
+    dead: RwLockReadGuard<'a, Vec<u64>>,
+    /// Nucleo's list the IDs refer to.
+    injector: Injector<u32>,
+}
 
-impl DeadSet<'_> {
-    pub fn contains(&self, id: u32) -> bool {
-        self.0.get(id as usize / 64).is_some_and(|w| w & (1 << (id % 64)) != 0)
+impl Items<'_> {
+    fn is_dead(&self, id: u32) -> bool {
+        self.dead.get(id as usize / 64).is_some_and(|w| w & (1 << (id % 64)) != 0)
+    }
+
+    /// The item's metadata, unless it's dead.
+    pub fn live(&self, id: u32) -> Option<ItemMeta> {
+        if self.is_dead(id) { None } else { self.metas.get(id as usize).copied() }
+    }
+
+    /// Every live item's metadata, in ID order.
+    pub fn all_live(&self) -> impl Iterator<Item = &ItemMeta> + '_ {
+        self.metas.iter().filter(|m| !self.is_dead(m.id))
     }
 }
 
@@ -76,7 +93,7 @@ impl Shared {
         scan: ScanConfig,
         max_items: u64,
         cache: Option<(PathBuf, u64)>,
-        injector: Injector<ItemMeta>,
+        injector: Injector<u32>,
     ) -> Shared {
         Shared {
             home,
@@ -90,6 +107,7 @@ impl Shared {
             saving_disabled: AtomicBool::new(false),
             save_lock: Mutex::new(()),
             injector,
+            metas: RwLock::new(Vec::new()),
             next_id: AtomicU32::new(0),
             killed: AtomicU32::new(0),
             dead: RwLock::new(Vec::new()),
@@ -104,7 +122,7 @@ impl Shared {
     /// Items ever added to nucleo, items marked dead among them, and folder tables.
     pub fn counts(&self) -> (u64, u64, u64) {
         let folders = self.children.lock().unwrap().len() as u64;
-        (self.injector.injected_items() as u64, self.killed.load(Ordering::Relaxed) as u64, folders)
+        (self.next_id() as u64, self.killed.load(Ordering::Relaxed) as u64, folders)
     }
 
     /// The ID the next item added will get.
@@ -137,11 +155,12 @@ impl Shared {
 
     /// Items currently searchable.
     pub fn live_items(&self) -> u64 {
-        self.injector.injected_items() as u64 - self.killed.load(Ordering::Relaxed) as u64
+        // IDs are positions in nucleo's list, so the next one is its length.
+        self.next_id() as u64 - self.killed.load(Ordering::Relaxed) as u64
     }
 
-    pub fn dead(&self) -> DeadSet<'_> {
-        DeadSet(self.dead.read().unwrap())
+    pub fn items(&self) -> Items<'_> {
+        Items { metas: self.metas.read().unwrap(), dead: self.dead.read().unwrap(), injector: self.injector.clone() }
     }
 
     /// Live files and packages modified at or after `since` that `keep` accepts (given
@@ -150,30 +169,26 @@ impl Shared {
     /// activity). Library packages themselves (Photos, Music) change constantly and are
     /// skipped too.
     ///
-    /// One pass over the index that copies nothing: items are judged by their metadata,
-    /// then their key where it's stored, and only the newest `limit` so far are kept
-    /// (by position); just those keys are copied at the end.
+    /// One pass over the metadata table that copies nothing: items are judged by their
+    /// metadata, then their key where nucleo stores it, and only the newest `limit` so far
+    /// are kept (by ID); just those keys are copied at the end.
     pub fn recent(&self, since: i64, limit: usize, keep: impl Fn(&str, &ItemMeta) -> bool) -> Vec<(String, ItemMeta)> {
         if limit == 0 {
             return Vec::new();
         }
-        let dead = self.dead();
+        let items = self.items();
         // The newest so far, the worst on top: newer wins, then earlier position (as a
         // stable sort by date would order them).
         let mut best: BinaryHeap<Reverse<(i64, Reverse<u32>)>> = BinaryHeap::with_capacity(limit + 1);
-        for i in 0..self.injector.injected_items() {
-            let Some(item) = self.injector.get(i) else { continue };
-            let meta = *item.data;
-            if meta.modified < since
-                || !matches!(meta.kind, EntryKind::File | EntryKind::Package)
-                || dead.contains(meta.id)
-            {
+        for &meta in items.all_live() {
+            if meta.modified < since || !matches!(meta.kind, EntryKind::File | EntryKind::Package) {
                 continue;
             }
-            let rank = (meta.modified, Reverse(i));
+            let rank = (meta.modified, Reverse(meta.id));
             if best.len() == limit && best.peek().is_some_and(|Reverse(worst)| rank <= *worst) {
                 continue;
             }
+            let Some(item) = items.injector.get(meta.id) else { continue };
             let wanted = with_str(&item.matcher_columns[0], |key| {
                 let mut parts = key.split('/');
                 let name = parts.next_back().unwrap_or("");
@@ -193,9 +208,9 @@ impl Shared {
         ranked.sort_unstable_by(|a, b| b.cmp(a));
         ranked
             .into_iter()
-            .filter_map(|(_, Reverse(i))| {
-                let item = self.injector.get(i)?;
-                Some((item.matcher_columns[0].to_string(), *item.data))
+            .filter_map(|(_, Reverse(id))| {
+                let item = items.injector.get(id)?;
+                Some((item.matcher_columns[0].to_string(), items.live(id)?))
             })
             .collect()
     }
@@ -203,14 +218,10 @@ impl Shared {
     /// Live items that `keep` accepts (given the key, where it's stored, and metadata), as
     /// (key, metadata). Only accepted keys are copied.
     pub fn select(&self, mut keep: impl FnMut(&str, &ItemMeta) -> bool) -> Vec<(String, ItemMeta)> {
-        let dead = self.dead();
+        let items = self.items();
         let mut found = Vec::new();
-        for i in 0..self.injector.injected_items() {
-            let Some(item) = self.injector.get(i) else { continue };
-            let meta = *item.data;
-            if dead.contains(meta.id) || meta.extra {
-                continue;
-            }
+        for &meta in items.all_live().filter(|m| !m.extra) {
+            let Some(item) = items.injector.get(meta.id) else { continue };
             let column = &item.matcher_columns[0];
             if with_str(column, |key| keep(key, &meta)) {
                 found.push((column.to_string(), meta));
@@ -227,9 +238,30 @@ impl Shared {
             }
             return None;
         }
-        meta.id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.injector.push(meta, |_, cols| cols[0] = Utf32String::from(key));
+        // The metadata goes in first, so anything nucleo hands out has some; nucleo is
+        // pushed to under the same lock, so IDs and positions agree.
+        let mut metas = self.metas.write().unwrap();
+        meta.id = metas.len() as u32;
+        metas.push(meta);
+        self.next_id.store(meta.id + 1, Ordering::Relaxed);
+        self.injector.push(meta.id, |_, cols| cols[0] = Utf32String::from(key));
         Some(meta.id)
+    }
+
+    /// Brings item `id`'s metadata up to date with a fresh listing of it, in place. False
+    /// if it's become a different kind of thing (a file replaced by a folder of the same
+    /// name), which is added again instead.
+    fn update(&self, id: u32, e: &Entry) -> bool {
+        let current = self.metas.read().unwrap()[id as usize];
+        if current.kind != e.kind {
+            return false;
+        }
+        if (current.size, current.modified, current.child_count) != (e.size, e.modified, e.child_count) {
+            let mut metas = self.metas.write().unwrap();
+            let meta = &mut metas[id as usize];
+            (meta.size, meta.modified, meta.child_count) = (e.size, e.modified, e.child_count);
+        }
+        true
     }
 
     fn kill(&self, id: u32) {
@@ -258,11 +290,11 @@ impl Shared {
             }
             let name_hash = hash(&e.name);
             let is_folder = e.kind == EntryKind::Folder && !e.mount_point;
-            let meta_hash = if e.kind == EntryKind::Folder { 0 } else { hash(&(e.kind as u8, e.size, e.modified)) };
             let path = dir.join(&e.name);
             let descend = is_folder && self.scan.descends_into(&path, &e.name);
             let id = match old.remove(&name_hash) {
-                Some(c) if c.meta_hash == meta_hash => {
+                // Still there: an edit only changes its metadata.
+                Some(c) if c.dir_name.is_some() == is_folder && self.update(c.id, e) => {
                     if rescan && descend {
                         next.push(path);
                     }
@@ -289,7 +321,7 @@ impl Shared {
                     id
                 }
             };
-            table.push(Child { name_hash, meta_hash, id, dir_name: is_folder.then(|| e.name.as_str().into()) });
+            table.push(Child { name_hash, id, dir_name: is_folder.then(|| e.name.as_str().into()) });
         }
 
         // Whatever wasn't in the listing is gone.
@@ -357,15 +389,8 @@ impl Shared {
             let Some(id) = self.push(&key, meta) else { break };
             let (parent, name) = key.rsplit_once('/').unwrap_or(("", &key));
             let parent = if parent.is_empty() && key.starts_with('/') { "/" } else { parent };
-            let meta_hash =
-                if meta.kind == EntryKind::Folder { 0 } else { hash(&(meta.kind as u8, meta.size, meta.modified)) };
             let dir_name = (meta.kind == EntryKind::Folder).then(|| name.into());
-            tables.entry(parent.to_string()).or_default().push(Child {
-                name_hash: hash(&name),
-                meta_hash,
-                id,
-                dir_name,
-            });
+            tables.entry(parent.to_string()).or_default().push(Child { name_hash: hash(&name), id, dir_name });
         }
     }
 
@@ -383,21 +408,24 @@ impl Shared {
 
     /// Every live item scanned from the roots (not frecency extras), for saving.
     pub fn snapshot(&self) -> Vec<(String, ItemMeta)> {
-        let dead = self.dead();
-        (0..self.injector.injected_items())
-            .filter_map(|i| self.injector.get(i))
-            .filter(|item| !item.data.extra && !dead.contains(item.data.id))
-            .map(|item| (item.matcher_columns[0].to_string(), *item.data))
+        let items = self.items();
+        (0..items.injector.injected_items())
+            .filter_map(|i| items.injector.get(i))
+            .filter_map(|item| {
+                let meta = items.live(*item.data).filter(|m| !m.extra)?;
+                Some((item.matcher_columns[0].to_string(), meta))
+            })
             .collect()
     }
 
-    /// Rough memory use: path text plus per-item overhead in nucleo, the dead set and the
-    /// folder tables.
+    /// Rough memory use: path text plus per-item overhead in nucleo, the metadata table,
+    /// the dead set and the folder tables.
     pub fn memory_estimate(&self) -> u64 {
         const PER_ITEM: u64 = 200;
-        let injected = self.injector.injected_items();
+        let items = self.items();
+        let injected = items.injector.injected_items();
         let text: u64 = (0..injected)
-            .filter_map(|i| self.injector.get(i))
+            .filter_map(|i| items.injector.get(i))
             .map(|item| {
                 let s = &item.matcher_columns[0];
                 if s.slice(..).is_ascii() { s.len() as u64 } else { s.len() as u64 * 4 }
