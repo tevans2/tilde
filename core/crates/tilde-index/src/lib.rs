@@ -46,7 +46,7 @@ const FRESH_BONUS: i64 = 4;
 /// at most 2 bonus points more (the first doubled).
 const NAME_SLACK_FIRST_CHAR: i64 = 4;
 const NAME_SLACK_CHAR: i64 = 2;
-/// A name tier outweighs everything else in a score.
+/// A name tier outweighs everything else in a score, then not being generated (`noisy`).
 const TIER_WEIGHT: i64 = 1 << 24;
 /// Matches scored per task when searching in parallel.
 const CHUNK: u32 = 2048;
@@ -754,6 +754,41 @@ fn name_tier(name: &(impl Chars + ?Sized), word: &[char]) -> i64 {
     best
 }
 
+/// Whether a folder (a key) is or is inside one that usually holds generated or
+/// third-party files: build output, dependencies, caches. Such files are still found, but
+/// rank below your own in the same tier.
+fn noisy(folder: &str) -> bool {
+    folder.split('/').any(|part| {
+        matches!(
+            part,
+            "dist"
+                | "build"
+                | "out"
+                | "target"
+                | "vendor"
+                | "node_modules"
+                | "bower_components"
+                | "coverage"
+                | ".next"
+                | ".nuxt"
+                | ".cache"
+                | "cache"
+                | "Cache"
+                | "Caches"
+                | "__pycache__"
+                | ".venv"
+                | "venv"
+                | "site-packages"
+                | "Pods"
+                | "DerivedData"
+                | ".build"
+                | ".gradle"
+                | ".tox"
+        ) || part.ends_with("-deps")
+            || part.ends_with("_cache")
+    })
+}
+
 /// A file name's characters, as nucleo keeps them: ASCII bytes or chars.
 trait Chars {
     fn len(&self) -> usize;
@@ -944,10 +979,12 @@ impl Ranking<'_> {
             let path_score = path_score as i64;
             let id = *item.data;
             match self.stop {
-                // Nothing from here on can make the list: its name can't add more than its
-                // path plus the slack, and it's fresh at most (the used items are done).
+                // Nothing from here on can make the list: its name has no tier and can't add
+                // more than its path plus the slack, it's fresh and not generated at most,
+                // and has no use (the used and named items are done).
                 Stop::WhenNothingCanWin
-                    if 2 * path_score + self.name_slack + FRESH_BONUS < self.bar.load(Ordering::Relaxed) =>
+                    if TIER_WEIGHT + 2 * path_score + self.name_slack + FRESH_BONUS
+                        < self.bar.load(Ordering::Relaxed) =>
                 {
                     break;
                 }
@@ -1020,7 +1057,9 @@ impl Ranking<'_> {
                 None => by_key(self.scores, key) as i64,
             };
             let tier = tier.unwrap_or_else(|| self.name_tier(column.slice(..)));
-            let known = tier * TIER_WEIGHT + path_score + fresh + usage - 2 * depth - length_penalty;
+            // Your own files before generated and third-party ones, within a tier.
+            let rank = tier * 2 + !noisy(parent) as i64;
+            let known = rank * TIER_WEIGHT + path_score + fresh + usage - 2 * depth - length_penalty;
             // Even the best name it could have wouldn't make the list: skip matching it.
             let local =
                 if best.len() == self.limit { best.peek().map_or(i64::MIN, |Reverse((w, _))| *w) } else { i64::MIN };
@@ -1747,11 +1786,41 @@ mod tests {
     }
 
     #[test]
+    fn generated_folders() {
+        assert!(noisy("Developer/shop/dist"));
+        assert!(noisy("Developer/app/vendor/lodash"));
+        assert!(noisy("Library/Caches/com.example"));
+        assert!(noisy("Developer/x/third-deps/y"));
+        assert!(!noisy("Developer/shop/src"));
+        assert!(!noisy("Documents/Distant Places"));
+        assert!(!noisy(""));
+    }
+
+    #[test]
+    fn a_folder_tagged_as_a_cache_is_listed_but_not_entered() {
+        let (_dir, root) = tree();
+        let cache = root.join("Developer/projects/tilde/scratch");
+        fs::create_dir_all(cache.join("objects")).unwrap();
+        fs::write(cache.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172789f06886806bc55").unwrap();
+        fs::write(cache.join("blob.bin"), vec![0u8; 900]).unwrap();
+        fs::write(cache.join("objects/abc"), vec![0u8; 100]).unwrap();
+        let mut index = build(&root);
+        assert_eq!(search_keys(&mut index, "scratch"), ["Developer/projects/tilde/scratch"]);
+        assert!(search_keys(&mut index, "blob").is_empty());
+        // Still counted in folder sizes: its files directly, its folders once measured.
+        let handle = index.handle();
+        let total = |p: &Path| handle.folder_total(p).unwrap();
+        assert_eq!(total(&cache), FolderTotal { bytes: 900 + 43, unmeasured: 1 });
+        assert!(handle.set_skipped_size(&cache.join("objects"), 100));
+        assert_eq!(total(&cache).bytes, tilde_fs::folder_size(&cache, 0, &|| false, &|_, _| {}).unwrap());
+    }
+
+    #[test]
     fn ranking_meets_the_relevance_cases() {
         let dir = tempfile::tempdir().unwrap();
         let mut index = relevance::start(dir.path());
         // Cases ranking doesn't meet yet: improving it means taking them off.
-        const KNOWN_FAILING: &[&str] = &["invoice", "utils"];
+        const KNOWN_FAILING: &[&str] = &[];
         let outcomes = relevance::check(&mut index);
         let report: Vec<String> = outcomes
             .iter()

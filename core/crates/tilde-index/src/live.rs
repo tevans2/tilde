@@ -430,10 +430,12 @@ impl Shared {
         // Totals of subfolders that are gone (or no longer entered), taken off below.
         let (mut gone, mut gone_unknown) = (0u64, 0u32);
         let mut next = Vec::new();
+        // A cache folder (by the cross-tool convention): listed, its contents not indexed.
+        let cache = entries.iter().any(|e| e.name == "CACHEDIR.TAG" && e.kind == EntryKind::File);
 
         for e in entries {
             let path = dir.join(&e.name);
-            let indexed = !self.scan.hides(&path, &e.name) && (self.scan.include_hidden || !e.hidden);
+            let indexed = !cache && !self.scan.hides(&path, &e.name) && (self.scan.include_hidden || !e.hidden);
             let is_folder = e.kind == EntryKind::Folder && !e.mount_point;
             let descend = indexed && is_folder && self.scan.descends_into(&path, &e.name);
             match e.kind {
