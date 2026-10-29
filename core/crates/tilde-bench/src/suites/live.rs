@@ -161,6 +161,39 @@ pub fn run(r: &mut Runner, ctx: &Ctx) {
         );
         probe_searches(r, &mut index, &ds, &format!("after editing {pct}%"));
     }
+
+    // Renaming every file: each rename leaves a dead entry, so the list is compacted along
+    // the way (once a fifth of it is dead).
+    let since = changes.count.load(Ordering::SeqCst);
+    let t = Instant::now();
+    let before = probe::usage();
+    let mut renamed = 0;
+    for path in files.iter().map(|p| root.join(p)) {
+        let name = path.file_name().expect("file name").to_string_lossy();
+        renamed += fs::rename(&path, path.with_file_name(format!("x-{name}"))).is_ok() as usize;
+    }
+    let settled = match changes.settle(since, Duration::from_secs(300)) {
+        Ok(at) => at,
+        Err(e) => return r.fail(SUITE, &ds, "rename every file", e),
+    };
+    let mut cost: Cost = probe::usage().since(&before);
+    cost.wall_ns = settled.duration_since(t).as_nanos() as f64;
+    let counts = index.handle().counts();
+    r.record_samples(
+        SUITE,
+        &ds,
+        "rename every file: until applied",
+        vec![cost],
+        info([
+            ("files", renamed as f64),
+            ("injected", counts.injected as f64),
+            ("dead", counts.dead as f64),
+            ("dead_share", counts.dead as f64 / counts.injected.max(1) as f64),
+            ("estimate_bytes", index.handle().memory_estimate() as f64),
+            ("process_heap_bytes", alloc::heap().live as f64),
+        ]),
+    );
+    probe_searches(r, &mut index, &ds, "after renaming every file");
 }
 
 /// Files the synthetic index config keeps (not in excluded or hidden folders).

@@ -99,6 +99,7 @@ fn synthetic(r: &mut Runner, ctx: &Ctx, n: usize) {
     let Some(mut index) = loaded(r, &ds, config.clone()) else { return };
     searches(r, &mut index, &ds, QUERIES.iter().map(|(l, q)| (l.to_string(), q.to_string())).collect(), data::NOW);
     lookups(r, &index, &ds, data::NOW);
+    compacting(r, &mut index, &ds, data::NOW);
     memory(r, &index, &ds, "memory after searches");
 }
 
@@ -148,6 +149,7 @@ fn real(r: &mut Runner, ctx: &Ctx) {
     }
     searches(r, &mut index, ds, queries, now());
     lookups(r, &index, ds, now());
+    compacting(r, &mut index, ds, now());
     memory(r, &index, ds, "memory after searches");
 }
 
@@ -274,6 +276,35 @@ fn lookups(r: &mut Runner, index: &GlobalIndex, ds: &str, now: i64) {
     r.bench(SUITE, ds, "Index window: largest folders", || handle.largest_folders(20).len());
     r.bench(SUITE, ds, "Index window: memory estimate", || handle.memory_estimate() as usize);
     r.bench(SUITE, ds, "status", || handle.status().items as usize);
+}
+
+/// Rebuilding nucleo's list without dead items (what happens once they're a fifth of
+/// it; the cost barely depends on how many are dead), and the first search afterwards,
+/// which matches the new list from scratch.
+fn compacting(r: &mut Runner, index: &mut GlobalIndex, ds: &str, now: i64) {
+    let handle = index.handle();
+    r.bench_slow(
+        SUITE,
+        ds,
+        "compact: rebuild the list",
+        || (),
+        |_| {
+            handle.compact();
+            Ok(info([("items", handle.status().items as f64)]))
+        },
+    );
+    let q = Query::parse("report");
+    let cell = std::cell::RefCell::new(&mut *index);
+    r.bench_slow(
+        SUITE,
+        ds,
+        "compact: first search after",
+        || {
+            cell.borrow_mut().search(&q, None, None, now, 200);
+            handle.compact();
+        },
+        |_| Ok(info([("items", cell.borrow_mut().search(&q, None, None, now, 200).len() as f64)])),
+    );
 }
 
 /// Words from file names (4+ letters), by frequency: ranks 1, 10, 100 and 1000.

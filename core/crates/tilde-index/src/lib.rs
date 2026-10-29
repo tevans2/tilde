@@ -165,6 +165,13 @@ impl IndexHandle {
         IndexCounts { injected, dead, folder_tables: folders }
     }
 
+    /// Rebuilds the matcher's list without dead items now (normally done once they're a
+    /// fifth of it). For benchmarks (`tilde-bench`).
+    #[doc(hidden)]
+    pub fn compact(&self) {
+        self.shared.compact();
+    }
+
     /// Rough bytes of memory the index uses.
     pub fn memory_estimate(&self) -> u64 {
         self.shared.memory_estimate()
@@ -239,6 +246,8 @@ impl IndexHandle {
 pub struct GlobalIndex {
     /// Item IDs, matched by path (metadata is in `shared`, by ID).
     nucleo: Nucleo<u32>,
+    /// Which compaction `nucleo` is from.
+    generation: u64,
     shared: Arc<Shared>,
     scanning: Arc<AtomicBool>,
     /// Dropping it ends the stream, which ends the update thread.
@@ -268,11 +277,21 @@ impl GlobalIndex {
     pub fn start(config: IndexConfig, on_change: impl Fn() + Send + Sync + 'static) -> GlobalIndex {
         let on_change: Arc<dyn Fn() + Send + Sync> = Arc::new(on_change);
         let notify = on_change.clone();
-        let nucleo = Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(move || notify()), None, 1);
+        let make_nucleo: live::MakeNucleo = Box::new(move || {
+            let notify = notify.clone();
+            Nucleo::new(Config::DEFAULT.match_paths(), Arc::new(move || notify()), None, 1)
+        });
+        let nucleo = make_nucleo();
         let fingerprint = config.fingerprint();
         let cache = config.cache_path.clone().map(|p| (p, fingerprint));
-        let shared =
-            Arc::new(Shared::new(config.home.clone(), config.scan.clone(), config.max_items, cache, nucleo.injector()));
+        let shared = Arc::new(Shared::new(
+            config.home.clone(),
+            config.scan.clone(),
+            config.max_items,
+            cache,
+            nucleo.injector(),
+            make_nucleo,
+        ));
 
         // A saved index is usable if it was built with these settings and FSEvents can
         // replay everything since (IDs only go backwards if its database was reset).
@@ -303,6 +322,7 @@ impl GlobalIndex {
 
         let mut index = GlobalIndex {
             nucleo,
+            generation: 0,
             shared: shared.clone(),
             scanning: Arc::new(AtomicBool::new(resume_from.is_none())),
             _watcher: watcher,
@@ -368,6 +388,7 @@ impl GlobalIndex {
                             let mut batch = first;
                             batch.extend(events_rx.try_iter().flatten());
                             shared.apply(&batch);
+                            shared.compact_if_due();
                             on_change();
                         }
                         Err(RecvTimeoutError::Timeout) => {
@@ -456,21 +477,29 @@ impl GlobalIndex {
         if query.is_empty() || limit == 0 {
             return Vec::new();
         }
-        self.refresh_scores();
-        if query.text != self.pattern_text {
-            let append = !self.pattern_text.is_empty()
-                && query.text.starts_with(&self.pattern_text)
-                && !self.pattern_text.ends_with('\\');
-            self.nucleo.pattern.reparse(0, &query.text, CaseMatching::Ignore, Normalization::Smart, append);
-            self.pattern_text = query.text.clone();
-        }
-        // Finish matching what's been injected so far (bounded, in case a scan is
-        // flooding new items).
-        let deadline = Instant::now() + Duration::from_millis(250);
-        while self.nucleo.tick(10).running && Instant::now() < deadline {}
-
+        let shared = self.shared.clone();
+        // Item IDs are only meaningful with the list they came from: if the index was
+        // compacted meanwhile, start again with the new list (rare).
+        let items = loop {
+            self.take_compacted();
+            self.refresh_scores();
+            if query.text != self.pattern_text {
+                let append = !self.pattern_text.is_empty()
+                    && query.text.starts_with(&self.pattern_text)
+                    && !self.pattern_text.ends_with('\\');
+                self.nucleo.pattern.reparse(0, &query.text, CaseMatching::Ignore, Normalization::Smart, append);
+                self.pattern_text = query.text.clone();
+            }
+            // Finish matching what's been injected so far (bounded, in case a scan is
+            // flooding new items).
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while self.nucleo.tick(10).running && Instant::now() < deadline {}
+            let items = shared.items();
+            if items.generation == self.generation {
+                break items;
+            }
+        };
         let snap = self.nucleo.snapshot();
-        let items = self.shared.items();
         let ctx = FilterContext { now, cwd };
         let has_text = !query.text.is_empty();
         let name_pattern = has_text.then(|| Pattern::parse(&query.text, CaseMatching::Ignore, Normalization::Smart));
@@ -527,6 +556,17 @@ impl GlobalIndex {
                 Some(GlobalHit { key: column.to_string(), meta, indices: indices.clone(), score })
             })
             .collect()
+    }
+
+    /// Switches to the list `Shared::compact` rebuilt, if there's one.
+    fn take_compacted(&mut self) {
+        if let Some((nucleo, generation)) = self.shared.take_compacted() {
+            self.nucleo = nucleo;
+            self.generation = generation;
+            // The new list has no pattern yet, and items were renumbered.
+            self.pattern_text.clear();
+            self.scores_version = u64::MAX;
+        }
     }
 
     /// Re-derives the scores by key after new uses, or once a minute as they decay (and
@@ -1157,6 +1197,118 @@ mod tests {
         fs::write(root.join("node_modules/left-pad/extra.js"), b"x").unwrap();
         index.shared.apply(&[changed(root.join("node_modules/left-pad"))]);
         assert!(search_keys(&mut index, "extra").is_empty());
+    }
+
+    #[test]
+    fn compacting_drops_dead_items_and_keeps_everything_else() {
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        // Dead items: files that come and go (fewer than compacting on its own needs, as the
+        // watcher applies these too).
+        let churn = root.join("Documents/churn");
+        fs::create_dir(&churn).unwrap();
+        for round in 0..2 {
+            for i in 0..400 {
+                fs::write(churn.join(format!("tmp-{round}-{i}.txt")), b"x").unwrap();
+            }
+            index.shared.apply(&[changed(churn.clone())]);
+            for i in 0..400 {
+                fs::remove_file(churn.join(format!("tmp-{round}-{i}.txt"))).unwrap();
+            }
+            index.shared.apply(&[changed(churn.clone())]);
+        }
+        let before = index.handle().counts();
+        assert_eq!(before.dead, 800);
+        assert!(!index.shared.compact_if_due(), "too few to bother");
+        let live = index.status().items;
+        let snapshot = index.shared.snapshot();
+        let found = search_keys(&mut index, "swift");
+
+        index.shared.compact();
+        let after = index.handle().counts();
+        assert_eq!((after.injected, after.dead), (live, 0));
+        assert_eq!(index.status().items, live);
+        // The same items, metadata and search results, renumbered in order.
+        let renumbered = index.shared.snapshot();
+        let strip = |items: Vec<(String, ItemMeta)>| -> Vec<(String, ItemMeta)> {
+            items.into_iter().map(|(k, m)| (k, ItemMeta { id: 0, ..m })).collect()
+        };
+        assert_eq!(strip(renumbered.clone()), strip(snapshot));
+        assert!(renumbered.iter().enumerate().all(|(i, (_, m))| m.id == i as u32));
+        assert_eq!(search_keys(&mut index, "swift"), found);
+
+        // The folder tables still line up: edits, removals and additions apply as before.
+        fs::write(root.join("Documents/notes.md"), b"edited!").unwrap();
+        fs::remove_file(root.join("Documents/Finance/2026/invoice-oct.pdf")).unwrap();
+        fs::write(root.join("Documents/Finance/2026/invoice-nov.pdf"), b"x").unwrap();
+        index.shared.apply(&[changed(root.join("Documents")), changed(root.join("Documents/Finance/2026"))]);
+        let notes = index.search(&Query::parse("notes.md"), None, None, 0, 10);
+        assert_eq!((notes.len(), notes[0].meta.size), (1, 7));
+        assert_eq!(search_keys(&mut index, "invoice"), ["Documents/Finance/2026/invoice-nov.pdf"]);
+        assert_eq!(index.handle().counts().dead, 1);
+    }
+
+    #[test]
+    fn searching_while_compacting_never_mixes_up_items() {
+        // Each item's size is its key's length, so a hit with another item's metadata shows.
+        let items: Vec<(String, ItemMeta)> = (0..20_000)
+            .map(|i| {
+                let key = format!("folder{}/report-{i}.txt", i % 50);
+                let meta = ItemMeta {
+                    id: 0,
+                    kind: EntryKind::File,
+                    size: key.len() as u64,
+                    modified: 0,
+                    child_count: None,
+                    extra: false,
+                };
+                (key, meta)
+            })
+            .collect();
+        let (dir, mut index) = loaded(&items, &[]);
+        let shared = index.shared.clone();
+        let home = dir.path().join("home");
+        let compacting = std::thread::spawn(move || {
+            // Folders that don't exist on disk: each change kills 400 items, then compacts.
+            for f in 0..40 {
+                shared.apply(&[changed(home.join(format!("folder{f}")))]);
+                shared.compact();
+            }
+        });
+        let mut searches = 0;
+        while !compacting.is_finished() || searches == 0 {
+            for text in ["report", "rep 1", "folder7 txt"] {
+                for hit in index.search(&Query::parse(text), None, None, 0, 50) {
+                    assert_eq!(hit.meta.size, hit.key.len() as u64, "{hit:?}");
+                }
+                searches += 1;
+            }
+        }
+        compacting.join().unwrap();
+        assert_eq!(index.handle().counts().injected, 4_000);
+        assert_eq!(index.handle().select(|k, _| k.starts_with("folder45/")).len(), 400);
+    }
+
+    #[test]
+    fn frecency_still_counts_after_compacting() {
+        let file = |key: String| {
+            (key, ItemMeta { id: 0, kind: EntryKind::File, size: 1, modified: 0, child_count: None, extra: false })
+        };
+        // Decoys in two folders, then the file you use, which compacting renumbers.
+        let items: Vec<(String, ItemMeta)> = (0..3_000)
+            .map(|i| file(format!("{}/x{i}.txt", if i < 1_500 { "plan" } else { "planb" })))
+            .chain([file("Archive/2019/scans/plan-final.pdf".into())])
+            .collect();
+        let (dir, mut index) = loaded(&items, &[("Archive/2019/scans/plan-final.pdf", 50)]);
+        let first = |index: &mut GlobalIndex| index.search(&Query::parse("plan"), None, None, 0, 10)[0].clone();
+        assert_eq!(first(&mut index).meta.id, 3_000);
+
+        // The first folder is gone (it never existed on disk): its 1,500 items die.
+        index.shared.apply(&[changed(dir.path().join("home/plan"))]);
+        assert!(index.shared.compact_if_due());
+        assert_eq!(index.handle().counts().injected, 1_501);
+        let hit = first(&mut index);
+        assert_eq!((hit.key.as_str(), hit.meta.id), ("Archive/2019/scans/plan-final.pdf", 1_500));
     }
 
     #[test]

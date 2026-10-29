@@ -65,8 +65,8 @@ hits a cap (see the profiles in `runner.rs`).
 
 | Suite | Data | Cases |
 |---|---|---|
-| `index` | synthetic indexes (100k, 500k by default; `--sizes`), your own with `--real` | save and load the index file; memory held per item; searches: 1–2 characters, words common and rare, several words, paths, Unicode, no match, each filter, filters with words, `in:`; the same text again; typing words a key at a time; Activity's recent files; Clean Up's selection; the Index window's numbers |
-| `live` | a synthetic home on disk (`--live`), real FSEvents | time until a new, deleted or renamed item shows in search; editing 10%, 50%, 100% of files: time to apply, dead entries, memory, and searches before and after |
+| `index` | synthetic indexes (100k, 500k by default; `--sizes`), your own with `--real` | save and load the index file; memory held per item; searches: 1–2 characters, words common and rare, several words, paths, Unicode, no match, each filter, filters with words, `in:`; the same text again; typing words a key at a time; Activity's recent files; Clean Up's selection; the Index window's numbers; compacting the matcher's list, and the first search after |
+| `live` | a synthetic home on disk (`--live`), real FSEvents | time until a new, deleted or renamed item shows in search; editing 10%, 50%, 100% of files, then renaming every file (which compacts along the way): time to apply, dead entries, memory, and searches before and after |
 | `scan` | synthetic homes on disk (`--trees`), your home with `--real-heavy` | building the index from disk; listing every folder without indexing |
 | `folder` | folders of 100 to 50,000 items | listing, sorting by each key, matching typed text |
 | `sizes` | the synthetic homes; `~/Developer` etc. with `--real-heavy` | totalling folder sizes |

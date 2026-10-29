@@ -1,7 +1,8 @@
 //! The index's mutable side. Every item gets an ID. Nucleo holds just the path and the
 //! ID; the item's metadata (kind, size, dates) lives in a table by ID, so an edited file
 //! is updated in place. Nucleo only appends, so removed items are marked dead (search
-//! skips them) and renamed ones are added again. A compact per-folder table of what's
+//! skips them) and renamed ones are added again; once dead items are a fifth of the
+//! list, it's rebuilt without them (`compact`). A compact per-folder table of what's
 //! indexed lets a fresh listing of any changed folder be diffed and applied.
 
 use std::cmp::Reverse;
@@ -11,12 +12,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
-use nucleo::{Injector, Utf32String};
+use nucleo::{Injector, Nucleo, Utf32String};
 use tilde_fs::{FsEvent, ListOptions, is_package_name, list_dir};
 use tilde_types::{Entry, EntryKind};
 
 use crate::walk::{ScanConfig, walk_sequential};
 use crate::{ItemMeta, key_for, with_str};
+
+/// Nucleo's list is rebuilt once dead items are this share of it…
+const COMPACT_DEAD_SHARE: u64 = 5;
+/// …and at least this many.
+const COMPACT_MIN_DEAD: u64 = 1_000;
+
+/// Makes an empty nucleo list (for rebuilding it).
+pub(crate) type MakeNucleo = Box<dyn Fn() -> Nucleo<u32> + Send + Sync>;
 
 /// What the index holds for one entry of a folder.
 struct Child {
@@ -43,8 +52,17 @@ pub(crate) struct Shared {
     /// Set after the saved index is deleted, so it isn't written back.
     pub saving_disabled: AtomicBool,
     save_lock: Mutex<()>,
-    /// Item IDs, searched by path. An item's ID is also its position here.
-    injector: Injector<u32>,
+    /// Held while changing what's indexed (applying changes, compacting).
+    writing: Mutex<()>,
+    /// Item IDs, searched by path. An item's ID is also its position here. Replaced when
+    /// compacting.
+    injector: RwLock<Injector<u32>>,
+    make_nucleo: MakeNucleo,
+    /// Bumped by each compaction (under the `metas` lock); search checks its nucleo list
+    /// is the current one.
+    generation: AtomicU64,
+    /// A rebuilt list waiting for search to take it, with its generation.
+    compacted: Mutex<Option<(Nucleo<u32>, u64)>>,
     /// Metadata by item ID (`metas.len()` is the next ID).
     metas: RwLock<Vec<ItemMeta>>,
     next_id: AtomicU32,
@@ -69,6 +87,8 @@ pub(crate) struct Items<'a> {
     dead: RwLockReadGuard<'a, Vec<u64>>,
     /// Nucleo's list the IDs refer to.
     injector: Injector<u32>,
+    /// Which compaction the IDs are from.
+    pub generation: u64,
 }
 
 impl Items<'_> {
@@ -94,6 +114,7 @@ impl Shared {
         max_items: u64,
         cache: Option<(PathBuf, u64)>,
         injector: Injector<u32>,
+        make_nucleo: MakeNucleo,
     ) -> Shared {
         Shared {
             home,
@@ -106,7 +127,11 @@ impl Shared {
             cache,
             saving_disabled: AtomicBool::new(false),
             save_lock: Mutex::new(()),
-            injector,
+            writing: Mutex::new(()),
+            injector: RwLock::new(injector),
+            make_nucleo,
+            generation: AtomicU64::new(0),
+            compacted: Mutex::new(None),
             metas: RwLock::new(Vec::new()),
             next_id: AtomicU32::new(0),
             killed: AtomicU32::new(0),
@@ -155,12 +180,17 @@ impl Shared {
 
     /// Items currently searchable.
     pub fn live_items(&self) -> u64 {
-        // IDs are positions in nucleo's list, so the next one is its length.
-        self.next_id() as u64 - self.killed.load(Ordering::Relaxed) as u64
+        // IDs are positions in nucleo's list, so the next one is its length. (Saturating:
+        // compacting resets both, and they can be seen mid-way.)
+        (self.next_id() as u64).saturating_sub(self.killed.load(Ordering::Relaxed) as u64)
     }
 
     pub fn items(&self) -> Items<'_> {
-        Items { metas: self.metas.read().unwrap(), dead: self.dead.read().unwrap(), injector: self.injector.clone() }
+        // In this order everywhere: metas, then the injector, then dead.
+        let metas = self.metas.read().unwrap();
+        let injector = self.injector.read().unwrap().clone();
+        let generation = self.generation.load(Ordering::SeqCst);
+        Items { metas, dead: self.dead.read().unwrap(), injector, generation }
     }
 
     /// Live files and packages modified at or after `since` that `keep` accepts (given
@@ -244,7 +274,7 @@ impl Shared {
         meta.id = metas.len() as u32;
         metas.push(meta);
         self.next_id.store(meta.id + 1, Ordering::Relaxed);
-        self.injector.push(meta.id, |_, cols| cols[0] = Utf32String::from(key));
+        self.injector.read().unwrap().push(meta.id, |_, cols| cols[0] = Utf32String::from(key));
         Some(meta.id)
     }
 
@@ -349,6 +379,7 @@ impl Shared {
 
     /// Applies a batch of FSEvents: re-lists each changed folder the index covers.
     pub fn apply(&self, events: &[FsEvent]) {
+        let _writing = self.writing.lock().unwrap();
         if let Some(max) = events.iter().map(|e| e.id).max() {
             self.last_event_id.fetch_max(max, Ordering::SeqCst);
         }
@@ -380,6 +411,63 @@ impl Shared {
             }
             Err(_) => {}
         }
+    }
+
+    /// Compacts if dead items have reached a fifth of nucleo's list. Returns whether it did.
+    pub fn compact_if_due(&self) -> bool {
+        let (injected, dead, _) = self.counts();
+        let due = dead >= COMPACT_MIN_DEAD && dead * COMPACT_DEAD_SHARE >= injected;
+        if due {
+            self.compact();
+        }
+        due
+    }
+
+    /// Rebuilds nucleo's list from the live items, renumbering them in order (so IDs and
+    /// positions still agree). Built under read locks, so searches carry on meanwhile
+    /// (nothing else changes the index: changes wait for `writing`), then swapped in at
+    /// once. Search takes the new list on its next call (`take_compacted`).
+    pub fn compact(&self) {
+        let _writing = self.writing.lock().unwrap();
+        let nucleo = (self.make_nucleo)();
+        let injector = nucleo.injector();
+        let (metas, renumbered) = {
+            let items = self.items();
+            let mut metas = Vec::with_capacity(items.metas.len() - self.killed.load(Ordering::Relaxed) as usize);
+            let mut renumbered = vec![u32::MAX; items.metas.len()];
+            for old in 0..items.injector.injected_items() {
+                let (Some(mut meta), Some(item)) = (items.live(old), items.injector.get(old)) else { continue };
+                meta.id = metas.len() as u32;
+                renumbered[old as usize] = meta.id;
+                injector.push(meta.id, |_, cols| cols[0] = item.matcher_columns[0].clone());
+                metas.push(meta);
+            }
+            (metas, renumbered)
+        };
+
+        let mut tables = self.children.lock().unwrap();
+        for table in tables.values_mut() {
+            // Tables only hold live items.
+            table.retain_mut(|c| {
+                c.id = renumbered[c.id as usize];
+                c.id != u32::MAX
+            });
+        }
+        let mut current = self.metas.write().unwrap();
+        let mut current_injector = self.injector.write().unwrap();
+        let mut dead = self.dead.write().unwrap();
+        self.next_id.store(metas.len() as u32, Ordering::Relaxed);
+        *current = metas;
+        *current_injector = injector;
+        dead.clear();
+        self.killed.store(0, Ordering::Relaxed);
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.compacted.lock().unwrap() = Some((nucleo, generation));
+    }
+
+    /// The list `compact` rebuilt, if search hasn't taken it yet, with its generation.
+    pub fn take_compacted(&self) -> Option<(Nucleo<u32>, u64)> {
+        self.compacted.lock().unwrap().take()
     }
 
     /// Adds saved items, rebuilding the per-folder tables.
