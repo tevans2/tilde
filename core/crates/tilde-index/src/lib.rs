@@ -20,10 +20,11 @@ pub use live::FolderSize;
 pub use walk::{ScanConfig, glob_match, scan, walk_parallel, walk_sequential};
 pub use zoxide::{Zoxide, parse_scores};
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,8 +37,17 @@ use tilde_types::EntryKind;
 
 use crate::live::Shared;
 
-/// How many top matches are re-ranked with boosts.
-const RERANK_CANDIDATES: usize = 3000;
+/// Points for an item changed in the last week.
+const FRESH_BONUS: i64 = 4;
+/// How much more a file name can score than its own path, per word of the query and
+/// per character: the name is the end of the path, and on its own its characters can earn
+/// at most 2 bonus points more (the first doubled).
+const NAME_SLACK_FIRST_CHAR: i64 = 4;
+const NAME_SLACK_CHAR: i64 = 2;
+/// Matches scored per task when searching in parallel.
+const CHUNK: u32 = 2048;
+/// Items added since the frecency table was made before it's made again.
+const USAGE_REBUILD_AFTER: u32 = 20_000;
 /// Scores decay slowly: derived ones are refreshed this often even without new uses.
 const FRECENCY_REFRESH: Duration = Duration::from_secs(60);
 /// zoxide's scores are re-read this often (a process launch).
@@ -239,12 +249,14 @@ pub struct GlobalIndex {
     zoxide_at: Instant,
     /// Frecency scores (Tilde's plus zoxide's) by key, as of `scores_at`.
     scores: HashMap<String, f64>,
+    /// The most frecency can add to any item's score (its own use and its folder's).
+    usage_ceiling: i64,
+    /// Frecency points by item ID, so searching needn't look keys up.
+    usage: UsageById,
     scores_version: u64,
     scores_at: Instant,
     pattern_text: String,
     matcher: Matcher,
-    name_matcher: Matcher,
-    buf: Vec<char>,
 }
 
 impl GlobalIndex {
@@ -298,12 +310,12 @@ impl GlobalIndex {
             zoxide_scores: HashMap::new(),
             zoxide_at: Instant::now(),
             scores: HashMap::new(),
+            usage_ceiling: 0,
+            usage: UsageById::default(),
             scores_version: u64::MAX,
             scores_at: Instant::now(),
             pattern_text: String::new(),
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
-            name_matcher: Matcher::new(Config::DEFAULT),
-            buf: Vec::new(),
         };
         let mut known_dirs = index.reload_zoxide();
         known_dirs.extend(config.frecency.as_ref().map(|f| f.lock().unwrap().folders()).unwrap_or_default());
@@ -399,6 +411,12 @@ impl GlobalIndex {
 
     /// Searches the whole index. `cwd` (a key) supports `in:.`; items directly inside
     /// `exclude_parent` (a key) are skipped because the Here scope already shows them.
+    ///
+    /// With text, nucleo matches whole paths and hands them over best path score first;
+    /// each is then scored by Tilde (file name, recency, use, depth). Everything Tilde adds
+    /// has a ceiling, so once an item's path score plus that ceiling can't beat the
+    /// `limit`th best so far, no later item can either and the walk stops. The result is
+    /// exactly what scoring every match would give.
     pub fn search(
         &mut self,
         query: &Query,
@@ -407,7 +425,34 @@ impl GlobalIndex {
         now: i64,
         limit: usize,
     ) -> Vec<GlobalHit> {
-        if query.is_empty() {
+        self.search_with(query, cwd, exclude_parent, now, limit, Stop::WhenNothingCanWin)
+    }
+
+    /// `search` scoring every match: slower, the same results. For checking `search`
+    /// against (`tilde-bench`).
+    #[doc(hidden)]
+    pub fn search_scoring_everything(
+        &mut self,
+        query: &Query,
+        cwd: Option<&str>,
+        exclude_parent: Option<&str>,
+        now: i64,
+        limit: usize,
+    ) -> Vec<GlobalHit> {
+        self.search_with(query, cwd, exclude_parent, now, limit, Stop::Never)
+    }
+
+    /// `search`, stopping as `stop` says (tests compare the ways).
+    fn search_with(
+        &mut self,
+        query: &Query,
+        cwd: Option<&str>,
+        exclude_parent: Option<&str>,
+        now: i64,
+        limit: usize,
+        stop: Stop,
+    ) -> Vec<GlobalHit> {
+        if query.is_empty() || limit == 0 {
             return Vec::new();
         }
         self.refresh_scores();
@@ -429,51 +474,40 @@ impl GlobalIndex {
         let has_text = !query.text.is_empty();
         let name_pattern = has_text.then(|| Pattern::parse(&query.text, CaseMatching::Ignore, Normalization::Smart));
 
-        let mut ranked: Vec<(u32, i64)> =
-            if has_text { Vec::new() } else { filtered_newest(snap, &dead, query, &ctx, exclude_parent) };
-        for n in 0..if has_text { snap.matched_item_count() } else { 0 } {
-            if ranked.len() >= RERANK_CANDIDATES {
-                break;
+        let best = if has_text {
+            let ranking = Ranking {
+                snap,
+                dead: &dead,
+                query,
+                ctx,
+                exclude_parent,
+                name_pattern: name_pattern.as_ref().expect("text"),
+                name_slack: name_slack(&query.text),
+                scores: &self.scores,
+                usage: &self.usage,
+                usage_ceiling: self.usage_ceiling,
+                now,
+                limit,
+                stop,
+                bar: AtomicI64::new(i64::MIN),
+            };
+            ranking.run()
+        } else {
+            Vec::new()
+        };
+        let ranked: Vec<(u32, i64)> = if has_text {
+            best
+        } else {
+            // Filters only: newest first. Only the best `limit` are kept, picked out before
+            // sorting (this can rank most of the index).
+            let mut ranked = filtered_newest(snap, &dead, query, &ctx, exclude_parent);
+            if ranked.len() > limit {
+                ranked.select_nth_unstable_by_key(limit - 1, |&(_, s)| Reverse(s));
+                ranked.truncate(limit);
             }
-            let Some(item) = snap.get_matched_item(n) else { break };
-            let meta = *item.data;
-            if dead.contains(meta.id) {
-                continue;
-            }
-            let column = &item.matcher_columns[0];
-            let score = with_str(column, |key| {
-                let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
-                if exclude_parent == Some(parent) {
-                    return None;
-                }
-                let candidate =
-                    Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
-                if !query.filters.iter().all(|f| f.accepts(&candidate, &ctx)) {
-                    return None;
-                }
-                let path_score = snap.pattern().score(std::slice::from_ref(column), &mut self.matcher)? as i64;
-                let name_score = name_pattern
-                    .as_ref()
-                    .and_then(|p| p.score(Utf32Str::new(name, &mut self.buf), &mut self.name_matcher))
-                    .unwrap_or(0) as i64;
-                let depth = key.matches('/').count() as i64;
-                let length_penalty = key.len() as i64 / 10;
-                let fresh = if now - meta.modified < 7 * 86_400 { 4 } else { 0 };
-                let own = self.scores.get(key).map_or(0.0, |s| 15.0 * (1.0 + s).ln());
-                let inside = self.scores.get(parent).map_or(0.0, |s| 5.0 * (1.0 + s).ln());
-                Some(path_score + name_score + fresh + (own + inside) as i64 - 2 * depth - length_penalty)
-            });
-            if let Some(score) = score {
-                ranked.push((n, score));
-            }
-        }
-        // Only the best `limit` are kept: pick them out before sorting (filter-only queries
-        // can rank most of the index).
-        if ranked.len() > limit && limit > 0 {
-            ranked.select_nth_unstable_by_key(limit - 1, |&(_, s)| std::cmp::Reverse(s));
-            ranked.truncate(limit);
-        }
-        ranked.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
+            ranked.sort_by_key(|&(_, s)| Reverse(s));
+            ranked
+        };
 
         let pattern = snap.pattern().column_pattern(0);
         let mut indices = Vec::new();
@@ -502,6 +536,11 @@ impl GlobalIndex {
         }
         let version = self.frecency.as_ref().map_or(0, |f| f.lock().unwrap().version());
         if !zoxide_changed && version == self.scores_version && self.scores_at.elapsed() < FRECENCY_REFRESH {
+            // Items added since the table was made are looked up by key; remake it when
+            // there are many.
+            if self.shared.next_id() > self.usage.upto + USAGE_REBUILD_AFTER {
+                self.usage = UsageById::build(&self.shared, &self.scores);
+            }
             return;
         }
         let mut scores = self.zoxide_scores.clone();
@@ -511,6 +550,9 @@ impl GlobalIndex {
                 *scores.entry(self.shared.key(Path::new(path))).or_default() += s;
             }
         }
+        let most = scores.values().copied().fold(0.0f64, f64::max);
+        self.usage_ceiling = usage_points(most, most).ceil() as i64 + 1;
+        self.usage = UsageById::build(&self.shared, &scores);
         self.scores = scores;
         self.scores_version = version;
         self.scores_at = Instant::now();
@@ -526,6 +568,186 @@ impl GlobalIndex {
         self.zoxide_scores = scores.iter().map(|(p, s)| (self.shared.key(p), s.max(0.0).sqrt())).collect();
         scores.into_iter().map(|(p, _)| p).collect()
     }
+}
+
+/// When a search stops walking nucleo's matches.
+#[derive(Debug, Clone, Copy)]
+enum Stop {
+    /// Once no remaining match could make the list (exact).
+    WhenNothingCanWin,
+    /// Never: every match is scored.
+    Never,
+    /// After this many matches pass the filters, in one pass (how search used to stop,
+    /// at 3,000).
+    #[allow(dead_code)]
+    AfterScoring(usize),
+}
+
+/// What frecency adds: for the item's own uses and its folder's.
+fn usage_points(own: f64, folder: f64) -> f64 {
+    15.0 * (1.0 + own.max(0.0)).ln() + 5.0 * (1.0 + folder.max(0.0)).ln()
+}
+
+/// How much more a file name can score than its path against `text` (nucleo sums its
+/// words' scores; negated words score nothing).
+fn name_slack(text: &str) -> i64 {
+    text.split_whitespace()
+        .filter(|w| !w.starts_with('!'))
+        .map(|w| NAME_SLACK_FIRST_CHAR + NAME_SLACK_CHAR * (w.chars().count() as i64 - 1))
+        .sum()
+}
+
+/// Frecency points (`usage_points`, as whole points) by item ID for IDs below `upto`:
+/// items with uses of their own, and items directly inside folders with uses.
+#[derive(Default)]
+struct UsageById {
+    points: Vec<i32>,
+    upto: u32,
+}
+
+impl UsageById {
+    fn build(shared: &Shared, scores: &HashMap<String, f64>) -> UsageById {
+        let (own, inside, upto) = shared.ids_for(scores);
+        let mut points = vec![0i32; upto as usize];
+        for &id in own.keys().chain(inside.keys()) {
+            if let Some(p) = points.get_mut(id as usize) {
+                let s = |m: &HashMap<u32, f64>| m.get(&id).copied().unwrap_or(0.0);
+                *p = usage_points(s(&own), s(&inside)) as i32;
+            }
+        }
+        UsageById { points, upto }
+    }
+}
+
+/// One search's scoring of nucleo's matches, shared by the threads doing it.
+struct Ranking<'a> {
+    snap: &'a nucleo::Snapshot<ItemMeta>,
+    dead: &'a live::DeadSet<'a>,
+    query: &'a Query,
+    ctx: FilterContext<'a>,
+    exclude_parent: Option<&'a str>,
+    name_pattern: &'a Pattern,
+    name_slack: i64,
+    scores: &'a HashMap<String, f64>,
+    usage: &'a UsageById,
+    usage_ceiling: i64,
+    now: i64,
+    limit: usize,
+    stop: Stop,
+    /// A score the `limit`th best is known to reach (from any thread's full list).
+    bar: AtomicI64,
+}
+
+/// The best results so far, the worst on top; ties go to the earlier match.
+type Best = BinaryHeap<Reverse<(i64, Reverse<u32>)>>;
+
+impl Ranking<'_> {
+    /// The best `limit` matches, best first, as (match number, score).
+    fn run(&self) -> Vec<(u32, i64)> {
+        use rayon::prelude::*;
+        let count = self.snap.matched_item_count();
+        // Counting what's been scored needs one pass in order.
+        let chunk = if matches!(self.stop, Stop::AfterScoring(_)) { count.max(1) } else { CHUNK };
+        let ranges: Vec<std::ops::Range<u32>> =
+            (0..count).step_by(chunk as usize).map(|s| s..(s + chunk).min(count)).collect();
+        // The first chunk (the best path scores) on its own first: it sets the bar, so the
+        // rest mostly stop at their first match instead of all scoring at once.
+        let Some((first, rest)) = ranges.split_first() else { return Vec::new() };
+        let mut found = vec![with_matchers(|paths, names, buf| self.rank(first.clone(), paths, names, buf))];
+        found.par_extend(
+            rest.par_iter().map(|range| with_matchers(|paths, names, buf| self.rank(range.clone(), paths, names, buf))),
+        );
+        let mut all: Vec<(i64, Reverse<u32>)> = found.into_iter().flatten().map(|Reverse(r)| r).collect();
+        all.sort_unstable_by(|a, b| b.cmp(a));
+        all.truncate(self.limit);
+        all.into_iter().map(|(score, Reverse(n))| (n, score)).collect()
+    }
+
+    /// Scores matches `range` (in nucleo's order, best path score first).
+    fn rank(&self, range: std::ops::Range<u32>, paths: &mut Matcher, names: &mut Matcher, buf: &mut Vec<char>) -> Best {
+        let mut best = Best::with_capacity(self.limit + 1);
+        let mut scored = 0usize;
+        let exact = matches!(self.stop, Stop::WhenNothingCanWin);
+        for n in range {
+            let Some(item) = self.snap.get_matched_item(n) else { break };
+            let column = &item.matcher_columns[0];
+            let Some(path_score) = self.snap.pattern().score(std::slice::from_ref(column), paths) else { continue };
+            let path_score = path_score as i64;
+            // What the `limit`th best is known to reach: what it takes to make the list.
+            let bar = self.bar.load(Ordering::Relaxed);
+            // Nothing from here on can make the list: its name can't add more than its path
+            // plus the slack, and the rest have ceilings.
+            match self.stop {
+                Stop::WhenNothingCanWin
+                    if 2 * path_score + self.name_slack + FRESH_BONUS + self.usage_ceiling < bar =>
+                {
+                    break
+                }
+                Stop::AfterScoring(most) if scored >= most => break,
+                _ => {}
+            }
+            let meta = *item.data;
+            if self.dead.contains(meta.id) {
+                continue;
+            }
+            let score = with_str(column, |key| {
+                let (parent, name) = key.rsplit_once('/').unwrap_or(("", key));
+                if self.exclude_parent == Some(parent) {
+                    return None;
+                }
+                let candidate =
+                    Candidate { name, kind: meta.kind, size: meta.size, modified: meta.modified, parent: Some(parent) };
+                if !self.query.filters.iter().all(|f| f.accepts(&candidate, &self.ctx)) {
+                    return None;
+                }
+                let depth = key.matches('/').count() as i64;
+                let length_penalty = key.len() as i64 / 10;
+                let fresh = if self.now - meta.modified < 7 * 86_400 { FRESH_BONUS } else { 0 };
+                let usage = match self.usage.points.get(meta.id as usize) {
+                    Some(&p) if !meta.extra && !key.starts_with('/') => p as i64,
+                    _ => {
+                        let s = |k: &str| self.scores.get(k).copied().unwrap_or(0.0);
+                        usage_points(s(key), s(parent)) as i64
+                    }
+                };
+                let known = path_score + fresh + usage - 2 * depth - length_penalty;
+                // Even the best name it could have wouldn't make the list: skip matching it.
+                let local = if best.len() == self.limit { best.peek().map_or(i64::MIN, |Reverse((w, _))| *w) } else { i64::MIN };
+                if exact && known + path_score + self.name_slack < bar.max(local) {
+                    return None;
+                }
+                let name_score =
+                    self.name_pattern.score(Utf32Str::new(name, buf), names).unwrap_or(0) as i64;
+                Some(known + name_score)
+            });
+            if let Some(score) = score {
+                scored += 1;
+                best.push(Reverse((score, Reverse(n))));
+                if best.len() > self.limit {
+                    best.pop();
+                }
+                if best.len() == self.limit
+                    && let Some(Reverse((worst, _))) = best.peek()
+                {
+                    self.bar.fetch_max(*worst, Ordering::Relaxed);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// Runs `f` with this thread's matchers (paths, names) and scratch buffer. Matchers are
+/// big to make, so each thread keeps its own across searches.
+fn with_matchers<R>(f: impl FnOnce(&mut Matcher, &mut Matcher, &mut Vec<char>) -> R) -> R {
+    thread_local! {
+        static MATCHERS: std::cell::RefCell<(Matcher, Matcher, Vec<char>)> = std::cell::RefCell::new((
+            Matcher::new(Config::DEFAULT.match_paths()),
+            Matcher::new(Config::DEFAULT),
+            Vec::new(),
+        ));
+    }
+    MATCHERS.with_borrow_mut(|(paths, names, buf)| f(paths, names, buf))
 }
 
 fn now() -> i64 {
@@ -765,6 +987,80 @@ mod tests {
         let accented: Vec<_> = shared.snapshot().into_iter().filter(|(k, _)| k.contains('é')).collect();
         assert!(!accented.is_empty());
         assert_eq!(shared.select(|k, _| k.contains('é')), accented);
+    }
+
+    /// A saved index of `items` under a fresh home, with frecency `uses` (key, opens).
+    fn loaded(items: &[(String, ItemMeta)], uses: &[(&str, usize)]) -> (tempfile::TempDir, GlobalIndex) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let now = super::now() as f64;
+        let mut frecency = Frecency::in_memory();
+        for (key, opens) in uses {
+            for _ in 0..*opens {
+                frecency.record(&home.join(key), Use::Open, now, false);
+            }
+        }
+        let mut config = config(&home);
+        config.frecency = Some(Arc::new(Mutex::new(frecency)));
+        config.cache_path = Some(dir.path().join("index.bin"));
+        write_saved(&config, items).unwrap();
+        (dir, start_and_wait(config))
+    }
+
+    /// Stopping early returns exactly what scoring every match returns: same items,
+    /// same scores, same order, whatever the query and limit.
+    #[test]
+    fn stopping_early_finds_the_same_results_as_scoring_everything() {
+        let words = ["report", "repo", "render", "invoice", "notes", "photo", "receipt", "readme", "config", "café"];
+        let mut items = Vec::new();
+        for i in 0..20_000u32 {
+            let w = |k: u32| words[(k as usize * 7 + i as usize) % words.len()];
+            let key = format!("{}/{}-{}/{}{}/{}_{i}.{}", w(1), w(2), i % 13, w(3), i % 7, w(4), ["pdf", "rs", "md"][i as usize % 3]);
+            let meta = ItemMeta { id: i, kind: EntryKind::File, size: 1, modified: (i as i64) * 100, child_count: None, extra: false };
+            items.push((key, meta));
+        }
+        // Heavy use of a few items deep in the list, and of some folders.
+        let uses: Vec<(&str, usize)> = [items[19_000].0.as_str(), items[12_345].0.as_str(), items[7].0.as_str()]
+            .into_iter()
+            .zip([40, 9, 3])
+            .collect();
+        let (_dir, mut index) = loaded(&items, &uses);
+        let mut old_cutoff_wrong = 0;
+        for text in ["r", "re", "rep", "report", "repo notes", "café", "invoice 2024", "zz", "readme md", "ren"] {
+            for limit in [1, 10, 200] {
+                let q = Query::parse(text);
+                let summary = |h: Vec<GlobalHit>| h.into_iter().map(|h| (h.key, h.score)).collect::<Vec<_>>();
+                let early = summary(index.search_with(&q, None, None, 1_000_000, limit, Stop::WhenNothingCanWin));
+                let all = summary(index.search_with(&q, None, None, 1_000_000, limit, Stop::Never));
+                assert_eq!(early, all, "“{text}”, limit {limit}");
+                let capped = summary(index.search_with(&q, None, None, 1_000_000, limit, Stop::AfterScoring(3_000)));
+                if capped != all {
+                    old_cutoff_wrong += 1;
+                }
+            }
+        }
+        assert!(old_cutoff_wrong > 0, "the data should show the old cutoff's mistakes");
+    }
+
+    /// The case the old cutoff got wrong: a file you use, whose path matches less well
+    /// than thousands of others, is still found and ranked by its use.
+    #[test]
+    fn a_file_you_use_is_found_behind_thousands_of_better_path_matches() {
+        let meta = |id| ItemMeta { id, kind: EntryKind::File, size: 1, modified: 0, child_count: None, extra: false };
+        let target = "Archive/2019/scans/plan-final.pdf";
+        let mut items = vec![(target.to_string(), meta(0))];
+        // 5,000 paths that match "plan" better (in a short folder name) but don't name it.
+        for i in 1..5_000u32 {
+            items.push((format!("plan/x{i}.txt"), meta(i)));
+        }
+        let (_dir, mut index) = loaded(&items, &[(target, 50)]);
+        let q = Query::parse("plan");
+        let rank = |hits: Vec<GlobalHit>| hits.iter().position(|h| h.key == target);
+        let now = rank(index.search(&q, None, None, 1_000_000, 10));
+        let before = rank(index.search_with(&q, None, None, 1_000_000, 10, Stop::AfterScoring(3_000)));
+        assert_eq!(before, None, "the old cutoff never scored it");
+        assert_eq!(now, Some(0), "used fifty times, with the word in its name: first");
     }
 
     #[test]

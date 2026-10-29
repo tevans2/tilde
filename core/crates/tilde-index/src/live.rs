@@ -107,6 +107,34 @@ impl Shared {
         (self.injector.injected_items() as u64, self.killed.load(Ordering::Relaxed) as u64, folders)
     }
 
+    /// The ID the next item added will get.
+    pub fn next_id(&self) -> u32 {
+        self.next_id.load(Ordering::Relaxed)
+    }
+
+    /// For frecency `scores` by key: the IDs of the items with those keys, the IDs of the
+    /// items directly inside those folders (each with its score), and the first ID not
+    /// covered. Keys outside home and items not in the folder tables aren't resolved.
+    pub fn ids_for(&self, scores: &HashMap<String, f64>) -> (HashMap<u32, f64>, HashMap<u32, f64>, u32) {
+        let tables = self.children.lock().unwrap();
+        let upto = self.next_id();
+        let (mut own, mut inside) = (HashMap::new(), HashMap::new());
+        for (key, &score) in scores {
+            if key.starts_with('/') {
+                continue;
+            }
+            let (parent, name) = key.rsplit_once('/').unwrap_or(("", key.as_str()));
+            let name_hash = hash(&name);
+            if let Some(child) = tables.get(parent).and_then(|t| t.iter().find(|c| c.name_hash == name_hash)) {
+                own.insert(child.id, score);
+            }
+            for child in tables.get(key.as_str()).into_iter().flatten() {
+                inside.insert(child.id, score);
+            }
+        }
+        (own, inside, upto)
+    }
+
     /// Items currently searchable.
     pub fn live_items(&self) -> u64 {
         self.injector.injected_items() as u64 - self.killed.load(Ordering::Relaxed) as u64
