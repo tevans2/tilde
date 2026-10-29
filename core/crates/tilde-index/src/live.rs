@@ -139,6 +139,8 @@ pub(crate) struct Shared {
     /// The FSEvents ID the index is current to (every batch up to it fully applied), for
     /// resuming after a restart.
     pub last_event_id: AtomicU64,
+    /// The FSEvents store `last_event_id` is from (`tilde_fs::event_store_id`).
+    pub event_store: Option<String>,
     /// Loaded, or scanned to the end (or to `max_items`): only then is it worth saving. A
     /// scan stopped part-way would be saved as if it covered everything.
     pub complete: AtomicBool,
@@ -213,6 +215,7 @@ impl Shared {
         injector: Injector<u32>,
         make_nucleo: MakeNucleo,
     ) -> Shared {
+        let event_store = tilde_fs::event_store_id(scan.roots.first().unwrap_or(&home));
         Shared {
             home,
             scan,
@@ -221,6 +224,7 @@ impl Shared {
             stop: Arc::new(AtomicBool::new(false)),
             last_event_id: AtomicU64::new(0),
             complete: AtomicBool::new(false),
+            event_store,
             dirty: AtomicBool::new(false),
             cache,
             saving_disabled: AtomicBool::new(false),
@@ -540,6 +544,17 @@ impl Shared {
     pub fn apply(&self, events: &[FsEvent]) {
         let _writing = self.writing.lock().unwrap();
         self.dirty.store(true, Ordering::SeqCst);
+        if events.iter().any(FsEvent::ids_wrapped) {
+            // Saved IDs mean nothing any more: everything is checked, and the new IDs
+            // start low.
+            for root in &self.scan.roots {
+                self.refresh_dir(root, true);
+            }
+            if let Some(max) = events.iter().map(|e| e.id).max() {
+                self.last_event_id.store(max, Ordering::SeqCst);
+            }
+            return;
+        }
         let mut done = HashSet::new();
         for e in events {
             if e.is_history_done() {
@@ -567,6 +582,8 @@ impl Shared {
                 let next = self.sync_dir(dir, &entries, rescan);
                 walk_sequential(next, true, &|d, es| self.sync_dir(d, &es, rescan));
             }
+            // A root that's gone (a disk unplugged) keeps its index until it's back.
+            Err(_) if self.scan.roots.iter().any(|r| r == dir) => {}
             // The folder itself is gone; its parent's event removes its own item.
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
                 let key = self.key(dir);
@@ -772,7 +789,7 @@ impl Shared {
             self.dirty.store(false, Ordering::SeqCst);
             (self.last_event_id.load(Ordering::SeqCst), self.snapshot(), self.saved_folders())
         };
-        Some(crate::persist::save(path, *fingerprint, last_event_id, &items, &folders))
+        Some(crate::persist::save(path, *fingerprint, last_event_id, self.event_store.as_deref(), &items, &folders))
     }
 
     /// Every live item scanned from the roots (not frecency extras), for saving.

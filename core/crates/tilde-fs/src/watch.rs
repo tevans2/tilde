@@ -24,6 +24,7 @@ const CREATE_FLAG_NO_DEFER: u32 = 0x02;
 const EVENT_MUST_SCAN_SUBDIRS: u32 = 0x01;
 const EVENT_USER_DROPPED: u32 = 0x02;
 const EVENT_KERNEL_DROPPED: u32 = 0x04;
+const EVENT_IDS_WRAPPED: u32 = 0x08;
 const EVENT_HISTORY_DONE: u32 = 0x10;
 const EVENT_ROOT_CHANGED: u32 = 0x20;
 
@@ -40,6 +41,12 @@ impl FsEvent {
     /// Events were coalesced or dropped: everything under `path` must be re-scanned.
     pub fn needs_rescan(&self) -> bool {
         self.flags & (EVENT_MUST_SCAN_SUBDIRS | EVENT_USER_DROPPED | EVENT_KERNEL_DROPPED | EVENT_ROOT_CHANGED) != 0
+    }
+
+    /// Event IDs ran out and started again: anything saved against an ID is meaningless,
+    /// so everything must be re-scanned.
+    pub fn ids_wrapped(&self) -> bool {
+        self.flags & EVENT_IDS_WRAPPED != 0
     }
 
     /// Marker sent once replaying history (`since` an old ID) has finished.
@@ -87,6 +94,7 @@ unsafe extern "C" {
     fn FSEventStreamInvalidate(stream: FSEventStreamRef);
     fn FSEventStreamRelease(stream: FSEventStreamRef);
     fn FSEventsGetCurrentEventId() -> u64;
+    fn FSEventsCopyUUIDForDevice(dev: libc::dev_t) -> core_foundation_sys::uuid::CFUUIDRef;
 }
 
 unsafe extern "C" {
@@ -97,6 +105,40 @@ unsafe extern "C" {
 /// The most recent FSEvents event ID system-wide.
 pub fn current_event_id() -> u64 {
     unsafe { FSEventsGetCurrentEventId() }
+}
+
+/// The identity of the FSEvents store on the volume holding `path`. Event IDs only mean
+/// something with it: if it changes (the store was reset, or it's another disk), changes
+/// since a saved ID can't be replayed. `None` if the volume keeps no store.
+pub fn event_store_id(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = std::fs::metadata(path).ok()?.dev() as libc::dev_t;
+    // SAFETY: returns a new CFUUID (owned, released by the wrapper) or null.
+    let uuid = unsafe { FSEventsCopyUUIDForDevice(dev) };
+    if uuid.is_null() {
+        return None;
+    }
+    let uuid = unsafe { core_foundation::uuid::CFUUID::wrap_under_create_rule(uuid) };
+    let bytes = unsafe { core_foundation_sys::uuid::CFUUIDGetUUIDBytes(uuid.as_concrete_TypeRef()) };
+    let b = [
+        bytes.byte0,
+        bytes.byte1,
+        bytes.byte2,
+        bytes.byte3,
+        bytes.byte4,
+        bytes.byte5,
+        bytes.byte6,
+        bytes.byte7,
+        bytes.byte8,
+        bytes.byte9,
+        bytes.byte10,
+        bytes.byte11,
+        bytes.byte12,
+        bytes.byte13,
+        bytes.byte14,
+        bytes.byte15,
+    ];
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// A running FSEvents stream. Stops when dropped.
@@ -202,6 +244,15 @@ impl Drop for Watcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_event_store_has_an_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = event_store_id(dir.path()).expect("the boot volume keeps FSEvents");
+        assert_eq!(id.len(), 32);
+        assert_eq!(event_store_id(&std::env::temp_dir()), Some(id), "same volume, same store");
+        assert_eq!(event_store_id(Path::new("/does/not/exist")), None);
+    }
     use std::sync::mpsc;
 
     fn wait_for(rx: &mpsc::Receiver<Vec<FsEvent>>, pred: impl Fn(&FsEvent) -> bool) -> FsEvent {

@@ -1,7 +1,7 @@
 //! Saving the index between launches.
 //!
 //! A flat binary file: header (magic, format version, config fingerprint, the FSEvents
-//! ID it's current to, item count), then one record per item, then what folders hold
+//! ID it's current to and the identity of the event store it's from, item count), then one record per item, then what folders hold
 //! that isn't an item (for folder totals): a count, then per folder its key, the bytes
 //! of its hidden files and the folders inside it the index doesn't enter, with their
 //! measured sizes. Written to a temporary
@@ -17,12 +17,14 @@ use crate::ItemMeta;
 use crate::live::{SavedFolder, Skipped};
 
 const MAGIC: &[u8; 8] = b"TILDEIX\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 /// A skipped folder whose size isn't known.
 const UNKNOWN: u64 = u64::MAX;
 
 pub(crate) struct Saved {
     pub last_event_id: u64,
+    /// The FSEvents store `last_event_id` is from (`tilde_fs::event_store_id`).
+    pub event_store: Option<String>,
     pub items: Vec<(String, ItemMeta)>,
     pub folders: Vec<SavedFolder>,
 }
@@ -31,6 +33,7 @@ pub(crate) fn save(
     path: &Path,
     fingerprint: u64,
     last_event_id: u64,
+    event_store: Option<&str>,
     items: &[(String, ItemMeta)],
     folders: &[SavedFolder],
 ) -> io::Result<u64> {
@@ -43,6 +46,7 @@ pub(crate) fn save(
     w.write_all(&VERSION.to_le_bytes())?;
     w.write_all(&fingerprint.to_le_bytes())?;
     w.write_all(&last_event_id.to_le_bytes())?;
+    write_str(&mut w, event_store.unwrap_or(""))?;
     w.write_all(&(items.len() as u64).to_le_bytes())?;
     for (key, meta) in items {
         write_str(&mut w, key)?;
@@ -77,6 +81,7 @@ pub(crate) fn load(path: &Path, fingerprint: u64) -> Option<Saved> {
         return None;
     }
     let last_event_id = read_u64(&mut r)?;
+    let event_store = Some(read_str(&mut r)?).filter(|s| !s.is_empty());
     let count = read_u64(&mut r)? as usize;
     let mut items = Vec::with_capacity(count.min(10_000_000));
     for _ in 0..count {
@@ -112,7 +117,7 @@ pub(crate) fn load(path: &Path, fingerprint: u64) -> Option<Saved> {
         }
         folders.push(SavedFolder { key, unindexed_files, skipped });
     }
-    Some(Saved { last_event_id, items, folders })
+    Some(Saved { last_event_id, event_store, items, folders })
 }
 
 fn write_str(w: &mut impl Write, s: &str) -> io::Result<()> {
@@ -187,11 +192,12 @@ mod tests {
                 Skipped { name: "node_modules".into(), size: None, stale: false },
             ],
         }];
-        let size = save(&p, 42, 9_000, &items, &folders).unwrap();
+        let size = save(&p, 42, 9_000, Some("0a1b"), &items, &folders).unwrap();
         assert!(size > 0);
 
         let loaded = load(&p, 42).unwrap();
         assert_eq!(loaded.last_event_id, 9_000);
+        assert_eq!(loaded.event_store.as_deref(), Some("0a1b"));
         assert_eq!(loaded.items, items);
         assert_eq!(loaded.folders, folders);
 

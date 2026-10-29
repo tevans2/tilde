@@ -99,7 +99,8 @@ impl IndexConfig {
 #[doc(hidden)]
 pub fn write_saved(config: &IndexConfig, items: &[(String, ItemMeta)]) -> std::io::Result<u64> {
     let path = config.cache_path.as_deref().ok_or_else(|| std::io::Error::other("no cache_path"))?;
-    persist::save(path, config.fingerprint(), current_event_id(), items, &[])
+    let store = tilde_fs::event_store_id(config.scan.roots.first().unwrap_or(&config.home));
+    persist::save(path, config.fingerprint(), current_event_id(), store.as_deref(), items, &[])
 }
 
 /// What the index keeps per item besides its path.
@@ -333,12 +334,12 @@ impl GlobalIndex {
         ));
 
         // A saved index is usable if it was built with these settings and FSEvents can
-        // replay everything since (IDs only go backwards if its database was reset).
+        // replay everything since: the same event store, and IDs not gone backwards.
         let saved = config
             .cache_path
             .as_deref()
             .and_then(|p| persist::load(p, fingerprint))
-            .filter(|s| s.last_event_id <= current_event_id());
+            .filter(|s| s.last_event_id <= current_event_id() && s.event_store == shared.event_store);
         let resume_from = saved.map(|s| {
             shared.load(s.items, s.folders);
             shared.complete.store(true, Ordering::SeqCst);
@@ -1828,6 +1829,164 @@ mod tests {
             .map(|o| format!("{:?} ({}): passed {}, got {:?}", o.case.query, o.case.why, o.passed, o.top))
             .collect();
         assert!(report.is_empty(), "not as expected:\n{}", report.join("\n"));
+    }
+
+    #[test]
+    fn a_root_that_disappears_keeps_its_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("Volume");
+        fs::create_dir_all(root.join("Photos")).unwrap();
+        fs::write(root.join("Photos/beach.jpg"), b"x").unwrap();
+        let mut index = build(&root);
+        let before = index.status().items;
+        // Unplugged: the root itself is gone.
+        fs::rename(&root, dir.path().join("elsewhere")).unwrap();
+        index.shared.apply(&[changed(root.clone())]);
+        assert_eq!(index.status().items, before);
+        assert_eq!(search_keys(&mut index, "beach"), ["Photos/beach.jpg"]);
+    }
+
+    #[test]
+    fn wrapped_event_ids_check_everything() {
+        let (_dir, root) = tree();
+        let mut index = build(&root);
+        fs::write(root.join("Documents/Finance/2026/after-wrap.pdf"), b"x").unwrap();
+        // IDs started again from low numbers; the event names a folder that didn't change.
+        index.shared.apply(&[FsEvent { path: root.join("Developer"), flags: 0x08, id: 5 }]);
+        assert_eq!(search_keys(&mut index, "after-wrap"), ["Documents/Finance/2026/after-wrap.pdf"]);
+        // The recorded ID is one FSEvents can replay from (the watcher may have applied the
+        // write's own event since).
+        assert!(index.shared.last_event_id.load(Ordering::SeqCst) <= current_event_id());
+    }
+
+    #[test]
+    fn an_index_saved_against_another_event_store_is_rebuilt() {
+        let (_dir, root) = tree();
+        let cache = tempfile::tempdir().unwrap();
+        let mut config = config(&root);
+        config.cache_path = Some(cache.path().join("index.bin"));
+        let ghost = ItemMeta { id: 0, kind: EntryKind::File, size: 1, modified: 0, child_count: None, extra: false };
+        let items = [("Documents/ghost.txt".to_string(), ghost)];
+        let path = config.cache_path.clone().unwrap();
+        // The same settings and a valid ID, but from a store that's since been reset.
+        persist::save(&path, config.fingerprint(), current_event_id(), Some("not this store"), &items, &[]).unwrap();
+        let mut index = start_and_wait(config.clone());
+        assert!(search_keys(&mut index, "ghost").is_empty(), "scanned afresh, not loaded");
+        assert!(!search_keys(&mut index, "invoice").is_empty());
+        drop(index);
+        // Saved as this store's now: loaded next time.
+        persist::save(
+            &path,
+            config.fingerprint(),
+            current_event_id(),
+            tilde_fs::event_store_id(&root).as_deref(),
+            &items,
+            &[],
+        )
+        .unwrap();
+        let mut index = start_and_wait(config);
+        assert_eq!(search_keys(&mut index, "ghost"), ["Documents/ghost.txt"]);
+    }
+
+    /// Random creates, edits, renames, moves and removals in a tree the real watcher sees,
+    /// until the index matches a fresh scan. `TILDE_FUZZ_SEED` and `TILDE_FUZZ_OPS` vary it.
+    #[test]
+    fn random_changes_end_up_matching_a_fresh_scan() {
+        let seed: u64 = std::env::var("TILDE_FUZZ_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(7);
+        let ops: usize = std::env::var("TILDE_FUZZ_OPS").ok().and_then(|s| s.parse().ok()).unwrap_or(300);
+        let (_dir, root) = tree();
+        let index = build(&root);
+        let mut rng = seed.wrapping_mul(6_364_136_223_846_793_005) | 1;
+        let mut next = |n: usize| {
+            rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (rng >> 33) as usize % n.max(1)
+        };
+        let walk = |root: &Path| -> (Vec<PathBuf>, Vec<PathBuf>) {
+            let (mut dirs, mut files) = (vec![root.to_path_buf()], Vec::new());
+            let mut i = 0;
+            while i < dirs.len() {
+                for e in fs::read_dir(&dirs[i]).unwrap().flatten() {
+                    let p = e.path();
+                    if p.components().any(|c| c.as_os_str() == "node_modules") {
+                        continue;
+                    }
+                    if e.file_type().unwrap().is_dir() { dirs.push(p) } else { files.push(p) }
+                }
+                i += 1;
+            }
+            (dirs, files)
+        };
+        for op in 0..ops {
+            let (dirs, files) = walk(&root);
+            let dir = &dirs[next(dirs.len())];
+            match next(9) {
+                0 | 1 => fs::write(dir.join(format!("new-{op}.txt")), vec![0u8; next(5_000)]).unwrap(),
+                2 if !files.is_empty() => {
+                    let f = &files[next(files.len())];
+                    fs::write(f, vec![1u8; next(9_000)]).unwrap();
+                }
+                3 if !files.is_empty() => fs::remove_file(&files[next(files.len())]).unwrap(),
+                4 if !files.is_empty() => {
+                    let f = &files[next(files.len())];
+                    let _ = fs::rename(f, dir.join(format!("moved-{op}.md")));
+                }
+                5 => fs::create_dir_all(dir.join(format!("folder-{op}/inner"))).unwrap(),
+                6 if dirs.len() > 1 => {
+                    let d = &dirs[1 + next(dirs.len() - 1)];
+                    if !dir.starts_with(d) {
+                        let _ = fs::rename(d, dir.join(format!("renamed-{op}")));
+                    }
+                }
+                7 if dirs.len() > 4 => {
+                    let d = &dirs[1 + next(dirs.len() - 1)];
+                    let _ = fs::remove_dir_all(d);
+                }
+                8 => fs::write(dir.join(format!(".hidden-{op}")), b"secret").unwrap(),
+                _ => {}
+            }
+            if next(20) == 0 {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+
+        // Files by path, kind, size and date; folders by path (their own dates and counts
+        // only change when their parent is listed again, as in a scan of the parent).
+        let contents = |handle: &IndexHandle| {
+            let mut items: Vec<(String, u8, u64, i64)> = handle
+                .select(|_, _| true)
+                .into_iter()
+                .map(|(p, m)| {
+                    let file = m.kind != EntryKind::Folder;
+                    (
+                        p.to_string_lossy().into_owned(),
+                        m.kind as u8,
+                        if file { m.size } else { 0 },
+                        if file { m.modified } else { 0 },
+                    )
+                })
+                .collect();
+            items.sort();
+            items
+        };
+        let t = Instant::now();
+        loop {
+            let fresh = build(&root);
+            let (live, scanned) = (contents(&index.handle()), contents(&fresh.handle()));
+            let totals = index.handle().folder_total(&root) == fresh.handle().folder_total(&root);
+            if live == scanned && totals {
+                break;
+            }
+            if t.elapsed() > Duration::from_secs(15) {
+                let only_live: Vec<_> = live.iter().filter(|x| !scanned.contains(x)).take(10).collect();
+                let only_scan: Vec<_> = scanned.iter().filter(|x| !live.contains(x)).take(10).collect();
+                panic!(
+                    "seed {seed}: the index never matched a fresh scan\nonly in the index: {only_live:?}\nonly in the scan: {only_scan:?}\ntotals {:?} vs {:?}",
+                    index.handle().folder_total(&root),
+                    fresh.handle().folder_total(&root)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
     }
 
     #[test]
