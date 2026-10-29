@@ -8,30 +8,35 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     natural_key(a).cmp(&natural_key(b))
 }
 
-/// A token sequence whose lexicographic order is natural order, so a sort can build
-/// keys once instead of re-scanning names on every comparison.
+/// A string whose plain (byte) order is natural order, so a sort can build keys once
+/// instead of re-scanning names on every comparison.
 ///
-/// Letters become their lowercase code points. A digit run becomes: a marker equal to
+/// Letters become their lowercase characters. A digit run becomes: a marker equal to
 /// `'0'` (so it orders like a digit against other characters), the number of significant
-/// digits, the significant digits, then the run's full length (so `1` < `01` < `001`).
-/// After a marker matches, both sides are digit runs, so the counts line up.
-pub fn natural_key(s: &str) -> Vec<u32> {
-    let mut key = Vec::with_capacity(s.len() + 4);
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
+/// digits (as the character with that code), the significant digits, then the run's full
+/// length (so `1` < `01` < `001`). After a marker matches, both sides are digit runs, so
+/// the counts line up. UTF-8 orders like code points, and ASCII names take a byte per
+/// character.
+pub fn natural_key(s: &str) -> String {
+    let count = |n: usize| char::from_u32(n.min(0xD7FF) as u32).unwrap_or('\u{D7FF}');
+    let mut key = String::with_capacity(s.len() + 4);
+    let mut rest = s;
+    while let Some(c) = rest.chars().next() {
         if c.is_ascii_digit() {
-            let mut digits = vec![c as u32];
-            while let Some(d) = chars.next_if(char::is_ascii_digit) {
-                digits.push(d as u32);
-            }
-            let first_significant = digits.iter().position(|&d| d != '0' as u32).unwrap_or(digits.len());
-            let significant = &digits[first_significant..];
-            key.push('0' as u32);
-            key.push(significant.len() as u32);
-            key.extend_from_slice(significant);
-            key.push(digits.len() as u32);
+            let run = &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()];
+            let significant = run.trim_start_matches('0');
+            key.push('0');
+            key.push(count(significant.len()));
+            key.push_str(significant);
+            key.push(count(run.len()));
+            rest = &rest[run.len()..];
         } else {
-            key.extend(c.to_lowercase().map(|l| l as u32));
+            if c.is_ascii() {
+                key.push(c.to_ascii_lowercase());
+            } else {
+                key.extend(c.to_lowercase());
+            }
+            rest = &rest[c.len_utf8()..];
         }
     }
     key
@@ -68,11 +73,11 @@ pub fn sort_entries_by(entries: &mut [Entry], order: SortOrder) {
             SortKey::Kind if e.kind != EntryKind::Folder => with_extension(&e.name, |x| x.to_string()),
             _ => String::new(),
         };
-        let name = natural_key(&e.name);
-        // Name and kind reverse by flipping the text keys; ties stay A→Z otherwise.
+        let text = (ext, natural_key(&e.name));
+        // Name and kind reverse by flipping the text keys; ties stay A→Z otherwise. Equal
+        // keys keep their order (the cached-key sort is stable).
         let flip = order.reverse && matches!(order.key, SortKey::Name | SortKey::Kind);
-        let text = if flip { (Some(Reverse((ext, name.clone()))), None) } else { (None, Some((ext, name.clone()))) };
-        (folder_rank, primary(e), text, name)
+        (folder_rank, primary(e), if flip { Err(Reverse(text)) } else { Ok(text) })
     });
 }
 
@@ -107,6 +112,68 @@ mod tests {
         // '-' < digits < letters, as in a character-by-character comparison.
         assert_eq!(sorted(&["ab", "a1", "a-", "a"]), ["a", "a-", "a1", "ab"]);
         assert_eq!(sorted(&["v1.10", "v1.9", "v1.9.1"]), ["v1.9", "v1.9.1", "v1.10"]);
+    }
+
+    /// The key as it used to be built (a code point per element), to check the compact
+    /// one orders the same.
+    fn reference_key(s: &str) -> Vec<u32> {
+        let mut key = Vec::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c.is_ascii_digit() {
+                let mut digits = vec![c as u32];
+                while let Some(d) = chars.next_if(char::is_ascii_digit) {
+                    digits.push(d as u32);
+                }
+                let first = digits.iter().position(|&d| d != '0' as u32).unwrap_or(digits.len());
+                key.push('0' as u32);
+                key.push((digits.len() - first) as u32);
+                key.extend_from_slice(&digits[first..]);
+                key.push(digits.len() as u32);
+            } else {
+                key.extend(c.to_lowercase().map(|l| l as u32));
+            }
+        }
+        key
+    }
+
+    #[test]
+    fn compact_keys_order_like_code_point_keys() {
+        let parts = [
+            "a",
+            "B",
+            "z",
+            "0",
+            "00",
+            "7",
+            "10",
+            "9",
+            "123456789012",
+            "-",
+            ".",
+            " ",
+            "é",
+            "É",
+            "ß",
+            "日本",
+            "😀",
+            "x1y",
+        ];
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut names = Vec::new();
+        for _ in 0..4_000 {
+            let mut name = String::new();
+            for _ in 0..(seed % 5 + 1) {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                name.push_str(parts[(seed >> 33) as usize % parts.len()]);
+            }
+            names.push(name);
+        }
+        let mut by_new = names.clone();
+        by_new.sort_by_key(|n| natural_key(n));
+        let mut by_old = names;
+        by_old.sort_by_key(|n| reference_key(n));
+        assert_eq!(by_new, by_old);
     }
 
     fn mk(name: &str, kind: EntryKind) -> Entry {

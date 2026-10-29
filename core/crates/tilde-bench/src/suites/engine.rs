@@ -94,6 +94,8 @@ pub fn run(r: &mut Runner, ctx: &Ctx) {
     if let Some((p, c)) = biggest {
         folders.push((format!("the biggest folder ({c} items)"), root.join(p)));
     }
+    // A huge Downloads-like folder.
+    folders.push(("a folder of 50k items".to_string(), data::flat_folder(50_000)));
     let gen_cell = std::cell::RefCell::new(&mut next);
     for (label, path) in &folders {
         let path = path.to_string_lossy().into_owned();
@@ -170,7 +172,7 @@ pub fn run(r: &mut Runner, ctx: &Ctx) {
     r.bench(SUITE, &ds, "fetch 60 rows", || engine.rows(g, 0, 60).len());
 
     // Sorting the biggest folder.
-    if let Some((_, path)) = folders.last() {
+    if let Some((_, path)) = folders.iter().rev().nth(1) {
         let g = (gen_cell.borrow_mut())();
         engine.set_query(String::new(), g);
         engine.open_folder(path.to_string_lossy().into_owned(), g);
