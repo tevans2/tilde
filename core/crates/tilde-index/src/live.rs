@@ -167,6 +167,9 @@ pub(crate) struct Shared {
     next_id: AtomicU32,
     killed: AtomicU32,
     dead: RwLock<Vec<u64>>,
+    /// Bumped by every change to items (added, updated, dead, compacted), so search can
+    /// tell when its last result still stands.
+    changes: AtomicU64,
     /// Folder key → its indexed entries and totals.
     children: Mutex<HashMap<String, Folder>>,
 }
@@ -237,6 +240,7 @@ impl Shared {
             metas: RwLock::new(Vec::new()),
             next_id: AtomicU32::new(0),
             killed: AtomicU32::new(0),
+            changes: AtomicU64::new(0),
             dead: RwLock::new(Vec::new()),
             children: Mutex::new(HashMap::new()),
         }
@@ -250,6 +254,11 @@ impl Shared {
     pub fn counts(&self) -> (u64, u64, u64) {
         let folders = self.children.lock().unwrap().len() as u64;
         (self.next_id() as u64, self.killed.load(Ordering::Relaxed) as u64, folders)
+    }
+
+    /// How many times items have changed (see `changes`).
+    pub fn changes(&self) -> u64 {
+        self.changes.load(Ordering::SeqCst)
     }
 
     /// The ID the next item added will get.
@@ -390,6 +399,7 @@ impl Shared {
         metas.push(meta);
         self.next_id.store(meta.id + 1, Ordering::Relaxed);
         self.injector.read().unwrap().push(meta.id, |_, cols| cols[0] = Utf32String::from(key));
+        self.changes.fetch_add(1, Ordering::SeqCst);
         Some(meta.id)
     }
 
@@ -405,6 +415,7 @@ impl Shared {
             let mut metas = self.metas.write().unwrap();
             let meta = &mut metas[id as usize];
             (meta.size, meta.modified, meta.child_count) = (e.size, e.modified, e.child_count);
+            self.changes.fetch_add(1, Ordering::SeqCst);
         }
         true
     }
@@ -417,6 +428,7 @@ impl Shared {
         }
         dead[word] |= 1 << (id % 64);
         self.killed.fetch_add(1, Ordering::Relaxed);
+        self.changes.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Diffs a fresh listing of `dir` (hidden entries included) against the index and
@@ -704,6 +716,7 @@ impl Shared {
         *current_injector = injector;
         dead.clear();
         self.killed.store(0, Ordering::Relaxed);
+        self.changes.fetch_add(1, Ordering::SeqCst);
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self.compacted.lock().unwrap() = Some((nucleo, generation));
     }

@@ -216,7 +216,8 @@ fn searches(r: &mut Runner, index: &mut GlobalIndex, ds: &str, queries: Vec<(Str
             |_| index_cell.borrow_mut().search(&q, None, None, now, 200).len(),
         );
     }
-    // The same text again: what each refresh costs while the index changes under a search.
+    // The same text again with nothing changed: what the app's refreshes cost (folder
+    // sizes arriving, the open folder changing) while a search is showing.
     let q = Query::parse("report");
     index.search(&q, None, None, now, 200);
     r.bench(SUITE, ds, "search again, same text", || index.search(&q, None, None, now, 200).len());
